@@ -1,0 +1,16 @@
+{
+  "provider_id": "mega-cold",
+  "tier": "COLD",
+  "reservation_ttl_seconds": 3600,
+  "verify_existing": true,
+  "accounts": [
+    {
+      "account_id": "mega-a",
+      "credential_reference": "secret://mega/a/session",
+      "home_dir": "/var/lib/launcher/megacmd/a",
+      "remote_root": "/launcher",
+      "capacity_bytes": 0,
+      "safety_margin_bytes": 10737418240
+    }
+  ]
+}

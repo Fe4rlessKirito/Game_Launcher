@@ -20,6 +20,17 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Semaphore;
 
+mod tiering;
+
+pub use tiering::{
+    CapacityReservationStore, CapacitySnapshot, FakeMegaAccount, FakeMegaFailure,
+    InMemoryCapacityReservationStore, MegaAccountBackend, MegaAccountConfig, MegaCliAccount,
+    MegaColdStorageConfig, MegaColdStorageOptions, MegaColdStoragePool, PlacementProvider,
+    RestoreMode, StorageAccountSnapshot, StorageAccountStatus, StoragePlacementAction,
+    StoragePlacementEngine, StoragePlacementPlan, StoragePolicy, StoragePoolHealth,
+    StoragePoolStatus, StorageReservation, StorageTier,
+};
+
 const OBJECT_PREFIX: &str = "chunks/encoded/";
 const MIN_MULTIPART_PART_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PRESIGN_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -42,6 +53,19 @@ pub enum StorageError {
     RateLimiterClosed,
     #[error("deterministic storage failure injection")]
     InjectedFailure,
+    #[error(
+        "storage capacity exhausted: required {required_bytes} bytes, available {available_bytes} bytes"
+    )]
+    NeedsCapacity {
+        required_bytes: u64,
+        available_bytes: u64,
+    },
+    #[error("storage account authentication failed: {0}")]
+    Authentication(String),
+    #[error("storage account unavailable: {0}")]
+    Unavailable(String),
+    #[error("storage pool is unavailable")]
+    PoolUnavailable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -53,6 +77,7 @@ pub struct DownloadLocation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageProviderHealth {
     pub provider: String,
+    pub tier: StorageTier,
     pub healthy: bool,
     pub error: Option<String>,
 }
@@ -60,6 +85,7 @@ pub struct StorageProviderHealth {
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
     fn provider_id(&self) -> &str;
+    fn tier(&self) -> StorageTier;
     async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError>;
     async fn read_encoded(&self, encoded_hash: &str) -> Result<Vec<u8>, StorageError>;
     async fn delete_encoded(&self, encoded_hash: &str) -> Result<(), StorageError>;
@@ -94,6 +120,21 @@ impl StorageRegistry {
         self.providers.as_ref()
     }
 
+    pub fn providers_for_tier(&self, tier: StorageTier) -> Vec<Arc<dyn StorageProvider>> {
+        self.providers
+            .iter()
+            .filter(|provider| provider.tier() == tier)
+            .cloned()
+            .collect()
+    }
+
+    pub fn provider(&self, provider_id: &str) -> Option<Arc<dyn StorageProvider>> {
+        self.providers
+            .iter()
+            .find(|provider| provider.provider_id() == provider_id)
+            .cloned()
+    }
+
     pub async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
         for provider in self.providers.iter() {
             provider.put_encoded(encoded_hash, bytes).await?;
@@ -105,9 +146,20 @@ impl StorageRegistry {
         &self,
         encoded_hash: &str,
     ) -> Result<Vec<DownloadLocation>, StorageError> {
+        self.download_locations_for_tier(encoded_hash, None).await
+    }
+
+    pub async fn download_locations_for_tier(
+        &self,
+        encoded_hash: &str,
+        tier: Option<StorageTier>,
+    ) -> Result<Vec<DownloadLocation>, StorageError> {
         validate_hash(encoded_hash)?;
         let mut locations = Vec::with_capacity(self.providers.len());
         for provider in self.providers.iter() {
+            if tier.is_some_and(|expected| provider.tier() != expected) {
+                continue;
+            }
             if let Ok(location) = provider.download_location(encoded_hash).await
                 && !locations
                     .iter()
@@ -125,6 +177,7 @@ impl StorageRegistry {
             let result = provider.health_check().await;
             health.push(StorageProviderHealth {
                 provider: provider.provider_id().to_owned(),
+                tier: provider.tier(),
                 healthy: result.is_ok(),
                 error: result.err().map(|error| error.to_string()),
             });
@@ -145,6 +198,7 @@ impl StorageRegistry {
 pub struct LocalStorage {
     root: PathBuf,
     base_url: String,
+    tier: StorageTier,
     failure_injection: Option<Arc<AtomicUsize>>,
 }
 
@@ -153,6 +207,20 @@ impl LocalStorage {
         Self {
             root: root.into(),
             base_url: base_url.into(),
+            tier: StorageTier::Hot,
+            failure_injection: None,
+        }
+    }
+
+    pub fn with_tier(
+        root: impl Into<PathBuf>,
+        base_url: impl Into<String>,
+        tier: StorageTier,
+    ) -> Self {
+        Self {
+            root: root.into(),
+            base_url: base_url.into(),
+            tier,
             failure_injection: None,
         }
     }
@@ -165,6 +233,7 @@ impl LocalStorage {
         Self {
             root: root.into(),
             base_url: base_url.into(),
+            tier: StorageTier::Hot,
             failure_injection: Some(Arc::new(AtomicUsize::new(
                 successful_uploads_before_failure,
             ))),
@@ -304,6 +373,10 @@ impl StorageProvider for LocalStorage {
         })
     }
 
+    fn tier(&self) -> StorageTier {
+        self.tier
+    }
+
     async fn health_check(&self) -> Result<(), StorageError> {
         tokio::fs::create_dir_all(self.root.join(OBJECT_PREFIX)).await?;
         Ok(())
@@ -312,6 +385,8 @@ impl StorageProvider for LocalStorage {
 
 #[derive(Clone)]
 pub struct S3CompatibleStorageConfig {
+    pub provider_id: String,
+    pub tier: StorageTier,
     pub endpoint: String,
     pub region: String,
     pub bucket: String,
@@ -332,6 +407,8 @@ impl std::fmt::Debug for S3CompatibleStorageConfig {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("S3CompatibleStorageConfig")
+            .field("provider_id", &self.provider_id)
+            .field("tier", &self.tier)
             .field("endpoint", &self.endpoint)
             .field("region", &self.region)
             .field("bucket", &self.bucket)
@@ -355,6 +432,11 @@ impl std::fmt::Debug for S3CompatibleStorageConfig {
 
 impl S3CompatibleStorageConfig {
     pub fn validate(&self) -> Result<(), StorageError> {
+        if self.provider_id.trim().is_empty() {
+            return Err(StorageError::Configuration(
+                "provider ID is required".to_owned(),
+            ));
+        }
         if self.endpoint.trim().is_empty()
             || self.region.trim().is_empty()
             || self.bucket.trim().is_empty()
@@ -438,6 +520,10 @@ impl S3CompatibleStorageConfig {
         let max_attempts = parse_u64("LAUNCHER_S3_MAX_ATTEMPTS", 4)?;
         let max_concurrency = parse_u64("LAUNCHER_S3_MAX_CONCURRENT_REQUESTS", 4)?;
         Ok(Self {
+            provider_id: env::var("LAUNCHER_S3_PROVIDER_ID").unwrap_or_else(|_| "s3".to_owned()),
+            tier: env::var("LAUNCHER_S3_TIER")
+                .unwrap_or_else(|_| "HOT".to_owned())
+                .parse()?,
             endpoint: required("LAUNCHER_S3_ENDPOINT")?,
             region: required("LAUNCHER_S3_REGION")?,
             bucket: required("LAUNCHER_S3_BUCKET")?,
@@ -767,7 +853,11 @@ impl S3CompatibleStorage {
 #[async_trait]
 impl StorageProvider for S3CompatibleStorage {
     fn provider_id(&self) -> &str {
-        "s3"
+        &self.config.provider_id
+    }
+
+    fn tier(&self) -> StorageTier {
+        self.config.tier
     }
 
     async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
@@ -895,7 +985,10 @@ pub fn storage_from_env(
     {
         match provider_name {
             "local" => {
-                let local = LocalStorage::new(&storage_root, &base_url);
+                let tier = env::var("LAUNCHER_LOCAL_TIER")
+                    .unwrap_or_else(|_| "HOT".to_owned())
+                    .parse()?;
+                let local = LocalStorage::with_tier(&storage_root, &base_url, tier);
                 local_storage = Some(local.clone());
                 providers.push(Arc::new(local));
             }
@@ -906,7 +999,59 @@ pub fn storage_from_env(
             }
             unknown => {
                 return Err(StorageError::Configuration(format!(
-                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local or s3"
+                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, or mega (use the async factory for mega)"
+                )));
+            }
+        }
+    }
+    Ok((StorageRegistry::new(providers)?, local_storage))
+}
+
+pub async fn storage_from_env_with_reservation_store(
+    storage_root: impl Into<PathBuf>,
+    base_url: impl Into<String>,
+    ledger: Arc<dyn CapacityReservationStore>,
+) -> Result<(StorageRegistry, Option<LocalStorage>), StorageError> {
+    let storage_root = storage_root.into();
+    let base_url = base_url.into();
+    let provider_config = env::var("LAUNCHER_STORAGE_PROVIDERS")
+        .or_else(|_| env::var("LAUNCHER_STORAGE_PROVIDER"))
+        .unwrap_or_else(|_| "local".to_owned());
+    let mut providers: Vec<Arc<dyn StorageProvider>> = Vec::new();
+    let mut local_storage = None;
+    for provider_name in provider_config
+        .split(',')
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+    {
+        match provider_name {
+            "local" => {
+                let tier = env::var("LAUNCHER_LOCAL_TIER")
+                    .unwrap_or_else(|_| "HOT".to_owned())
+                    .parse()?;
+                let local = LocalStorage::with_tier(&storage_root, &base_url, tier);
+                local_storage = Some(local.clone());
+                providers.push(Arc::new(local));
+            }
+            "s3" => {
+                providers.push(Arc::new(S3CompatibleStorage::new(
+                    S3CompatibleStorageConfig::from_env()?,
+                )?));
+            }
+            "mega" => {
+                let path = env::var("LAUNCHER_MEGA_ACCOUNTS_FILE").map_err(|_| {
+                    StorageError::Configuration(
+                        "LAUNCHER_MEGA_ACCOUNTS_FILE is required for the mega provider".to_owned(),
+                    )
+                })?;
+                let config = MegaColdStorageConfig::from_file(path)?;
+                let pool =
+                    MegaColdStoragePool::from_config_and_register(config, ledger.clone()).await?;
+                providers.push(Arc::new(pool));
+            }
+            unknown => {
+                return Err(StorageError::Configuration(format!(
+                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, or mega"
                 )));
             }
         }
@@ -1109,6 +1254,10 @@ mod tests {
             "unavailable"
         }
 
+        fn tier(&self) -> StorageTier {
+            StorageTier::Hot
+        }
+
         async fn put_encoded(&self, _: &str, _: &[u8]) -> Result<(), StorageError> {
             Err(StorageError::Provider("unavailable".to_owned()))
         }
@@ -1128,6 +1277,8 @@ mod tests {
 
     fn test_s3_config() -> S3CompatibleStorageConfig {
         S3CompatibleStorageConfig {
+            provider_id: "s3".to_owned(),
+            tier: StorageTier::Hot,
             endpoint: "http://127.0.0.1:9000".to_owned(),
             region: "us-east-1".to_owned(),
             bucket: "launcher".to_owned(),

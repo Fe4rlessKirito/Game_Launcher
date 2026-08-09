@@ -32,3 +32,23 @@ The publisher uploads content-addressed objects under `chunks/encoded/{blake3}.b
 6. Exercise VPS restart, PostgreSQL restore, bucket lifecycle cleanup, key rotation, and rollback before calling the environment production-ready.
 
 The repository does not contain a VPS hostname, DNS zone, bucket, or production credentials, so staging deployment and real HTTPS validation remain operator actions.
+
+## Railway API deployment
+
+The root `railway.toml` points Railway at `deploy/api.Dockerfile`, starts
+`/usr/local/bin/launcher-api`, and uses `/health` for health checks with an
+on-failure restart policy. Create a Railway PostgreSQL plugin and inject its
+`DATABASE_URL` into the API service. Set `LAUNCHER_AUTO_MIGRATE=1` for a
+controlled first boot or run the migration through an operator job before
+traffic is enabled.
+
+Run the Astro website as a separate Railway service rooted at `website/`; the
+API service does not serve the website bundle. Railway provides TLS and public
+service domains, so Caddy is not part of the Railway topology. Keep the
+existing Caddy Compose topology for a VPS deployment.
+
+For Railway staging, configure at least one independently operated hot
+provider and a cold MEGA pool, set the hot/cold policy variables, and provide
+`LAUNCHER_MEGA_ACCOUNTS_FILE` through a protected file/volume mechanism. The
+MEGAcmd sessions must be pre-authenticated by the operator; no Railway build or
+startup step creates accounts or handles passwords.

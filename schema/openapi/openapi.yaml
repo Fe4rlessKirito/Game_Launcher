@@ -11,6 +11,21 @@ paths:
       operationId: health
       responses:
         '200': { description: API is alive }
+  /metrics:
+    get:
+      operationId: metrics
+      responses:
+        '200': { description: Prometheus-compatible storage and restore metrics }
+  /api/v1/storage/status:
+    get:
+      operationId: storageStatus
+      responses:
+        '200': { description: Tier policy, provider health, and redacted account capacity }
+  /api/v1/storage/metrics:
+    get:
+      operationId: storageMetrics
+      responses:
+        '200': { description: Prometheus-compatible storage and restore metrics }
   /api/v1/games:
     get:
       operationId: listGames
@@ -48,3 +63,8 @@ paths:
                 encoded_hashes: { type: array, maxItems: 512, items: { type: string, pattern: '^[0-9a-f]{64}$' } }
       responses:
         '200': { description: Direct storage locations }
+        '503':
+          description: A cold-only chunk is being restored or no hot location is available
+          headers:
+            Retry-After:
+              schema: { type: integer }

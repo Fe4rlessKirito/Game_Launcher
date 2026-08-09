@@ -4,6 +4,9 @@ use launcher_common::{
     ManifestSignature,
 };
 use launcher_database::Database;
+use launcher_storage::{
+    CapacityReservationStore, MegaAccountConfig, StorageAccountStatus, StorageError, StorageTier,
+};
 use postgresql_embedded::{PostgreSQL, SettingsBuilder};
 use std::time::Duration;
 
@@ -177,6 +180,70 @@ async fn postgres_repository_migrates_publishes_and_recovers_leases()
             .is_none()
     );
 
+    database.close().await;
+    postgres.drop_database(&database_name).await?;
+    postgres.stop().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_capacity_reservations_are_atomic_and_recoverable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let settings = SettingsBuilder::new()
+        .timeout(Some(Duration::from_secs(60)))
+        .build();
+    let mut postgres = PostgreSQL::new(settings);
+    postgres.setup().await?;
+    postgres.start().await?;
+    let database_name = format!("launcher_capacity_test_{}", std::process::id());
+    postgres.create_database(&database_name).await?;
+    let database = Database::connect(&postgres.settings().url(&database_name)).await?;
+    database.migrate().await?;
+    database
+        .upsert_storage_provider(
+            "mega-cold",
+            "mega",
+            StorageTier::Cold,
+            serde_json::json!({"test":true}),
+        )
+        .await?;
+    let account = MegaAccountConfig {
+        account_id: "mega-a".to_owned(),
+        credential_reference: "test://session".to_owned(),
+        command_dir: Default::default(),
+        home_dir: "test-home".into(),
+        remote_root: "/launcher".to_owned(),
+        capacity_bytes: 10,
+        safety_margin_bytes: 0,
+        timeout_seconds: 1,
+        max_output_bytes: 1024,
+    };
+    database
+        .upsert_storage_account("mega-cold", &account, StorageAccountStatus::Active)
+        .await?;
+    let first_hash = "a".repeat(64);
+    let second_hash = "b".repeat(64);
+    for hash in [&first_hash, &second_hash] {
+        database.add_chunk(hash, 10, "test").await?;
+    }
+    let first = database.reserve("mega-a", &first_hash, 10, Duration::from_secs(60));
+    let second = database.reserve("mega-a", &second_hash, 1, Duration::from_secs(60));
+    let (first, second) = tokio::join!(first, second);
+    let first = first?;
+    assert!(matches!(second, Err(StorageError::NeedsCapacity { .. })));
+    database.release(&first.reservation_id).await?;
+    let recovered = database
+        .reserve("mega-a", &second_hash, 1, Duration::from_millis(1))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(database.recover_expired().await?, 1);
+    assert!(
+        database
+            .reserve("mega-a", &first_hash, 10, Duration::from_secs(60))
+            .await
+            .is_ok()
+    );
+    database.release(&recovered.reservation_id).await?;
     database.close().await;
     postgres.drop_database(&database_name).await?;
     postgres.stop().await?;

@@ -38,8 +38,9 @@ The client owns UI, local SQLite state, download scheduling, cache eviction, rec
 
 1. PostgreSQL-backed jobs are sufficient for the first ingestion worker. The job table has leases and retries; Redis, Kafka, and RabbitMQ are intentionally absent.
 2. Local filesystem storage is the development provider. `StorageProvider`, `StorageRegistry`, and the verified `storage_locations`/`storage_objects` records are the seam for S3-compatible storage and independent mirrors.
-3. The manifest is JSON for inspectability and signed canonical bytes can be introduced without changing the file/chunk model.
-4. SQLite uses numbered SQL migrations and a small repository abstraction instead of an ORM.
+3. Storage placement is tier-aware: hot locations are client-facing, cold locations are operator-facing, and publication is gated by `StoragePolicy`. MEGA cold accounts use a PostgreSQL-backed reservation pool and server-side restore jobs.
+4. The manifest is JSON for inspectability and signed canonical bytes can be introduced without changing the file/chunk model.
+5. SQLite uses numbered SQL migrations and a small repository abstraction instead of an ORM.
 
 ## Known limitations
 

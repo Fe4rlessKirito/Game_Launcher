@@ -362,6 +362,8 @@ fn xml_response(status: StatusCode, body: String) -> Response {
 
 fn test_config(endpoint: &str) -> S3CompatibleStorageConfig {
     S3CompatibleStorageConfig {
+        provider_id: "s3".to_owned(),
+        tier: launcher_storage::StorageTier::Hot,
         endpoint: endpoint.to_owned(),
         region: "us-east-1".to_owned(),
         bucket: "launcher".to_owned(),

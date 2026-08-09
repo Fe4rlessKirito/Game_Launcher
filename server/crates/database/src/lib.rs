@@ -1,8 +1,18 @@
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use launcher_common::{BuildSummary, CatalogPage, GameSummary, Manifest, ManifestSignature};
-use sqlx::{PgPool, Row, postgres::PgPoolOptions};
+use launcher_storage::{
+    CapacityReservationStore, CapacitySnapshot, MegaAccountConfig, StorageAccountSnapshot,
+    StorageAccountStatus, StorageError, StorageReservation, StorageTier,
+};
+use sqlx::{
+    PgPool, Row,
+    postgres::{PgPoolOptions, PgRow},
+};
 use std::collections::HashMap;
+use std::time::Duration;
 use thiserror::Error;
+use uuid::Uuid;
 
 #[derive(Debug, Error)]
 pub enum DatabaseError {
@@ -26,10 +36,105 @@ pub struct ClaimedIngestionJob {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageLocationRecord {
     pub provider: String,
+    pub tier: StorageTier,
     pub object_key: String,
     pub direct_url: String,
     pub priority: i32,
     pub verified_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageAccountRecord {
+    pub snapshot: StorageAccountSnapshot,
+    pub credential_reference: String,
+    pub configuration_json: serde_json::Value,
+    pub last_health_check: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestoreJob {
+    pub id: i64,
+    pub encoded_hash: String,
+    pub target_provider: String,
+    pub state: String,
+    pub attempts: i32,
+    pub max_attempts: i32,
+    pub next_attempt_at: DateTime<Utc>,
+    pub lease_until: Option<DateTime<Utc>>,
+    pub worker_id: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageObjectRecord {
+    pub encoded_hash: String,
+    pub encoded_size: i64,
+    pub provider: String,
+    pub tier: StorageTier,
+    pub object_key: String,
+    pub verified_at: Option<DateTime<Utc>>,
+}
+
+fn parse_storage_tier(value: &str) -> Result<StorageTier, DatabaseError> {
+    value
+        .parse()
+        .map_err(|error: StorageError| DatabaseError::Manifest(error.to_string()))
+}
+
+fn storage_error(error: impl std::fmt::Display) -> StorageError {
+    StorageError::Unavailable(format!("database storage operation failed: {error}"))
+}
+
+fn u64_to_i64(value: u64) -> Result<i64, DatabaseError> {
+    i64::try_from(value).map_err(|_| DatabaseError::Integer)
+}
+
+fn i64_to_u64(value: i64) -> Result<u64, DatabaseError> {
+    u64::try_from(value).map_err(|_| DatabaseError::Integer)
+}
+
+fn parse_storage_status(value: &str) -> Result<StorageAccountStatus, DatabaseError> {
+    match value {
+        "ACTIVE" => Ok(StorageAccountStatus::Active),
+        "NEAR_FULL" => Ok(StorageAccountStatus::NearFull),
+        "FULL" => Ok(StorageAccountStatus::Full),
+        "UNAVAILABLE" => Ok(StorageAccountStatus::Unavailable),
+        "AUTH_FAILED" => Ok(StorageAccountStatus::AuthFailed),
+        "DISABLED" => Ok(StorageAccountStatus::Disabled),
+        "NEEDS_REAUTH" => Ok(StorageAccountStatus::NeedsReauth),
+        other => Err(DatabaseError::Manifest(format!(
+            "unknown storage account status {other:?}"
+        ))),
+    }
+}
+
+fn account_snapshot_from_row(row: &PgRow) -> Result<StorageAccountSnapshot, DatabaseError> {
+    Ok(StorageAccountSnapshot {
+        account_id: row.try_get("id")?,
+        provider_id: row.try_get("provider_id")?,
+        tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
+        status: parse_storage_status(row.try_get::<String, _>("status")?.as_str())?,
+        capacity_bytes: i64_to_u64(row.try_get("capacity_bytes")?)?,
+        used_bytes: i64_to_u64(row.try_get("used_bytes")?)?,
+        reserved_bytes: i64_to_u64(row.try_get("reserved_bytes")?)?,
+        safety_margin_bytes: i64_to_u64(row.try_get("safety_margin_bytes")?)?,
+        last_capacity_check: row.try_get("last_capacity_check")?,
+    })
+}
+
+fn restore_job_from_row(row: &PgRow) -> Result<RestoreJob, DatabaseError> {
+    Ok(RestoreJob {
+        id: row.try_get("id")?,
+        encoded_hash: row.try_get("encoded_hash")?,
+        target_provider: row.try_get("target_provider")?,
+        state: row.try_get("state")?,
+        attempts: row.try_get("attempts")?,
+        max_attempts: row.try_get("max_attempts")?,
+        next_attempt_at: row.try_get("next_attempt_at")?,
+        lease_until: row.try_get("lease_until")?,
+        worker_id: row.try_get("worker_id")?,
+        last_error: row.try_get("last_error")?,
+    })
 }
 
 #[derive(Clone)]
@@ -47,8 +152,10 @@ impl Database {
     }
 
     pub async fn migrate(&self) -> Result<(), DatabaseError> {
-        let migration = include_str!("../../../../migrations/001_initial.sql");
-        sqlx::raw_sql(migration).execute(&self.pool).await?;
+        let initial = include_str!("../../../../migrations/001_initial.sql");
+        sqlx::raw_sql(initial).execute(&self.pool).await?;
+        let storage_tiering = include_str!("../../../../migrations/002_storage_tiering.sql");
+        sqlx::raw_sql(storage_tiering).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -189,8 +296,35 @@ impl Database {
         direct_url: &str,
         priority: i32,
     ) -> Result<(), DatabaseError> {
-        sqlx::query("INSERT INTO storage_locations(encoded_hash, provider, object_key, direct_url, priority, verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(encoded_hash, provider, direct_url) DO UPDATE SET object_key=excluded.object_key, priority=excluded.priority, verified_at=now()")
-            .bind(encoded_hash).bind(provider).bind(object_key).bind(direct_url).bind(priority).execute(&self.pool).await?;
+        self.add_storage_location_with_tier(
+            encoded_hash,
+            provider,
+            StorageTier::Hot,
+            object_key,
+            direct_url,
+            priority,
+        )
+        .await
+    }
+
+    pub async fn add_storage_location_with_tier(
+        &self,
+        encoded_hash: &str,
+        provider: &str,
+        tier: StorageTier,
+        object_key: &str,
+        direct_url: &str,
+        priority: i32,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("INSERT INTO storage_locations(encoded_hash, provider, tier, object_key, direct_url, priority, verified_at) VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(encoded_hash, provider, direct_url) DO UPDATE SET tier=excluded.tier, object_key=excluded.object_key, priority=excluded.priority, verified_at=now()")
+            .bind(encoded_hash)
+            .bind(provider)
+            .bind(tier.as_str())
+            .bind(object_key)
+            .bind(direct_url)
+            .bind(priority)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -201,10 +335,29 @@ impl Database {
         provider: &str,
         object_key: &str,
     ) -> Result<(), DatabaseError> {
-        sqlx::query("INSERT INTO storage_objects(encoded_hash, encoded_size, provider, object_key, verified_at) VALUES($1,$2,$3,$4,now()) ON CONFLICT(encoded_hash) DO UPDATE SET encoded_size=excluded.encoded_size, provider=excluded.provider, object_key=excluded.object_key, verified_at=now()")
+        self.add_storage_object_with_tier(
+            encoded_hash,
+            encoded_size,
+            provider,
+            StorageTier::Hot,
+            object_key,
+        )
+        .await
+    }
+
+    pub async fn add_storage_object_with_tier(
+        &self,
+        encoded_hash: &str,
+        encoded_size: i64,
+        provider: &str,
+        tier: StorageTier,
+        object_key: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("INSERT INTO storage_objects(encoded_hash, encoded_size, provider, tier, object_key, verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(encoded_hash, provider) DO UPDATE SET encoded_size=excluded.encoded_size, tier=excluded.tier, object_key=excluded.object_key, verified_at=now()")
             .bind(encoded_hash)
             .bind(encoded_size)
             .bind(provider)
+            .bind(tier.as_str())
             .bind(object_key)
             .execute(&self.pool)
             .await?;
@@ -219,7 +372,7 @@ impl Database {
             return Ok(HashMap::new());
         }
         let rows = sqlx::query(
-            "SELECT encoded_hash, provider, object_key, direct_url, priority, verified_at
+            "SELECT encoded_hash, provider, tier, object_key, direct_url, priority, verified_at
              FROM storage_locations
              WHERE encoded_hash = ANY($1) AND verified_at IS NOT NULL
              ORDER BY encoded_hash, priority, provider, direct_url",
@@ -235,6 +388,7 @@ impl Database {
                 .or_default()
                 .push(StorageLocationRecord {
                     provider: row.try_get("provider")?,
+                    tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
                     object_key: row.try_get("object_key")?,
                     direct_url: row.try_get("direct_url")?,
                     priority: row.try_get("priority")?,
@@ -244,14 +398,71 @@ impl Database {
         Ok(locations)
     }
 
+    pub async fn get_storage_locations_for_tier(
+        &self,
+        encoded_hashes: &[String],
+        tier: StorageTier,
+    ) -> Result<HashMap<String, Vec<StorageLocationRecord>>, DatabaseError> {
+        let locations = self.get_storage_locations(encoded_hashes).await?;
+        Ok(locations
+            .into_iter()
+            .map(|(hash, records)| {
+                (
+                    hash,
+                    records
+                        .into_iter()
+                        .filter(|record| record.tier == tier)
+                        .collect(),
+                )
+            })
+            .filter(|(_, records): &(String, Vec<StorageLocationRecord>)| !records.is_empty())
+            .collect())
+    }
+
     pub async fn publish_build(&self, build_id: &str) -> Result<(), DatabaseError> {
+        self.publish_build_with_policy(build_id, 1, 0).await
+    }
+
+    pub async fn publish_build_with_policy(
+        &self,
+        build_id: &str,
+        required_hot_replicas: u32,
+        required_cold_replicas: u32,
+    ) -> Result<(), DatabaseError> {
         let mut transaction = self.pool.begin().await?;
-        let row = sqlx::query("SELECT COUNT(*) AS missing FROM build_chunks bc LEFT JOIN storage_locations sl ON sl.encoded_hash = bc.encoded_hash AND sl.verified_at IS NOT NULL LEFT JOIN storage_objects so ON so.encoded_hash = bc.encoded_hash AND so.verified_at IS NOT NULL WHERE bc.build_id = $1 AND sl.encoded_hash IS NULL AND so.encoded_hash IS NULL")
-            .bind(build_id).fetch_one(&mut *transaction).await?;
+        let row = sqlx::query(
+            "WITH replicas AS (
+                SELECT encoded_hash, provider, tier
+                FROM storage_objects
+                WHERE verified_at IS NOT NULL
+                UNION
+                SELECT encoded_hash, provider, tier
+                FROM storage_locations
+                WHERE verified_at IS NOT NULL
+            )
+            SELECT COUNT(*) AS missing
+            FROM build_chunks bc
+            WHERE bc.build_id = $1
+              AND ((
+                  SELECT COUNT(DISTINCT provider)
+                  FROM replicas
+                  WHERE encoded_hash = bc.encoded_hash AND tier = 'HOT'
+              ) < $2
+              OR (
+                  SELECT COUNT(DISTINCT provider)
+                  FROM replicas
+                  WHERE encoded_hash = bc.encoded_hash AND tier = 'COLD'
+              ) < $3)",
+        )
+        .bind(build_id)
+        .bind(i64::from(required_hot_replicas))
+        .bind(i64::from(required_cold_replicas))
+        .fetch_one(&mut *transaction)
+        .await?;
         let missing: i64 = row.try_get("missing")?;
         if missing != 0 {
             return Err(DatabaseError::Manifest(format!(
-                "cannot publish build {build_id}: {missing} chunk locations are unverified"
+                "cannot publish build {build_id}: {missing} chunks do not satisfy the hot/cold storage policy"
             )));
         }
         let result = sqlx::query("UPDATE builds SET state='PUBLISHED', published_at=now() WHERE id=$1 AND state IN ('READY','VERIFIED')").bind(build_id).execute(&mut *transaction).await?;
@@ -262,6 +473,394 @@ impl Database {
         }
         transaction.commit().await?;
         Ok(())
+    }
+
+    pub async fn upsert_storage_provider(
+        &self,
+        provider_id: &str,
+        kind: &str,
+        tier: StorageTier,
+        configuration_json: serde_json::Value,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "INSERT INTO storage_providers(id, kind, tier, configuration_json, updated_at)
+             VALUES($1,$2,$3,$4,now())
+             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, tier=excluded.tier,
+                 configuration_json=excluded.configuration_json, updated_at=now()",
+        )
+        .bind(provider_id)
+        .bind(kind)
+        .bind(tier.as_str())
+        .bind(configuration_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn upsert_storage_account(
+        &self,
+        provider_id: &str,
+        config: &MegaAccountConfig,
+        status: StorageAccountStatus,
+    ) -> Result<(), DatabaseError> {
+        let configuration_json = serde_json::to_value(config)
+            .map_err(|error| DatabaseError::Manifest(error.to_string()))?;
+        let capacity_bytes = u64_to_i64(config.capacity_bytes)?;
+        let safety_margin_bytes = u64_to_i64(config.safety_margin_bytes)?;
+        sqlx::query(
+            "INSERT INTO storage_accounts(
+                id, provider_id, credential_reference, tier, status,
+                capacity_bytes, safety_margin_bytes, configuration_json, updated_at
+             ) VALUES($1,$2,$3,'COLD',$4,$5,$6,$7,now())
+             ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,
+                 credential_reference=excluded.credential_reference,
+                 tier=excluded.tier, status=excluded.status,
+                 capacity_bytes=excluded.capacity_bytes,
+                 safety_margin_bytes=excluded.safety_margin_bytes,
+                 configuration_json=excluded.configuration_json, updated_at=now()",
+        )
+        .bind(&config.account_id)
+        .bind(provider_id)
+        .bind(&config.credential_reference)
+        .bind(status.as_str())
+        .bind(capacity_bytes)
+        .bind(safety_margin_bytes)
+        .bind(configuration_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_storage_accounts(
+        &self,
+        provider_id: Option<&str>,
+    ) -> Result<Vec<StorageAccountRecord>, DatabaseError> {
+        let rows = if let Some(provider_id) = provider_id {
+            sqlx::query(
+                "SELECT id, provider_id, credential_reference, tier, status,
+                        capacity_bytes, used_bytes, reserved_bytes, safety_margin_bytes,
+                        configuration_json, last_capacity_check, last_health_check
+                 FROM storage_accounts WHERE provider_id=$1 ORDER BY id",
+            )
+            .bind(provider_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, provider_id, credential_reference, tier, status,
+                        capacity_bytes, used_bytes, reserved_bytes, safety_margin_bytes,
+                        configuration_json, last_capacity_check, last_health_check
+                 FROM storage_accounts ORDER BY provider_id, id",
+            )
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter()
+            .map(|row| {
+                Ok(StorageAccountRecord {
+                    snapshot: account_snapshot_from_row(row)?,
+                    credential_reference: row.try_get("credential_reference")?,
+                    configuration_json: row.try_get("configuration_json")?,
+                    last_health_check: row.try_get("last_health_check")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn set_storage_account_status(
+        &self,
+        account_id: &str,
+        status: StorageAccountStatus,
+        error: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query("SELECT provider_id FROM storage_accounts WHERE id=$1 FOR UPDATE")
+            .bind(account_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+        let Some(row) = row else {
+            return Err(DatabaseError::Manifest(format!(
+                "unknown storage account {account_id}"
+            )));
+        };
+        let provider_id: String = row.try_get("provider_id")?;
+        sqlx::query(
+            "UPDATE storage_accounts SET status=$1, last_health_check=now(), updated_at=now()
+             WHERE id=$2",
+        )
+        .bind(status.as_str())
+        .bind(account_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO storage_health_events(provider_id, account_id, status, error)
+             VALUES($1,$2,$3,$4)",
+        )
+        .bind(provider_id)
+        .bind(account_id)
+        .bind(status.as_str())
+        .bind(error)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn list_storage_objects(
+        &self,
+        encoded_hashes: &[String],
+    ) -> Result<Vec<StorageObjectRecord>, DatabaseError> {
+        if encoded_hashes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT encoded_hash, encoded_size, provider, tier, object_key, verified_at
+             FROM storage_objects
+             WHERE encoded_hash = ANY($1)
+             ORDER BY encoded_hash, tier, provider",
+        )
+        .bind(encoded_hashes)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(StorageObjectRecord {
+                    encoded_hash: row.try_get("encoded_hash")?,
+                    encoded_size: row.try_get("encoded_size")?,
+                    provider: row.try_get("provider")?,
+                    tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
+                    object_key: row.try_get("object_key")?,
+                    verified_at: row.try_get("verified_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn list_unreachable_storage_objects(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<StorageObjectRecord>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT so.encoded_hash, so.encoded_size, so.provider, so.tier,
+                    so.object_key, so.verified_at
+             FROM storage_objects so
+             WHERE NOT EXISTS (
+                 SELECT 1
+                 FROM build_chunks bc
+                 JOIN builds b ON b.id = bc.build_id
+                 WHERE bc.encoded_hash = so.encoded_hash
+                   AND b.state IN ('PUBLISHED','READY','VERIFIED')
+             )
+             ORDER BY so.created_at, so.encoded_hash, so.provider
+             LIMIT $1",
+        )
+        .bind(i64::from(limit.clamp(1, 5000)))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(StorageObjectRecord {
+                    encoded_hash: row.try_get("encoded_hash")?,
+                    encoded_size: row.try_get("encoded_size")?,
+                    provider: row.try_get("provider")?,
+                    tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
+                    object_key: row.try_get("object_key")?,
+                    verified_at: row.try_get("verified_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn delete_storage_object(
+        &self,
+        encoded_hash: &str,
+        provider: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("DELETE FROM storage_objects WHERE encoded_hash=$1 AND provider=$2")
+            .bind(encoded_hash)
+            .bind(provider)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM storage_locations WHERE encoded_hash=$1 AND provider=$2")
+            .bind(encoded_hash)
+            .bind(provider)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn enqueue_restore_job(
+        &self,
+        encoded_hash: &str,
+        target_provider: &str,
+    ) -> Result<RestoreJob, DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        if let Some(row) = sqlx::query(
+            "SELECT id, encoded_hash, target_provider, state, attempts, max_attempts,
+                    next_attempt_at, lease_until, worker_id, last_error
+             FROM restore_jobs
+             WHERE encoded_hash=$1 AND target_provider=$2
+               AND state IN ('QUEUED','RUNNING','RETRY')
+             ORDER BY id LIMIT 1",
+        )
+        .bind(encoded_hash)
+        .bind(target_provider)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            let job = restore_job_from_row(&row)?;
+            transaction.commit().await?;
+            return Ok(job);
+        }
+        let row = sqlx::query(
+            "INSERT INTO restore_jobs(encoded_hash, target_provider)
+             VALUES($1,$2)
+             RETURNING id, encoded_hash, target_provider, state, attempts, max_attempts,
+                       next_attempt_at, lease_until, worker_id, last_error",
+        )
+        .bind(encoded_hash)
+        .bind(target_provider)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let job = restore_job_from_row(&row)?;
+        transaction.commit().await?;
+        Ok(job)
+    }
+
+    pub async fn claim_restore_job(
+        &self,
+        worker_id: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<RestoreJob>, DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT id, encoded_hash, target_provider, state, attempts, max_attempts,
+                    next_attempt_at, lease_until, worker_id, last_error
+             FROM restore_jobs
+             WHERE attempts < max_attempts
+               AND next_attempt_at <= now()
+               AND (
+                   state IN ('QUEUED','RETRY')
+                   OR (state='RUNNING' AND (lease_until IS NULL OR lease_until < now()))
+               )
+             ORDER BY updated_at, id
+             FOR UPDATE SKIP LOCKED LIMIT 1",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        let id: i64 = row.try_get("id")?;
+        let attempts: i32 = row.try_get("attempts")?;
+        let lease_until = Utc::now() + chrono::Duration::seconds(lease_seconds.max(1));
+        sqlx::query(
+            "UPDATE restore_jobs
+             SET state='RUNNING', worker_id=$1, lease_until=$2,
+                 attempts=attempts+1, updated_at=now()
+             WHERE id=$3",
+        )
+        .bind(worker_id)
+        .bind(lease_until)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        let mut job = restore_job_from_row(&row)?;
+        job.state = "RUNNING".to_owned();
+        job.worker_id = Some(worker_id.to_owned());
+        job.lease_until = Some(lease_until);
+        job.attempts = attempts + 1;
+        transaction.commit().await?;
+        Ok(Some(job))
+    }
+
+    pub async fn complete_restore_job(&self, job_id: i64) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE restore_jobs SET state='DONE', lease_until=NULL, worker_id=NULL,
+                 last_error=NULL, updated_at=now() WHERE id=$1",
+        )
+        .bind(job_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn fail_restore_job(
+        &self,
+        job_id: i64,
+        error: &str,
+        retry: bool,
+    ) -> Result<(), DatabaseError> {
+        let state = if retry { "RETRY" } else { "FAILED" };
+        sqlx::query(
+            "UPDATE restore_jobs
+             SET state=$1, lease_until=NULL, worker_id=NULL, last_error=$2,
+                 next_attempt_at=now() + CASE WHEN $3 THEN interval '30 seconds'
+                                               ELSE interval '0 seconds' END,
+                 updated_at=now() WHERE id=$4",
+        )
+        .bind(state)
+        .bind(error)
+        .bind(retry)
+        .bind(job_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn recover_expired_restore_jobs(&self) -> Result<u64, DatabaseError> {
+        let result = sqlx::query(
+            "UPDATE restore_jobs
+             SET state=CASE WHEN attempts < max_attempts THEN 'RETRY' ELSE 'FAILED' END,
+                 lease_until=NULL, worker_id=NULL, updated_at=now()
+             WHERE state='RUNNING' AND lease_until IS NOT NULL AND lease_until < now()",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn list_restore_jobs(
+        &self,
+        states: Option<&[&str]>,
+        limit: u32,
+    ) -> Result<Vec<RestoreJob>, DatabaseError> {
+        let rows = if let Some(states) = states {
+            sqlx::query(
+                "SELECT id, encoded_hash, target_provider, state, attempts, max_attempts,
+                        next_attempt_at, lease_until, worker_id, last_error
+                 FROM restore_jobs WHERE state = ANY($1)
+                 ORDER BY updated_at DESC, id DESC LIMIT $2",
+            )
+            .bind(states)
+            .bind(i64::from(limit.clamp(1, 500)))
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT id, encoded_hash, target_provider, state, attempts, max_attempts,
+                        next_attempt_at, lease_until, worker_id, last_error
+                 FROM restore_jobs ORDER BY updated_at DESC, id DESC LIMIT $1",
+            )
+            .bind(i64::from(limit.clamp(1, 500)))
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(restore_job_from_row).collect()
+    }
+
+    pub async fn restore_pending(&self, encoded_hash: &str) -> Result<bool, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT EXISTS(
+                SELECT 1 FROM restore_jobs
+                WHERE encoded_hash=$1 AND state IN ('QUEUED','RUNNING','RETRY')
+             ) AS pending",
+        )
+        .bind(encoded_hash)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.try_get("pending")?)
     }
 
     pub async fn claim_job(
@@ -369,5 +968,376 @@ impl Database {
 
     pub async fn close(&self) {
         self.pool.close().await;
+    }
+}
+
+#[async_trait]
+impl CapacityReservationStore for Database {
+    async fn ensure_account(&self, account: StorageAccountSnapshot) -> Result<(), StorageError> {
+        let capacity_bytes = u64_to_i64(account.capacity_bytes)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let safety_margin_bytes = u64_to_i64(account.safety_margin_bytes)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO storage_providers(id, kind, tier)
+             VALUES($1,'mega','COLD') ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(&account.provider_id)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_error)?;
+        sqlx::query(
+            "INSERT INTO storage_accounts(
+                id, provider_id, credential_reference, tier, status,
+                capacity_bytes, safety_margin_bytes
+             ) VALUES($1,$2,'operator-managed','COLD',$3,$4,$5)
+             ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,
+                 tier=excluded.tier, capacity_bytes=excluded.capacity_bytes,
+                 safety_margin_bytes=excluded.safety_margin_bytes, updated_at=now()",
+        )
+        .bind(&account.account_id)
+        .bind(&account.provider_id)
+        .bind(account.status.as_str())
+        .bind(capacity_bytes)
+        .bind(safety_margin_bytes)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_error)?;
+        Ok(())
+    }
+
+    async fn set_account_status(
+        &self,
+        account_id: &str,
+        status: StorageAccountStatus,
+    ) -> Result<(), StorageError> {
+        Database::set_storage_account_status(self, account_id, status, None)
+            .await
+            .map_err(|error| storage_error(error.to_string()))
+    }
+
+    async fn refresh_account_capacity(
+        &self,
+        account_id: &str,
+        snapshot: CapacitySnapshot,
+    ) -> Result<StorageAccountSnapshot, StorageError> {
+        let capacity_bytes = u64_to_i64(snapshot.capacity_bytes)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let used_bytes = u64_to_i64(snapshot.used_bytes)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let row = sqlx::query(
+            "UPDATE storage_accounts
+             SET capacity_bytes=$1, used_bytes=$2,
+                 status=CASE
+                     WHEN status='DISABLED' THEN 'DISABLED'
+                     WHEN GREATEST(0::bigint, $1-$2-reserved_bytes-safety_margin_bytes)=0
+                         THEN 'FULL'
+                     WHEN GREATEST(0::bigint, $1-$2-reserved_bytes-safety_margin_bytes)
+                          <= safety_margin_bytes*2 THEN 'NEAR_FULL'
+                     ELSE 'ACTIVE'
+                 END,
+                 last_capacity_check=now(), updated_at=now()
+             WHERE id=$3
+             RETURNING id, provider_id, tier, status, capacity_bytes, used_bytes,
+                       reserved_bytes, safety_margin_bytes, last_capacity_check",
+        )
+        .bind(capacity_bytes)
+        .bind(used_bytes)
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage_error)?
+        .ok_or_else(|| {
+            StorageError::Configuration(format!("unknown storage account {account_id}"))
+        })?;
+        account_snapshot_from_row(&row).map_err(|error| storage_error(error.to_string()))
+    }
+
+    async fn list_accounts(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<StorageAccountSnapshot>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT id, provider_id, tier, status, capacity_bytes, used_bytes,
+                    reserved_bytes, safety_margin_bytes, last_capacity_check
+             FROM storage_accounts WHERE provider_id=$1 ORDER BY id",
+        )
+        .bind(provider_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage_error)?;
+        rows.iter()
+            .map(|row| {
+                account_snapshot_from_row(row).map_err(|error| storage_error(error.to_string()))
+            })
+            .collect()
+    }
+
+    async fn reserve(
+        &self,
+        account_id: &str,
+        encoded_hash: &str,
+        bytes: u64,
+        ttl: Duration,
+    ) -> Result<StorageReservation, StorageError> {
+        let bytes =
+            u64_to_i64(bytes).map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let ttl = chrono::Duration::from_std(ttl)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        let account = sqlx::query(
+            "SELECT id, provider_id, tier, status, capacity_bytes, used_bytes,
+                    reserved_bytes, safety_margin_bytes, last_capacity_check
+             FROM storage_accounts WHERE id=$1 FOR UPDATE",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage_error)?
+        .ok_or_else(|| {
+            StorageError::Configuration(format!("unknown storage account {account_id}"))
+        })?;
+
+        let expired_row = sqlx::query(
+            "SELECT COALESCE(SUM(bytes),0)::bigint AS bytes
+             FROM storage_reservations
+             WHERE account_id=$1 AND state='HELD' AND expires_at <= now()",
+        )
+        .bind(account_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
+        let expired_bytes: i64 = expired_row.try_get("bytes").map_err(storage_error)?;
+        if expired_bytes > 0 {
+            sqlx::query(
+                "UPDATE storage_reservations SET state='EXPIRED', updated_at=now()
+                 WHERE account_id=$1 AND state='HELD' AND expires_at <= now()",
+            )
+            .bind(account_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+            sqlx::query(
+                "UPDATE storage_accounts
+                 SET reserved_bytes=GREATEST(0::bigint, reserved_bytes-$1), updated_at=now()
+                 WHERE id=$2",
+            )
+            .bind(expired_bytes)
+            .bind(account_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        }
+
+        if let Some(row) = sqlx::query(
+            "SELECT id, expires_at, bytes FROM storage_reservations
+             WHERE account_id=$1 AND encoded_hash=$2 AND state IN ('HELD','COMMITTED')
+             ORDER BY id LIMIT 1",
+        )
+        .bind(account_id)
+        .bind(encoded_hash)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage_error)?
+        {
+            let reservation_id: Uuid = row.try_get("id").map_err(storage_error)?;
+            let expires_at: DateTime<Utc> = row.try_get("expires_at").map_err(storage_error)?;
+            let existing_bytes: i64 = row.try_get("bytes").map_err(storage_error)?;
+            transaction.commit().await.map_err(storage_error)?;
+            return Ok(StorageReservation {
+                reservation_id: reservation_id.to_string(),
+                account_id: account_id.to_owned(),
+                encoded_hash: encoded_hash.to_owned(),
+                bytes: u64::try_from(existing_bytes).map_err(|_| {
+                    StorageError::Configuration("negative reservation bytes".to_owned())
+                })?,
+                expires_at,
+            });
+        }
+
+        let capacity_bytes: i64 = account.try_get("capacity_bytes").map_err(storage_error)?;
+        let used_bytes: i64 = account.try_get("used_bytes").map_err(storage_error)?;
+        let mut reserved_bytes: i64 = account.try_get("reserved_bytes").map_err(storage_error)?;
+        if expired_bytes > 0 {
+            reserved_bytes = reserved_bytes.saturating_sub(expired_bytes).max(0);
+        }
+        let safety_margin_bytes: i64 = account
+            .try_get("safety_margin_bytes")
+            .map_err(storage_error)?;
+        let available = capacity_bytes
+            .saturating_sub(used_bytes)
+            .saturating_sub(reserved_bytes)
+            .saturating_sub(safety_margin_bytes)
+            .max(0);
+        let status: String = account.try_get("status").map_err(storage_error)?;
+        if !matches!(status.as_str(), "ACTIVE" | "NEAR_FULL") {
+            if available < bytes {
+                return Err(StorageError::NeedsCapacity {
+                    required_bytes: u64::try_from(bytes).unwrap_or_default(),
+                    available_bytes: u64::try_from(available).unwrap_or_default(),
+                });
+            }
+            return Err(StorageError::Unavailable(format!(
+                "storage account {account_id} is {status}"
+            )));
+        }
+        if available < bytes {
+            return Err(StorageError::NeedsCapacity {
+                required_bytes: u64::try_from(bytes).unwrap_or_default(),
+                available_bytes: u64::try_from(available).unwrap_or_default(),
+            });
+        }
+        let reservation_id = Uuid::new_v4();
+        let expires_at = Utc::now() + ttl;
+        sqlx::query(
+            "INSERT INTO storage_reservations(
+                id, account_id, encoded_hash, bytes, state, expires_at
+             ) VALUES($1,$2,$3,$4,'HELD',$5)",
+        )
+        .bind(reservation_id)
+        .bind(account_id)
+        .bind(encoded_hash)
+        .bind(bytes)
+        .bind(expires_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
+        sqlx::query(
+            "UPDATE storage_accounts SET reserved_bytes=reserved_bytes+$1, updated_at=now()
+             WHERE id=$2",
+        )
+        .bind(bytes)
+        .bind(account_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
+        transaction.commit().await.map_err(storage_error)?;
+        Ok(StorageReservation {
+            reservation_id: reservation_id.to_string(),
+            account_id: account_id.to_owned(),
+            encoded_hash: encoded_hash.to_owned(),
+            bytes: u64::try_from(bytes).map_err(|_| {
+                StorageError::Configuration("negative reservation bytes".to_owned())
+            })?,
+            expires_at,
+        })
+    }
+
+    async fn commit(&self, reservation_id: &str) -> Result<(), StorageError> {
+        let reservation_id = Uuid::parse_str(reservation_id)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        let row = sqlx::query(
+            "SELECT account_id, bytes, state FROM storage_reservations
+             WHERE id=$1 FOR UPDATE",
+        )
+        .bind(reservation_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage_error)?
+        .ok_or_else(|| {
+            StorageError::Configuration(format!("unknown reservation {reservation_id}"))
+        })?;
+        let state: String = row.try_get("state").map_err(storage_error)?;
+        if state == "HELD" {
+            let account_id: String = row.try_get("account_id").map_err(storage_error)?;
+            let bytes: i64 = row.try_get("bytes").map_err(storage_error)?;
+            sqlx::query(
+                "UPDATE storage_reservations SET state='COMMITTED', updated_at=now() WHERE id=$1",
+            )
+            .bind(reservation_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+            sqlx::query(
+                "UPDATE storage_accounts
+                 SET reserved_bytes=GREATEST(0::bigint, reserved_bytes-$1),
+                     used_bytes=used_bytes+$1, updated_at=now()
+                 WHERE id=$2",
+            )
+            .bind(bytes)
+            .bind(account_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        }
+        transaction.commit().await.map_err(storage_error)?;
+        Ok(())
+    }
+
+    async fn release(&self, reservation_id: &str) -> Result<(), StorageError> {
+        let reservation_id = Uuid::parse_str(reservation_id)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        let row = sqlx::query(
+            "SELECT account_id, bytes, state FROM storage_reservations
+             WHERE id=$1 FOR UPDATE",
+        )
+        .bind(reservation_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(storage_error)?
+        .ok_or_else(|| {
+            StorageError::Configuration(format!("unknown reservation {reservation_id}"))
+        })?;
+        let state: String = row.try_get("state").map_err(storage_error)?;
+        if state == "HELD" {
+            let account_id: String = row.try_get("account_id").map_err(storage_error)?;
+            let bytes: i64 = row.try_get("bytes").map_err(storage_error)?;
+            sqlx::query(
+                "UPDATE storage_reservations SET state='RELEASED', updated_at=now() WHERE id=$1",
+            )
+            .bind(reservation_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+            sqlx::query(
+                "UPDATE storage_accounts
+                 SET reserved_bytes=GREATEST(0::bigint, reserved_bytes-$1), updated_at=now()
+                 WHERE id=$2",
+            )
+            .bind(bytes)
+            .bind(account_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        }
+        transaction.commit().await.map_err(storage_error)?;
+        Ok(())
+    }
+
+    async fn recover_expired(&self) -> Result<u64, StorageError> {
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        let rows = sqlx::query(
+            "SELECT id, account_id, bytes FROM storage_reservations
+             WHERE state='HELD' AND expires_at <= now() FOR UPDATE",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
+        for row in &rows {
+            let id: Uuid = row.try_get("id").map_err(storage_error)?;
+            let account_id: String = row.try_get("account_id").map_err(storage_error)?;
+            let bytes: i64 = row.try_get("bytes").map_err(storage_error)?;
+            sqlx::query(
+                "UPDATE storage_reservations SET state='EXPIRED', updated_at=now() WHERE id=$1",
+            )
+            .bind(id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+            sqlx::query(
+                "UPDATE storage_accounts
+                 SET reserved_bytes=GREATEST(0::bigint, reserved_bytes-$1), updated_at=now()
+                 WHERE id=$2",
+            )
+            .bind(bytes)
+            .bind(account_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        }
+        transaction.commit().await.map_err(storage_error)?;
+        Ok(rows.len() as u64)
     }
 }

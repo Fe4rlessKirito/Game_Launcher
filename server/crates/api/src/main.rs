@@ -12,8 +12,9 @@ use launcher_common::{
 };
 use launcher_database::Database;
 use launcher_storage::{
-    LocalStorage, MirrorSet, StorageProvider, StorageProviderHealth, StorageRegistry,
-    storage_from_env,
+    CapacityReservationStore, InMemoryCapacityReservationStore, LocalStorage, MirrorSet,
+    StoragePolicy, StorageProvider, StorageProviderHealth, StorageRegistry, StorageTier,
+    storage_from_env_with_reservation_store,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -49,24 +50,32 @@ struct HealthResponse {
     utc: chrono::DateTime<Utc>,
 }
 
+#[derive(Debug, Serialize)]
+struct StorageStatusResponse {
+    policy: StoragePolicy,
+    storage_health: Vec<StorageProviderHealth>,
+    accounts: Vec<StorageAccountStatusResponse>,
+    pending_restores: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct StorageAccountStatusResponse {
+    account_id: String,
+    provider_id: String,
+    tier: StorageTier,
+    status: launcher_storage::StorageAccountStatus,
+    capacity_bytes: u64,
+    used_bytes: u64,
+    reserved_bytes: u64,
+    available_bytes: u64,
+    last_capacity_check: Option<chrono::DateTime<Utc>>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let storage_root = env::var_os("LAUNCHER_STORAGE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("storage"));
-    let base_url =
-        env::var("LAUNCHER_PUBLIC_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
-    let (storage, local_storage) = storage_from_env(&storage_root, &base_url)?;
-    let configured_mirrors = env::var("LAUNCHER_MIRROR_BASE_URLS").unwrap_or_default();
-    let mirror_urls = configured_mirrors
-        .split(',')
-        .filter(|url| !url.trim().is_empty())
-        .map(str::trim)
-        .map(str::to_owned);
-    let mirrors = MirrorSet::new(mirror_urls);
     let database = match env::var("DATABASE_URL") {
         Ok(url) => match Database::connect(&url).await {
             Ok(database) => {
@@ -82,6 +91,25 @@ async fn main() -> anyhow::Result<()> {
         },
         Err(_) => None,
     };
+    let storage_root = env::var_os("LAUNCHER_STORAGE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("storage"));
+    let base_url =
+        env::var("LAUNCHER_PUBLIC_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
+    let reservation_store: Arc<dyn CapacityReservationStore> = database
+        .as_ref()
+        .map(|database| Arc::new(database.clone()) as Arc<dyn CapacityReservationStore>)
+        .unwrap_or_else(|| Arc::new(InMemoryCapacityReservationStore::default()));
+    let (storage, local_storage) =
+        storage_from_env_with_reservation_store(&storage_root, &base_url, reservation_store)
+            .await?;
+    let configured_mirrors = env::var("LAUNCHER_MIRROR_BASE_URLS").unwrap_or_default();
+    let mirror_urls = configured_mirrors
+        .split(',')
+        .filter(|url| !url.trim().is_empty())
+        .map(str::trim)
+        .map(str::to_owned);
+    let mirrors = MirrorSet::new(mirror_urls);
     let (games, manifests, manifest_bytes, signatures) = load_development_catalog();
     let state = AppState {
         database,
@@ -95,6 +123,9 @@ async fn main() -> anyhow::Result<()> {
     };
     let app = Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(storage_metrics))
+        .route("/api/v1/storage/status", get(storage_status))
+        .route("/api/v1/storage/metrics", get(storage_metrics))
         .route("/api/v1/games", get(list_games))
         .route("/api/v1/games/{id}", get(get_game))
         .route("/api/v1/builds/{id}/manifest", get(get_manifest))
@@ -131,6 +162,119 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         storage_health,
         utc: Utc::now(),
     })
+}
+
+async fn storage_status(
+    State(state): State<AppState>,
+) -> Result<Json<StorageStatusResponse>, ApiResponseError> {
+    let policy = StoragePolicy::from_env().map_err(ApiResponseError::from)?;
+    let accounts = if let Some(database) = &state.database {
+        database
+            .list_storage_accounts(None)
+            .await
+            .map_err(ApiResponseError::from)?
+            .into_iter()
+            .map(|record| {
+                let snapshot = record.snapshot;
+                let available_bytes = snapshot.usable_free_bytes();
+                StorageAccountStatusResponse {
+                    account_id: snapshot.account_id,
+                    provider_id: snapshot.provider_id,
+                    tier: snapshot.tier,
+                    status: snapshot.status,
+                    capacity_bytes: snapshot.capacity_bytes,
+                    used_bytes: snapshot.used_bytes,
+                    reserved_bytes: snapshot.reserved_bytes,
+                    available_bytes,
+                    last_capacity_check: snapshot.last_capacity_check,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pending_restores = if let Some(database) = &state.database {
+        database
+            .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
+            .await
+            .map_err(ApiResponseError::from)?
+            .len()
+    } else {
+        0
+    };
+    Ok(Json(StorageStatusResponse {
+        policy,
+        storage_health: state.storage.health().await,
+        accounts,
+        pending_restores,
+    }))
+}
+
+async fn storage_metrics(State(state): State<AppState>) -> Result<Response, ApiResponseError> {
+    let policy = StoragePolicy::from_env().map_err(ApiResponseError::from)?;
+    let health = state.storage.health().await;
+    let accounts = if let Some(database) = &state.database {
+        database
+            .list_storage_accounts(None)
+            .await
+            .map_err(ApiResponseError::from)?
+    } else {
+        Vec::new()
+    };
+    let pending_restores = if let Some(database) = &state.database {
+        database
+            .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
+            .await
+            .map_err(ApiResponseError::from)?
+            .len()
+    } else {
+        0
+    };
+    let mut body = String::new();
+    body.push_str(&format!(
+        "launcher_storage_policy_min_hot_replicas {}\nlauncher_storage_policy_min_cold_replicas {}\nlauncher_storage_restore_pending {}\n",
+        policy.min_verified_hot_replicas,
+        policy.min_verified_cold_replicas,
+        pending_restores,
+    ));
+    for provider in health {
+        let label = metric_label(&provider.provider);
+        let tier = provider.tier.as_str();
+        body.push_str(&format!(
+            "launcher_storage_provider_healthy{{provider=\"{label}\",tier=\"{tier}\"}} {}\n",
+            if provider.healthy { 1 } else { 0 }
+        ));
+    }
+    for account in accounts {
+        let label = metric_label(&account.snapshot.account_id);
+        body.push_str(&format!(
+            "launcher_storage_account_available_bytes{{account=\"{label}\"}} {}\nlauncher_storage_account_reserved_bytes{{account=\"{label}\"}} {}\n",
+            account.snapshot.usable_free_bytes(),
+            account.snapshot.reserved_bytes,
+        ));
+    }
+    Ok((
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        body,
+    )
+        .into_response())
+}
+
+fn metric_label(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 async fn list_games(
@@ -285,6 +429,14 @@ async fn resolve_chunks(
     } else {
         HashMap::new()
     };
+    let database_objects = if let Some(database) = &state.database {
+        database
+            .list_storage_objects(&request.encoded_hashes)
+            .await
+            .map_err(ApiResponseError::from)?
+    } else {
+        Vec::new()
+    };
     let mut response = Vec::with_capacity(request.encoded_hashes.len());
     for hash in request.encoded_hashes {
         if !allowed.contains(&hash) {
@@ -294,7 +446,7 @@ async fn resolve_chunks(
         }
         let locations = state
             .storage
-            .download_locations(&hash)
+            .download_locations_for_tier(&hash, Some(StorageTier::Hot))
             .await
             .map_err(ApiResponseError::from)?;
         let mirror_urls = state
@@ -309,21 +461,46 @@ async fn resolve_chunks(
             .get(&hash)
             .into_iter()
             .flat_map(|records| records.iter())
+            .filter(|record| record.tier == StorageTier::Hot && !record.direct_url.is_empty())
         {
             if !urls.contains(&record.direct_url) {
                 urls.push(record.direct_url.clone());
             }
         }
+        let has_cold_replica = database_locations
+            .get(&hash)
+            .into_iter()
+            .flat_map(|records| records.iter())
+            .any(|record| record.tier == StorageTier::Cold)
+            || database_objects
+                .iter()
+                .any(|object| object.encoded_hash == hash && object.tier == StorageTier::Cold);
         for mirror_url in mirror_urls {
             if !urls.contains(&mirror_url) {
                 urls.push(mirror_url);
             }
         }
         if urls.is_empty() {
+            if has_cold_replica && let Some(database) = &state.database {
+                database
+                    .enqueue_restore_job(
+                        &hash,
+                        &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
+                            .unwrap_or_else(|_| "hot".to_owned()),
+                    )
+                    .await
+                    .map_err(ApiResponseError::from)?;
+                return Err(ApiResponseError::temporary(
+                    "restore_pending",
+                    "the chunk is in cold storage and a hot restore has been queued",
+                    30,
+                ));
+            }
             return Err(ApiResponseError {
                 status: StatusCode::SERVICE_UNAVAILABLE,
                 code: "no_chunk_locations",
                 message: "no download locations are currently available".to_owned(),
+                retry_after_seconds: None,
             });
         }
         let expires_at = locations
@@ -347,6 +524,9 @@ async fn get_object(
         .local_storage
         .as_ref()
         .ok_or_else(|| ApiResponseError::not_found("local object proxy"))?;
+    if local_storage.tier() != StorageTier::Hot {
+        return Err(ApiResponseError::not_found("hot object proxy"));
+    }
     let bytes = local_storage
         .read_encoded(&encoded_hash)
         .await
@@ -479,6 +659,7 @@ struct ApiResponseError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    retry_after_seconds: Option<u64>,
 }
 
 impl ApiResponseError {
@@ -487,6 +668,7 @@ impl ApiResponseError {
             status: StatusCode::NOT_FOUND,
             code: "not_found",
             message: format!("{resource} was not found"),
+            retry_after_seconds: None,
         }
     }
     fn bad_request(message: &str) -> Self {
@@ -494,6 +676,16 @@ impl ApiResponseError {
             status: StatusCode::BAD_REQUEST,
             code: "bad_request",
             message: message.to_owned(),
+            retry_after_seconds: None,
+        }
+    }
+
+    fn temporary(code: &'static str, message: &str, retry_after_seconds: u64) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code,
+            message: message.to_owned(),
+            retry_after_seconds: Some(retry_after_seconds),
         }
     }
 }
@@ -504,6 +696,7 @@ impl From<launcher_database::DatabaseError> for ApiResponseError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "database_error",
             message: error.to_string(),
+            retry_after_seconds: None,
         }
     }
 }
@@ -514,7 +707,11 @@ impl From<launcher_storage::StorageError> for ApiResponseError {
             launcher_storage::StorageError::Configuration(_)
             | launcher_storage::StorageError::InvalidHash => StatusCode::BAD_REQUEST,
             launcher_storage::StorageError::Provider(_)
-            | launcher_storage::StorageError::RateLimiterClosed => StatusCode::SERVICE_UNAVAILABLE,
+            | launcher_storage::StorageError::RateLimiterClosed
+            | launcher_storage::StorageError::NeedsCapacity { .. }
+            | launcher_storage::StorageError::Authentication(_)
+            | launcher_storage::StorageError::Unavailable(_)
+            | launcher_storage::StorageError::PoolUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             launcher_storage::StorageError::Io(_)
             | launcher_storage::StorageError::Json(_)
             | launcher_storage::StorageError::HashMismatch { .. }
@@ -524,13 +721,14 @@ impl From<launcher_storage::StorageError> for ApiResponseError {
             status,
             code: "storage_error",
             message: error.to_string(),
+            retry_after_seconds: None,
         }
     }
 }
 
 impl IntoResponse for ApiResponseError {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ApiErrorBody {
                 code: self.code.to_owned(),
@@ -538,7 +736,13 @@ impl IntoResponse for ApiResponseError {
                 request_id: Uuid::new_v4().to_string(),
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = self.retry_after_seconds
+            && let Ok(value) = seconds.to_string().parse()
+        {
+            response.headers_mut().insert("retry-after", value);
+        }
+        response
     }
 }
 

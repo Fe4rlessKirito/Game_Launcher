@@ -1,6 +1,6 @@
 # Storage providers
 
-The server uses `StorageRegistry` to replicate verified encoded chunks to one or more `StorageProvider` implementations. The built-in providers are:
+The server uses `StorageRegistry` to expose one or more `StorageProvider` implementations. The operator placement engine selects the providers required by the configured tier policy. The built-in providers are:
 
 - `local`: content-addressed files under `LAUNCHER_STORAGE_ROOT/chunks/encoded`, exposed through `/objects/{hash}`.
 - `s3`: an S3-compatible endpoint configured by `LAUNCHER_S3_*` variables. It uses the AWS SDK's retry policy, bounded in-flight operations, single PUTs below the multipart threshold, and multipart uploads above it.
@@ -36,8 +36,24 @@ Multipart failures issue an abort request and return the original failure. A sch
 
 `StorageRegistry` continues resolving healthy locations when one provider cannot create a download URL. If no provider or static mirror remains, the API returns `503 no_chunk_locations`. `/health` reports each provider's active health state and returns `degraded` when any configured provider fails its check.
 
+## Tiered storage
+
+Every provider declares `HOT` or `COLD`; provider order is not a substitute for
+tier policy. See [storage tiers](storage-tiers.md) for replica requirements,
+publication gating, and restore behavior. The `mega` provider is a cold pool
+backed by isolated operator-managed MEGAcmd sessions. It is configured through
+`LAUNCHER_MEGA_ACCOUNTS_FILE`, never returns client-facing locations, and uses
+PostgreSQL capacity reservations before upload. See
+[MEGA cold storage](mega-cold-storage.md) and
+[capacity operations](storage-capacity.md).
+
+Use `launcher-admin storage health` and `/api/v1/storage/status` to inspect
+provider, pool, account, and reservation-facing status. These surfaces omit
+passwords and session material. The `storage` admin commands do not accept a
+password argument; enrollment references an already provisioned session.
+
 ## Publication and database records
 
-`launcher-admin publish` uploads every manifest-referenced object through the configured registry. When `DATABASE_URL` is present it also creates/updates the build records, records verified storage objects, records only non-expiring direct URLs, and transitions the build to `PUBLISHED` only after all chunks have a verified object. Presigned URLs are deliberately not stored because they expire; the API regenerates them on each resolution request.
+`launcher-admin publish` uploads every manifest-referenced object to the providers selected by the configured placement plan. When `DATABASE_URL` is present it also creates/updates the build records, records verified storage objects and tiers, records only non-expiring direct URLs, and transitions the build to `PUBLISHED` only after all chunks satisfy the hot/cold replica policy. Presigned URLs are deliberately not stored because they expire; the API regenerates them on each resolution request.
 
 Use separate buckets or prefixes for development, staging, and production. Do not share write credentials between environments.
