@@ -11,7 +11,10 @@ use launcher_common::{
     ManifestSignature, ResolvedChunk,
 };
 use launcher_database::Database;
-use launcher_storage::{LocalStorage, MirrorSet, StorageProvider};
+use launcher_storage::{
+    LocalStorage, MirrorSet, StorageProvider, StorageProviderHealth, StorageRegistry,
+    storage_from_env,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
@@ -22,7 +25,8 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct AppState {
     database: Option<Database>,
-    storage: LocalStorage,
+    storage: StorageRegistry,
+    local_storage: Option<LocalStorage>,
     mirrors: MirrorSet,
     games: Arc<RwLock<Vec<GameSummary>>>,
     manifests: Arc<RwLock<HashMap<String, Manifest>>>,
@@ -40,6 +44,8 @@ struct CatalogQuery {
 struct HealthResponse {
     status: &'static str,
     database_configured: bool,
+    storage_providers: Vec<String>,
+    storage_health: Vec<StorageProviderHealth>,
     utc: chrono::DateTime<Utc>,
 }
 
@@ -53,14 +59,13 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| PathBuf::from("storage"));
     let base_url =
         env::var("LAUNCHER_PUBLIC_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
-    let storage = LocalStorage::new(storage_root, base_url.clone());
+    let (storage, local_storage) = storage_from_env(&storage_root, &base_url)?;
     let configured_mirrors = env::var("LAUNCHER_MIRROR_BASE_URLS").unwrap_or_default();
     let mirror_urls = configured_mirrors
         .split(',')
         .filter(|url| !url.trim().is_empty())
         .map(str::trim)
-        .map(str::to_owned)
-        .chain(std::iter::once(base_url.clone()));
+        .map(str::to_owned);
     let mirrors = MirrorSet::new(mirror_urls);
     let database = match env::var("DATABASE_URL") {
         Ok(url) => match Database::connect(&url).await {
@@ -81,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         database,
         storage,
+        local_storage,
         mirrors,
         games: Arc::new(RwLock::new(games)),
         manifests: Arc::new(RwLock::new(manifests)),
@@ -108,9 +114,21 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+    let storage_health = state.storage.health().await;
     Json(HealthResponse {
-        status: "ok",
+        status: if storage_health.iter().all(|provider| provider.healthy) {
+            "ok"
+        } else {
+            "degraded"
+        },
         database_configured: state.database.is_some(),
+        storage_providers: state
+            .storage
+            .providers()
+            .iter()
+            .map(|provider| provider.provider_id().to_owned())
+            .collect(),
+        storage_health,
         utc: Utc::now(),
     })
 }
@@ -259,6 +277,14 @@ async fn resolve_chunks(
         })
     };
     let allowed = allowed.ok_or_else(|| ApiResponseError::not_found("build"))?;
+    let database_locations = if let Some(database) = &state.database {
+        database
+            .get_storage_locations(&request.encoded_hashes)
+            .await
+            .map_err(ApiResponseError::from)?
+    } else {
+        HashMap::new()
+    };
     let mut response = Vec::with_capacity(request.encoded_hashes.len());
     for hash in request.encoded_hashes {
         if !allowed.contains(&hash) {
@@ -266,14 +292,48 @@ async fn resolve_chunks(
                 "chunk is not referenced by the requested build",
             ));
         }
-        let urls = state
+        let locations = state
+            .storage
+            .download_locations(&hash)
+            .await
+            .map_err(ApiResponseError::from)?;
+        let mirror_urls = state
             .mirrors
             .urls(&hash)
             .map_err(|error| ApiResponseError::bad_request(&error.to_string()))?;
+        let mut urls = locations
+            .iter()
+            .map(|location| location.url.clone())
+            .collect::<Vec<_>>();
+        for record in database_locations
+            .get(&hash)
+            .into_iter()
+            .flat_map(|records| records.iter())
+        {
+            if !urls.contains(&record.direct_url) {
+                urls.push(record.direct_url.clone());
+            }
+        }
+        for mirror_url in mirror_urls {
+            if !urls.contains(&mirror_url) {
+                urls.push(mirror_url);
+            }
+        }
+        if urls.is_empty() {
+            return Err(ApiResponseError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                code: "no_chunk_locations",
+                message: "no download locations are currently available".to_owned(),
+            });
+        }
+        let expires_at = locations
+            .iter()
+            .filter_map(|location| location.expires_at)
+            .min();
         response.push(ResolvedChunk {
             encoded_hash: hash,
             urls,
-            expires_at: None,
+            expires_at,
         });
     }
     Ok(Json(response))
@@ -283,8 +343,11 @@ async fn get_object(
     State(state): State<AppState>,
     Path(encoded_hash): Path<String>,
 ) -> Result<Response, ApiResponseError> {
-    let bytes = state
-        .storage
+    let local_storage = state
+        .local_storage
+        .as_ref()
+        .ok_or_else(|| ApiResponseError::not_found("local object proxy"))?;
+    let bytes = local_storage
         .read_encoded(&encoded_hash)
         .await
         .map_err(|error| ApiResponseError::not_found(&error.to_string()))?;
@@ -411,6 +474,7 @@ fn load_development_catalog() -> DevelopmentCatalog {
     (Vec::new(), manifests, manifest_bytes_by_build, signatures)
 }
 
+#[derive(Debug)]
 struct ApiResponseError {
     status: StatusCode,
     code: &'static str,
@@ -444,6 +508,26 @@ impl From<launcher_database::DatabaseError> for ApiResponseError {
     }
 }
 
+impl From<launcher_storage::StorageError> for ApiResponseError {
+    fn from(error: launcher_storage::StorageError) -> Self {
+        let status = match error {
+            launcher_storage::StorageError::Configuration(_)
+            | launcher_storage::StorageError::InvalidHash => StatusCode::BAD_REQUEST,
+            launcher_storage::StorageError::Provider(_)
+            | launcher_storage::StorageError::RateLimiterClosed => StatusCode::SERVICE_UNAVAILABLE,
+            launcher_storage::StorageError::Io(_)
+            | launcher_storage::StorageError::Json(_)
+            | launcher_storage::StorageError::HashMismatch { .. }
+            | launcher_storage::StorageError::InjectedFailure => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Self {
+            status,
+            code: "storage_error",
+            message: error.to_string(),
+        }
+    }
+}
+
 impl IntoResponse for ApiResponseError {
     fn into_response(self) -> Response {
         (
@@ -455,5 +539,82 @@ impl IntoResponse for ApiResponseError {
             }),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use launcher_common::{ChunkRef, ChunkingConfig, EncodingConfig, FileRecipe, LaunchProfile};
+
+    #[tokio::test]
+    async fn resolve_chunks_returns_provider_and_independent_mirror_locations() {
+        let bytes = b"alternate mirror fixture";
+        let hash = "a".repeat(64);
+        let manifest = Manifest {
+            schema_version: 1,
+            manifest_id: "manifest-1".to_owned(),
+            game_id: "game-1".to_owned(),
+            build_id: "build-1".to_owned(),
+            display_version: "1.0.0".to_owned(),
+            generated_at: Utc::now(),
+            chunking: ChunkingConfig::default(),
+            encoding: EncodingConfig::default(),
+            files: vec![FileRecipe {
+                path: "game.exe".to_owned(),
+                size: bytes.len() as u64,
+                blake3: hash.clone(),
+                chunks: vec![ChunkRef {
+                    raw_hash: hash.clone(),
+                    raw_size: bytes.len() as u64,
+                    encoded_hash: hash.clone(),
+                    encoded_size: bytes.len() as u64,
+                    object_key: format!("chunks/encoded/{hash}.bin"),
+                }],
+            }],
+            launch: LaunchProfile {
+                executable: "game.exe".to_owned(),
+                working_directory: ".".to_owned(),
+                ..LaunchProfile::default()
+            },
+        };
+        let storage = StorageRegistry::new(vec![Arc::new(LocalStorage::new(
+            "storage",
+            "https://provider-a.example",
+        ))])
+        .unwrap();
+        let state = AppState {
+            database: None,
+            storage,
+            local_storage: None,
+            mirrors: MirrorSet::new(["https://mirror-b.example", "https://mirror-c.example"]),
+            games: Arc::new(RwLock::new(Vec::new())),
+            manifests: Arc::new(RwLock::new(HashMap::from([(
+                manifest.build_id.clone(),
+                manifest,
+            )]))),
+            manifest_bytes: Arc::new(RwLock::new(HashMap::new())),
+            signatures: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let resolved = resolve_chunks(
+            State(state),
+            Path("build-1".to_owned()),
+            Json(ChunkResolutionRequest {
+                encoded_hashes: vec![hash.clone()],
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(
+            resolved[0].urls,
+            vec![
+                format!("https://provider-a.example/objects/{hash}"),
+                format!("https://mirror-b.example/objects/{hash}"),
+                format!("https://mirror-c.example/objects/{hash}"),
+            ]
+        );
     }
 }

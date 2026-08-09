@@ -1,15 +1,21 @@
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
-use launcher_common::ManifestSignature;
+use launcher_common::{GameSummary, Manifest, ManifestSignature};
+use launcher_database::Database;
 use launcher_domain::BuildState;
 use launcher_manifests::{
     generate_signing_key, load_private_key_pem, sign_bytes, validate_json, verify_bytes,
 };
 use launcher_packager::{PackageOptions, package_directory};
+use launcher_storage::{StorageRegistry, storage_from_env};
 use launcher_worker::IngestionProgress;
-use std::path::PathBuf;
 use std::process::Command;
+use std::{
+    collections::HashSet,
+    env,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -63,7 +69,8 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     match Cli::parse().command {
         Commands::ManifestVerify { path } => {
             let bytes = std::fs::read(&path)
@@ -125,13 +132,33 @@ fn main() -> Result<()> {
                 &package.join("chunks/encoded"),
                 &storage_root.join("chunks/encoded"),
             )?;
+            let base_url = env::var("LAUNCHER_PUBLIC_BASE_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
+            let (storage, _) = storage_from_env(&storage_root, base_url)?;
+            let database = if let Ok(url) = env::var("DATABASE_URL") {
+                let database = Database::connect(&url).await?;
+                if env::var("LAUNCHER_AUTO_MIGRATE").as_deref() == Ok("1") {
+                    database.migrate().await?;
+                }
+                Some(database)
+            } else {
+                None
+            };
+            publish_verified_build(&manifest, &signature, &package, &storage, database.as_ref())
+                .await?;
             atomic_copy(&manifest_path, &destination.join("manifest.json"))?;
             atomic_copy(&signature_path, &destination.join("manifest.sig.json"))?;
             println!(
-                "publication=PUBLISHED game={} build={} catalog={}",
+                "publication=PUBLISHED game={} build={} catalog={} providers={:?} database={}",
                 manifest.game_id,
                 manifest.build_id,
-                destination.display()
+                destination.display(),
+                storage
+                    .providers()
+                    .iter()
+                    .map(|provider| provider.provider_id())
+                    .collect::<Vec<_>>(),
+                database.is_some()
             );
         }
         Commands::Ingest {
@@ -193,6 +220,99 @@ fn main() -> Result<()> {
             );
             println!("publication=EXPLICIT_OPERATOR_ACTION_REQUIRED");
         }
+    }
+    Ok(())
+}
+
+async fn publish_verified_build(
+    manifest: &Manifest,
+    signature: &ManifestSignature,
+    package: &Path,
+    storage: &StorageRegistry,
+    database: Option<&Database>,
+) -> Result<()> {
+    if let Some(database) = database {
+        database
+            .upsert_game(&GameSummary {
+                id: manifest.game_id.clone(),
+                slug: manifest.game_id.clone(),
+                title: manifest.game_id.clone(),
+                description: "Published launcher build".to_owned(),
+                hero_image_url: None,
+                cover_image_url: None,
+                latest_build: None,
+            })
+            .await?;
+        database
+            .upsert_build(manifest, Some(signature), "READY")
+            .await?;
+        for file in &manifest.files {
+            for (ordinal, chunk) in file.chunks.iter().enumerate() {
+                database
+                    .add_chunk(
+                        &chunk.encoded_hash,
+                        i64::try_from(chunk.encoded_size)?,
+                        &manifest.encoding.id,
+                    )
+                    .await?;
+                database
+                    .attach_build_chunk(
+                        &manifest.build_id,
+                        &chunk.encoded_hash,
+                        i64::try_from(chunk.raw_size)?,
+                        &chunk.raw_hash,
+                        i32::try_from(ordinal)?,
+                    )
+                    .await?;
+            }
+        }
+    }
+
+    let mut uploaded = HashSet::new();
+    for file in &manifest.files {
+        for chunk in &file.chunks {
+            if !uploaded.insert(chunk.encoded_hash.clone()) {
+                continue;
+            }
+            let object_path = package
+                .join(&chunk.object_key)
+                .canonicalize()
+                .with_context(|| format!("could not resolve {}", chunk.object_key))?;
+            let bytes = std::fs::read(&object_path)
+                .with_context(|| format!("could not read {}", object_path.display()))?;
+            if blake3::hash(&bytes).to_hex().as_str() != chunk.encoded_hash {
+                anyhow::bail!("storage object hash mismatch: {}", chunk.encoded_hash);
+            }
+            storage.put_encoded(&chunk.encoded_hash, &bytes).await?;
+            if let Some(database) = database {
+                let encoded_size = i64::try_from(bytes.len())?;
+                for (priority, provider) in storage.providers().iter().enumerate() {
+                    database
+                        .add_storage_object(
+                            &chunk.encoded_hash,
+                            encoded_size,
+                            provider.provider_id(),
+                            &chunk.object_key,
+                        )
+                        .await?;
+                    let location = provider.download_location(&chunk.encoded_hash).await?;
+                    if location.expires_at.is_none() {
+                        database
+                            .add_storage_location(
+                                &chunk.encoded_hash,
+                                provider.provider_id(),
+                                &chunk.object_key,
+                                &location.url,
+                                i32::try_from(priority)?,
+                            )
+                            .await?;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(database) = database {
+        database.publish_build(&manifest.build_id).await?;
     }
     Ok(())
 }

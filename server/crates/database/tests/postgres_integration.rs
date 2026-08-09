@@ -106,6 +106,10 @@ async fn postgres_repository_migrates_publishes_and_recovers_leases()
             0,
         )
         .await?;
+    let locations = database
+        .get_storage_locations(std::slice::from_ref(&chunk.encoded_hash))
+        .await?;
+    assert_eq!(locations[&chunk.encoded_hash][0].provider, "local");
     database.publish_build(&manifest.build_id).await?;
 
     assert_eq!(

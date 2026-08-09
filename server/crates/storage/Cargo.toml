@@ -1,0 +1,22 @@
+[package]
+name = "launcher-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+aws-credential-types.workspace = true
+aws-sdk-s3.workspace = true
+blake3.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lib]
+name = "launcher_storage"
+
+[dev-dependencies]
+axum.workspace = true

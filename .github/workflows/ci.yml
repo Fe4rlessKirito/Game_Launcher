@@ -25,6 +25,8 @@ jobs:
         working-directory: server
       - run: cargo test --workspace
         working-directory: server
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: server
 
   analyzer:
     runs-on: ubuntu-latest

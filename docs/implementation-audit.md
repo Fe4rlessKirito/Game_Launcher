@@ -31,4 +31,4 @@ This phase adds the missing integrity and recovery boundaries rather than hiding
 - local publication/catalog ingestion rather than an unqualified in-memory response;
 - FastCDC reuse measurements, failure-injection coverage, and performance baselines.
 
-Live S3 and public deployment remain deliberately out of scope. A PostgreSQL test is only counted as passing when a real disposable PostgreSQL process/container is available; otherwise the report records the environmental blocker.
+The infrastructure follow-up now includes the S3-compatible provider, multipart/retry/hash verification, multi-location resolution, provider health, and operator publication wiring. Live S3 credentials, DNS/TLS, VPS deployment, and public traffic remain deliberately out of scope for this repository-only run. The S3 suite uses an in-process S3-compatible HTTP fixture; it does not prove behavior of a particular cloud vendor. A PostgreSQL test is only counted as passing when a real disposable PostgreSQL process/container is available; otherwise the report records the environmental blocker.

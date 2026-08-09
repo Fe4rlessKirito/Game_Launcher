@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use launcher_common::{BuildSummary, CatalogPage, GameSummary, Manifest, ManifestSignature};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -20,6 +21,15 @@ pub struct ClaimedIngestionJob {
     pub stage: String,
     pub attempts: i32,
     pub lease_until: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageLocationRecord {
+    pub provider: String,
+    pub object_key: String,
+    pub direct_url: String,
+    pub priority: i32,
+    pub verified_at: DateTime<Utc>,
 }
 
 #[derive(Clone)]
@@ -184,9 +194,59 @@ impl Database {
         Ok(())
     }
 
+    pub async fn add_storage_object(
+        &self,
+        encoded_hash: &str,
+        encoded_size: i64,
+        provider: &str,
+        object_key: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("INSERT INTO storage_objects(encoded_hash, encoded_size, provider, object_key, verified_at) VALUES($1,$2,$3,$4,now()) ON CONFLICT(encoded_hash) DO UPDATE SET encoded_size=excluded.encoded_size, provider=excluded.provider, object_key=excluded.object_key, verified_at=now()")
+            .bind(encoded_hash)
+            .bind(encoded_size)
+            .bind(provider)
+            .bind(object_key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_storage_locations(
+        &self,
+        encoded_hashes: &[String],
+    ) -> Result<HashMap<String, Vec<StorageLocationRecord>>, DatabaseError> {
+        if encoded_hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            "SELECT encoded_hash, provider, object_key, direct_url, priority, verified_at
+             FROM storage_locations
+             WHERE encoded_hash = ANY($1) AND verified_at IS NOT NULL
+             ORDER BY encoded_hash, priority, provider, direct_url",
+        )
+        .bind(encoded_hashes)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut locations = HashMap::<String, Vec<StorageLocationRecord>>::new();
+        for row in rows {
+            let hash: String = row.try_get("encoded_hash")?;
+            locations
+                .entry(hash)
+                .or_default()
+                .push(StorageLocationRecord {
+                    provider: row.try_get("provider")?,
+                    object_key: row.try_get("object_key")?,
+                    direct_url: row.try_get("direct_url")?,
+                    priority: row.try_get("priority")?,
+                    verified_at: row.try_get("verified_at")?,
+                });
+        }
+        Ok(locations)
+    }
+
     pub async fn publish_build(&self, build_id: &str) -> Result<(), DatabaseError> {
         let mut transaction = self.pool.begin().await?;
-        let row = sqlx::query("SELECT COUNT(*) AS missing FROM build_chunks bc LEFT JOIN storage_locations sl ON sl.encoded_hash = bc.encoded_hash AND sl.verified_at IS NOT NULL WHERE bc.build_id = $1 AND sl.encoded_hash IS NULL")
+        let row = sqlx::query("SELECT COUNT(*) AS missing FROM build_chunks bc LEFT JOIN storage_locations sl ON sl.encoded_hash = bc.encoded_hash AND sl.verified_at IS NOT NULL LEFT JOIN storage_objects so ON so.encoded_hash = bc.encoded_hash AND so.verified_at IS NOT NULL WHERE bc.build_id = $1 AND sl.encoded_hash IS NULL AND so.encoded_hash IS NULL")
             .bind(build_id).fetch_one(&mut *transaction).await?;
         let missing: i64 = row.try_get("missing")?;
         if missing != 0 {

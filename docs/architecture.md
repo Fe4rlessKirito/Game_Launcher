@@ -2,7 +2,7 @@
 
 ## Boundaries
 
-Launcher has a control plane and a data plane. The API owns catalog state, build lifecycle, signed metadata, and mirror resolution. Storage providers own bytes. A client receives expiring or stable object URLs and downloads chunks directly from a provider; the API does not proxy game content.
+Launcher has a control plane and a data plane. The API owns catalog state, build lifecycle, signed metadata, and mirror resolution. `StorageRegistry` owns ordered replication across local and S3-compatible providers. Storage providers own bytes. A client receives expiring or stable object URLs and downloads chunks directly from a provider; the API does not proxy game content.
 
 ```text
 Avalonia client ── catalog/manifests ──> Axum API ──> PostgreSQL
@@ -37,10 +37,10 @@ The client owns UI, local SQLite state, download scheduling, cache eviction, rec
 ## Deliberate v1 decisions
 
 1. PostgreSQL-backed jobs are sufficient for the first ingestion worker. The job table has leases and retries; Redis, Kafka, and RabbitMQ are intentionally absent.
-2. Local filesystem storage is the development provider. The `StorageProvider` trait is the seam for S3-compatible storage and mirrors.
+2. Local filesystem storage is the development provider. `StorageProvider`, `StorageRegistry`, and the verified `storage_locations`/`storage_objects` records are the seam for S3-compatible storage and independent mirrors.
 3. The manifest is JSON for inspectability and signed canonical bytes can be introduced without changing the file/chunk model.
 4. SQLite uses numbered SQL migrations and a small repository abstraction instead of an ORM.
 
 ## Known limitations
 
-The current v1 foundation includes a local storage provider and signed-schema hooks but does not yet ship a production key-management service, S3 uploader, Windows named-pipe single-instance broker, or native-AOT release pipeline. Those are documented extension points and are not silently represented as complete.
+The current infrastructure phase includes local and S3-compatible providers, multipart/retry/hash verification, presigned URL generation, provider health reporting, and an operator publish path. It does not yet ship a production key-management service, a continuously running ingestion worker, Windows named-pipe single-instance broker, or native-AOT release pipeline. Those remain explicit extension points and are not silently represented as complete.

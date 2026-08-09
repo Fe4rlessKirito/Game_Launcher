@@ -18,6 +18,8 @@ dist/
 .astro/
 artifacts/
 storage/
+!server/crates/storage/
+!server/crates/storage/**
 cache/
 *.log
 .env
