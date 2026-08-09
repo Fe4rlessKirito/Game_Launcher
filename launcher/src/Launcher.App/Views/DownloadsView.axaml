@@ -1,0 +1,9 @@
+<UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="Launcher.App.Views.DownloadsView">
+  <StackPanel Spacing="20">
+    <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="14" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+      <StackPanel Spacing="15"><Grid ColumnDefinitions="*,Auto"><StackPanel Spacing="5"><TextBlock Text="Queue is clear" Classes="HeadingMedium" /><TextBlock Text="Pause, resume, retry, and verify each content chunk independently." Classes="Body" /></StackPanel><TextBlock Grid.Column="1" Text="0 B/s" Classes="HeadingMedium" Foreground="{DynamicResource AccentPrimary}" /></Grid><ProgressBar Minimum="0" Maximum="1" Value="0" Classes="SlimProgress" /></StackPanel>
+    </Border>
+    <TextBlock Text="Activity" Classes="HeadingMedium" />
+    <ItemsControl ItemsSource="{Binding Jobs}"><ItemsControl.ItemTemplate><DataTemplate><Border Background="{DynamicResource SurfacePrimary}" CornerRadius="12" Padding="20" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1"><Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto"><StackPanel Spacing="5"><TextBlock Text="{Binding Title}" Classes="BodyStrong" /><TextBlock Text="{Binding Detail}" Classes="Caption" /></StackPanel><TextBlock Grid.Column="1" Text="Idle" Classes="Caption" Foreground="{DynamicResource TextMuted}" /><ProgressBar Grid.Row="1" Grid.ColumnSpan="2" Margin="0,18,0,0" Minimum="0" Maximum="1" Value="{Binding Progress}" Classes="SlimProgress" /></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+  </StackPanel>
+</UserControl>

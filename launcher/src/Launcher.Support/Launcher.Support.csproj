@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Launcher.Support</AssemblyName>
+    <RootNamespace>Launcher.Support</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Launcher.Manifests\Launcher.Manifests.csproj" />
+  </ItemGroup>
+</Project>

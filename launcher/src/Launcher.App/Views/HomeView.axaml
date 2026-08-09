@@ -1,0 +1,33 @@
+<UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="Launcher.App.Views.HomeView">
+  <StackPanel Spacing="26">
+    <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="16" Padding="30" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="14" MaxWidth="650">
+          <TextBlock Text="{Binding Greeting}" Classes="HeroHeading" />
+          <TextBlock Text="{Binding Summary}" Classes="Body" TextWrapping="Wrap" />
+          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
+            <Button Content="Open library" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Library" Classes="Primary" />
+            <Button Content="View downloads" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Downloads" Classes="Secondary" />
+          </StackPanel>
+        </StackPanel>
+        <Border Grid.Column="1" Width="190" Height="190" Background="{DynamicResource AccentSoft}" CornerRadius="95" HorizontalAlignment="Right" VerticalAlignment="Center">
+          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="4">
+            <TextBlock Text="3" Classes="HeroStat" HorizontalAlignment="Center" />
+            <TextBlock Text="systems online" Classes="Caption" />
+          </StackPanel>
+        </Border>
+      </Grid>
+    </Border>
+    <Grid ColumnDefinitions="*,*" ColumnSpacing="18">
+      <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="14" Padding="22" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+        <StackPanel Spacing="18">
+          <Grid ColumnDefinitions="*,Auto"><TextBlock Text="Recent activity" Classes="HeadingMedium" /><TextBlock Grid.Column="1" Text="LOCAL" Classes="Eyebrow" Foreground="{DynamicResource TextSecondary}" /></Grid>
+          <ItemsControl ItemsSource="{Binding RecentActivity}"><ItemsControl.ItemTemplate><DataTemplate><Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,14"><Ellipse Width="9" Height="9" Fill="{DynamicResource AccentPrimary}" Margin="0,5,12,0" /><StackPanel Grid.Column="1" Spacing="2"><TextBlock Text="{Binding Title}" Classes="BodyStrong" /><TextBlock Text="{Binding Detail}" Classes="Caption" /></StackPanel><TextBlock Grid.Column="2" Text="{Binding Time}" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" /></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+        </StackPanel>
+      </Border>
+      <Border Grid.Column="1" Background="{DynamicResource SurfaceElevated}" CornerRadius="14" Padding="22">
+        <StackPanel Spacing="12"><TextBlock Text="Integrity by default" Classes="HeadingMedium" /><TextBlock Text="Every encoded chunk and reconstructed file is checked before it is promoted. Updates reuse local content when hashes match." Classes="Body" TextWrapping="Wrap" /><TextBlock Text="BLAKE3  ·  ZSTD  ·  FASTCDC" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" Margin="0,12,0,0" /></StackPanel>
+      </Border>
+    </Grid>
+  </StackPanel>
+</UserControl>

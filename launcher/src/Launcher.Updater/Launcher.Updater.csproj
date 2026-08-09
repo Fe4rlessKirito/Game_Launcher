@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Launcher.Updater</AssemblyName>
+    <RootNamespace>Launcher.Updater</RootNamespace>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Blake3" />
+    <ProjectReference Include="..\Launcher.Security\Launcher.Security.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,46 @@
+# Architecture
+
+## Boundaries
+
+Launcher has a control plane and a data plane. The API owns catalog state, build lifecycle, signed metadata, and mirror resolution. Storage providers own bytes. A client receives expiring or stable object URLs and downloads chunks directly from a provider; the API does not proxy game content.
+
+```text
+Avalonia client ── catalog/manifests ──> Axum API ──> PostgreSQL
+      │                                      │
+      └──────── direct chunk bytes ──────────┴──> local/S3 storage
+
+authorized build ──> Python analyzer ──> Rust packager ──> storage + DB
+```
+
+The analyzer produces facts and candidates. The packager consumes a versioned analysis report and creates deterministic content-addressed objects. Publication is an explicit operator transition.
+
+## Lifecycle
+
+Builds use the following monotonic operational states:
+
+`DISCOVERED → ANALYZED → PACKAGED → UPLOADED → VERIFIED → READY → PUBLISHED`
+
+Failures are recorded with an error and can be retried from the last idempotent boundary. A build is not visible to normal catalog queries until it is `PUBLISHED`.
+
+## Client responsibilities
+
+The client owns UI, local SQLite state, download scheduling, cache eviction, reconstruction, transactional installation, repair, launch and self-update coordination. Long work is cancellable and never runs on the UI thread. Installed manifests are retained locally so an offline client can launch and uninstall games after a server build is unpublished.
+
+## Security boundaries
+
+- Manifest paths are portable relative paths and are validated before any filesystem operation.
+- Encoded and raw chunk hashes are both verified before content is promoted into cache or installation.
+- Launching uses an executable path and an argument list, never a shell command string.
+- Signed manifests and updater releases are separate from transport TLS.
+- Provider credentials remain server-side. The client receives only scoped object URLs.
+
+## Deliberate v1 decisions
+
+1. PostgreSQL-backed jobs are sufficient for the first ingestion worker. The job table has leases and retries; Redis, Kafka, and RabbitMQ are intentionally absent.
+2. Local filesystem storage is the development provider. The `StorageProvider` trait is the seam for S3-compatible storage and mirrors.
+3. The manifest is JSON for inspectability and signed canonical bytes can be introduced without changing the file/chunk model.
+4. SQLite uses numbered SQL migrations and a small repository abstraction instead of an ORM.
+
+## Known limitations
+
+The current v1 foundation includes a local storage provider and signed-schema hooks but does not yet ship a production key-management service, S3 uploader, Windows named-pipe single-instance broker, or native-AOT release pipeline. Those are documented extension points and are not silently represented as complete.

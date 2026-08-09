@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Launcher.Downloads</AssemblyName>
+    <RootNamespace>Launcher.Downloads</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ZstdSharp.Port" />
+    <ProjectReference Include="..\Launcher.Core\Launcher.Core.csproj" />
+    <ProjectReference Include="..\Launcher.Manifests\Launcher.Manifests.csproj" />
+    <ProjectReference Include="..\Launcher.Networking\Launcher.Networking.csproj" />
+    <ProjectReference Include="..\Launcher.Security\Launcher.Security.csproj" />
+    <ProjectReference Include="..\Launcher.Storage\Launcher.Storage.csproj" />
+  </ItemGroup>
+</Project>

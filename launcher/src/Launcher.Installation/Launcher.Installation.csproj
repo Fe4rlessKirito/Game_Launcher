@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Launcher.Installation</AssemblyName>
+    <RootNamespace>Launcher.Installation</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Launcher.Core\Launcher.Core.csproj" />
+    <ProjectReference Include="..\Launcher.Downloads\Launcher.Downloads.csproj" />
+    <ProjectReference Include="..\Launcher.Manifests\Launcher.Manifests.csproj" />
+    <ProjectReference Include="..\Launcher.Security\Launcher.Security.csproj" />
+    <ProjectReference Include="..\Launcher.Storage\Launcher.Storage.csproj" />
+  </ItemGroup>
+</Project>

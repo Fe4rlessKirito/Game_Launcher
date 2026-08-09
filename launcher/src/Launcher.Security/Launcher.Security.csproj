@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Launcher.Security</AssemblyName>
+    <RootNamespace>Launcher.Security</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Blake3" />
+    <ProjectReference Include="..\Launcher.Manifests\Launcher.Manifests.csproj" />
+  </ItemGroup>
+</Project>

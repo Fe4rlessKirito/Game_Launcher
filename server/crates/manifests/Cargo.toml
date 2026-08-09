@@ -1,0 +1,13 @@
+[package]
+name = "launcher-manifests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+blake3.workspace = true
+launcher-common = { path = "../common" }
+serde_json.workspace = true
+
+[lib]
+name = "launcher_manifests"

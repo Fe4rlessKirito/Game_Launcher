@@ -1,0 +1,26 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:fluent="using:Avalonia.Themes.Fluent"
+             xmlns:vm="using:Launcher.App.ViewModels"
+             xmlns:views="using:Launcher.App.Views"
+             x:Class="Launcher.App.App">
+  <Application.DataTemplates>
+    <DataTemplate DataType="{x:Type vm:HomeViewModel}"><views:HomeView /></DataTemplate>
+    <DataTemplate DataType="{x:Type vm:LibraryViewModel}"><views:LibraryView /></DataTemplate>
+    <DataTemplate DataType="{x:Type vm:GameDetailsViewModel}"><views:GameDetailsView /></DataTemplate>
+    <DataTemplate DataType="{x:Type vm:DownloadsViewModel}"><views:DownloadsView /></DataTemplate>
+    <DataTemplate DataType="{x:Type vm:SettingsViewModel}"><views:SettingsView /></DataTemplate>
+  </Application.DataTemplates>
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceInclude Source="avares://Launcher.App/Themes/Colors.axaml" />
+      </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+  <Application.Styles>
+    <fluent:FluentTheme />
+    <StyleInclude Source="avares://Launcher.App/Themes/Typography.axaml" />
+    <StyleInclude Source="avares://Launcher.App/Themes/Controls.axaml" />
+  </Application.Styles>
+</Application>

@@ -1,0 +1,24 @@
+[package]
+name = "launcher-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+chrono.workspace = true
+launcher-common = { path = "../common" }
+launcher-domain = { path = "../domain" }
+launcher-manifests = { path = "../manifests" }
+launcher-packager = { path = "../packager" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[lib]
+name = "launcher_worker"
+
+[[bin]]
+name = "launcher-admin"
+path = "src/main.rs"

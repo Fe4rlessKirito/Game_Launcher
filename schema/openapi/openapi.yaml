@@ -1,0 +1,50 @@
+openapi: 3.1.0
+info:
+  title: Launcher Control Plane API
+  version: 0.1.0
+  description: Metadata and mirror resolution API. Chunk bytes are served by storage providers.
+servers:
+  - url: http://localhost
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        '200': { description: API is alive }
+  /api/v1/games:
+    get:
+      operationId: listGames
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 24 } }
+      responses:
+        '200': { description: Published catalog page }
+  /api/v1/games/{id}:
+    get:
+      operationId: getGame
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Game metadata }
+        '404': { description: Game not found }
+  /api/v1/builds/{id}/manifest:
+    get:
+      operationId: getManifest
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        '200': { description: Published manifest }
+        '404': { description: Manifest not found }
+  /api/v1/builds/{id}/resolve:
+    post:
+      operationId: resolveChunks
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [encoded_hashes]
+              properties:
+                encoded_hashes: { type: array, maxItems: 512, items: { type: string, pattern: '^[0-9a-f]{64}$' } }
+      responses:
+        '200': { description: Direct storage locations }

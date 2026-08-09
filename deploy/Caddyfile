@@ -1,0 +1,19 @@
+{
+    email {$ACME_EMAIL}
+}
+
+{$SITE_HOST:localhost} {
+    encode gzip zstd
+    handle /api/* {
+        reverse_proxy api:8080
+    }
+    handle /health {
+        reverse_proxy api:8080
+    }
+    handle /objects/* {
+        reverse_proxy api:8080
+    }
+    handle {
+        respond "Launcher website artifact is deployed separately" 200
+    }
+}

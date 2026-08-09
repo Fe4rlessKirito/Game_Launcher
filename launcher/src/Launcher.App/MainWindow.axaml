@@ -1,0 +1,54 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Launcher.App.MainWindow"
+        Width="1280"
+        Height="820"
+        MinWidth="980"
+        MinHeight="640"
+        Background="{DynamicResource BackgroundPrimary}"
+        Title="{DynamicResource ProductName}">
+  <Grid ColumnDefinitions="248,*">
+    <Border Grid.Column="0" Background="{DynamicResource SurfacePrimary}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="24,28,20,24">
+        <StackPanel DockPanel.Dock="Top" Spacing="6">
+          <TextBlock Text="{DynamicResource ProductName}" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
+          <TextBlock Text="Your library, ready." Classes="HeadingSmall" />
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Spacing="10">
+          <Border Background="{DynamicResource SurfaceElevated}" CornerRadius="10" Padding="14">
+            <StackPanel Spacing="5">
+              <TextBlock Text="LOCAL MODE" Classes="Eyebrow" Foreground="{DynamicResource TextSecondary}" />
+              <TextBlock Text="Installed games remain available offline." TextWrapping="Wrap" Classes="Caption" />
+            </StackPanel>
+          </Border>
+          <TextBlock Text="v0.1 foundation" Classes="Caption" Foreground="{DynamicResource TextMuted}" />
+        </StackPanel>
+        <StackPanel Margin="0,42,0,0" Spacing="8">
+          <Button Command="{Binding NavigateCommand}" CommandParameter="Home" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="⌂" Classes="NavGlyph" /><TextBlock Text="Home" /></StackPanel></Button>
+          <Button Command="{Binding NavigateCommand}" CommandParameter="Library" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="▦" Classes="NavGlyph" /><TextBlock Text="Library" /></StackPanel></Button>
+          <Button Command="{Binding NavigateCommand}" CommandParameter="Downloads" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="↓" Classes="NavGlyph" /><TextBlock Text="Downloads" /></StackPanel></Button>
+          <Button Command="{Binding NavigateCommand}" CommandParameter="Settings" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="⚙" Classes="NavGlyph" /><TextBlock Text="Settings" /></StackPanel></Button>
+        </StackPanel>
+      </DockPanel>
+    </Border>
+    <Grid Grid.Column="1" RowDefinitions="Auto,*">
+      <Border Grid.Row="0" Padding="34,26,38,20" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,0,1">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="4">
+            <TextBlock Text="{Binding PageKicker}" Classes="Eyebrow" Foreground="{DynamicResource TextSecondary}" />
+            <TextBlock Text="{Binding PageTitle}" Classes="HeadingLarge" />
+          </StackPanel>
+          <Border Grid.Column="1" Background="{DynamicResource SurfacePrimary}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="18" Padding="12,8">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Ellipse Width="8" Height="8" Fill="{DynamicResource AccentPrimary}" VerticalAlignment="Center" />
+              <TextBlock Text="{Binding ConnectionStatus}" Classes="Caption" />
+            </StackPanel>
+          </Border>
+        </Grid>
+      </Border>
+      <ScrollViewer Grid.Row="1" Padding="34,30,38,48" HorizontalScrollBarVisibility="Disabled">
+        <ContentControl Content="{Binding CurrentPage}" />
+      </ScrollViewer>
+    </Grid>
+  </Grid>
+</Window>

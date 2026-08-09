@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-launcher}
+      POSTGRES_USER: ${POSTGRES_USER:-launcher}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://launcher:change-me@postgres:5432/launcher}
+      LAUNCHER_BIND: ${LAUNCHER_BIND:-0.0.0.0:8080}
+      LAUNCHER_PUBLIC_BASE_URL: ${LAUNCHER_PUBLIC_BASE_URL:-http://localhost}
+      LAUNCHER_STORAGE_ROOT: /var/lib/launcher/storage
+      LAUNCHER_AUTO_MIGRATE: ${LAUNCHER_AUTO_MIGRATE:-0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - launcher-storage:/var/lib/launcher/storage
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+
+volumes:
+  postgres-data:
+  launcher-storage:
+  caddy-data:
+  caddy-config:

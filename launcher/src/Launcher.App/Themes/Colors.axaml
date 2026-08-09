@@ -1,0 +1,21 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <x:String x:Key="ProductName">LAUNCHER</x:String>
+  <Color x:Key="BackgroundPrimaryColor">#0B0F18</Color>
+  <Color x:Key="SurfacePrimaryColor">#111827</Color>
+  <Color x:Key="SurfaceElevatedColor">#182238</Color>
+  <Color x:Key="BorderSubtleColor">#26344D</Color>
+  <Color x:Key="TextPrimaryColor">#F5F7FB</Color>
+  <Color x:Key="TextSecondaryColor">#9AA8BF</Color>
+  <Color x:Key="TextMutedColor">#66748C</Color>
+  <Color x:Key="AccentPrimaryColor">#75E0C1</Color>
+  <Color x:Key="AccentSoftColor">#234D50</Color>
+  <SolidColorBrush x:Key="BackgroundPrimary" Color="{DynamicResource BackgroundPrimaryColor}" />
+  <SolidColorBrush x:Key="SurfacePrimary" Color="{DynamicResource SurfacePrimaryColor}" />
+  <SolidColorBrush x:Key="SurfaceElevated" Color="{DynamicResource SurfaceElevatedColor}" />
+  <SolidColorBrush x:Key="BorderSubtle" Color="{DynamicResource BorderSubtleColor}" />
+  <SolidColorBrush x:Key="TextPrimary" Color="{DynamicResource TextPrimaryColor}" />
+  <SolidColorBrush x:Key="TextSecondary" Color="{DynamicResource TextSecondaryColor}" />
+  <SolidColorBrush x:Key="TextMuted" Color="{DynamicResource TextMutedColor}" />
+  <SolidColorBrush x:Key="AccentPrimary" Color="{DynamicResource AccentPrimaryColor}" />
+  <SolidColorBrush x:Key="AccentSoft" Color="{DynamicResource AccentSoftColor}" />
+</ResourceDictionary>

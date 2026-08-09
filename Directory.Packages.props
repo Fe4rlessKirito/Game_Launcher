@@ -1,0 +1,32 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    <AvaloniaVersion>12.1.0</AvaloniaVersion>
+    <Blake3Version>3.0.2</Blake3Version>
+    <CommunityToolkitMvvmVersion>8.4.0</CommunityToolkitMvvmVersion>
+    <SqliteVersion>10.0.10</SqliteVersion>
+    <SqliteProviderVersion>2.1.11</SqliteProviderVersion>
+    <ZstdSharpVersion>0.8.8</ZstdSharpVersion>
+    <ExtensionsVersion>10.0.0</ExtensionsVersion>
+    <TestSdkVersion>18.0.0</TestSdkVersion>
+    <XunitVersion>2.9.3</XunitVersion>
+    <XunitRunnerVersion>3.1.5</XunitRunnerVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Avalonia" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Desktop" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Fonts.Inter" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Blake3" Version="$(Blake3Version)" />
+    <PackageVersion Include="CommunityToolkit.Mvvm" Version="$(CommunityToolkitMvvmVersion)" />
+    <PackageVersion Include="Microsoft.Data.Sqlite.Core" Version="$(SqliteVersion)" />
+    <PackageVersion Include="SQLitePCLRaw.bundle_winsqlite3" Version="$(SqliteProviderVersion)" />
+    <PackageVersion Include="ZstdSharp.Port" Version="$(ZstdSharpVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="$(ExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="$(ExtensionsVersion)" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="$(TestSdkVersion)" />
+    <PackageVersion Include="xunit" Version="$(XunitVersion)" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="$(XunitRunnerVersion)" />
+  </ItemGroup>
+</Project>

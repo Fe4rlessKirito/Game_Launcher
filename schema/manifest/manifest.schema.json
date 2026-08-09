@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://launcher.invalid/schema/manifest/v1.json",
+  "title": "Launcher build manifest",
+  "type": "object",
+  "required": ["schema_version", "manifest_id", "game_id", "build_id", "display_version", "generated_at", "chunking", "encoding", "files", "launch"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "manifest_id": { "type": "string", "minLength": 1 },
+    "game_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,63}$" },
+    "build_id": { "type": "string", "minLength": 1 },
+    "display_version": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "chunking": {
+      "type": "object",
+      "required": ["algorithm", "format_version", "minimum_bytes", "average_bytes", "maximum_bytes"],
+      "properties": {
+        "algorithm": { "const": "fastcdc" },
+        "format_version": { "const": 1 },
+        "minimum_bytes": { "type": "integer", "minimum": 1 },
+        "average_bytes": { "type": "integer", "minimum": 1 },
+        "maximum_bytes": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "encoding": {
+      "type": "object",
+      "required": ["id", "level"],
+      "properties": { "id": { "const": "zstd-v1-level-3" }, "level": { "const": 3 } },
+      "additionalProperties": false
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "size", "blake3", "chunks"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "size": { "type": "integer", "minimum": 0 },
+          "blake3": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "chunks": { "type": "array" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "launch": {
+      "type": "object",
+      "required": ["executable", "working_directory", "arguments", "environment"],
+      "properties": {
+        "executable": { "type": "string", "minLength": 1 },
+        "working_directory": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "array", "items": { "type": "string" } },
+        "environment": { "type": "object", "additionalProperties": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

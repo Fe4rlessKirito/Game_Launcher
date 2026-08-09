@@ -1,0 +1,14 @@
+<Styles xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Style Selector="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /><Setter Property="FontFamily" Value="Inter" /></Style>
+  <Style Selector="TextBlock.Eyebrow"><Setter Property="FontSize" Value="11" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+  <Style Selector="TextBlock.Caption"><Setter Property="FontSize" Value="12" /><Setter Property="Foreground" Value="{DynamicResource TextSecondary}" /></Style>
+  <Style Selector="TextBlock.Body"><Setter Property="FontSize" Value="14" /><Setter Property="LineHeight" Value="22" /><Setter Property="Foreground" Value="{DynamicResource TextSecondary}" /></Style>
+  <Style Selector="TextBlock.BodyStrong"><Setter Property="FontSize" Value="14" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+  <Style Selector="TextBlock.HeadingSmall"><Setter Property="FontSize" Value="17" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+  <Style Selector="TextBlock.HeadingMedium"><Setter Property="FontSize" Value="18" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+  <Style Selector="TextBlock.HeadingLarge"><Setter Property="FontSize" Value="28" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
+  <Style Selector="TextBlock.HeroHeading"><Setter Property="FontSize" Value="34" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="LineHeight" Value="42" /></Style>
+  <Style Selector="TextBlock.HeroStat"><Setter Property="FontSize" Value="52" /><Setter Property="FontWeight" Value="Bold" /><Setter Property="Foreground" Value="{DynamicResource AccentPrimary}" /></Style>
+  <Style Selector="TextBlock.NavGlyph"><Setter Property="Width" Value="18" /><Setter Property="FontSize" Value="18" /></Style>
+  <Style Selector="TextBlock.Monogram"><Setter Property="FontSize" Value="18" /><Setter Property="FontWeight" Value="Bold" /><Setter Property="Foreground" Value="{DynamicResource AccentPrimary}" /></Style>
+</Styles>

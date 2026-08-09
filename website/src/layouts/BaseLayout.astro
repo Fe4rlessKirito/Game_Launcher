@@ -1,0 +1,24 @@
+---
+import '../styles/global.css';
+
+interface Props { title?: string; description?: string; }
+const { title = 'Launcher — verified game distribution', description = 'A high-performance launcher foundation for authorized game builds.' } = Astro.props;
+const productName = 'Launcher';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="description" content={description} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <header class="mx-auto flex max-w-6xl items-center justify-between px-6 py-7 lg:px-10">
+      <a href="/" class="flex items-center gap-3 text-sm font-semibold tracking-[0.18em] text-copy"><span class="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-sm font-black text-background">L</span> {productName.toUpperCase()}</a>
+      <nav class="flex items-center gap-6 text-sm text-muted"><a href="/#architecture" class="transition hover:text-copy">Architecture</a><a href="/download" class="rounded-lg border border-border bg-surface px-4 py-2 text-copy transition hover:border-accent">Download</a></nav>
+    </header>
+    <main><slot /></main>
+    <footer class="mx-auto flex max-w-6xl flex-col gap-3 border-t border-border px-6 py-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between lg:px-10"><span>{productName} · neutral internal branding</span><span>Authorized content only.</span></footer>
+  </body>
+</html>

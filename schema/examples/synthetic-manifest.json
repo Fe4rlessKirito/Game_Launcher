@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "manifest_id": "00000000-0000-0000-0000-000000000001",
+  "game_id": "synthetic-game",
+  "build_id": "synthetic-build-a",
+  "display_version": "1.0.0",
+  "generated_at": "2026-01-01T00:00:00Z",
+  "chunking": { "algorithm": "fastcdc", "format_version": 1, "minimum_bytes": 64, "average_bytes": 256, "maximum_bytes": 1024 },
+  "encoding": { "id": "zstd-v1-level-3", "level": 3 },
+  "files": [],
+  "launch": { "executable": "SyntheticGame.exe", "working_directory": ".", "arguments": [], "environment": {} }
+}
