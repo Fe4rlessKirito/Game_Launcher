@@ -5,9 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64.workspace = true
 blake3.workspace = true
 launcher-common = { path = "../common" }
+rand.workspace = true
+rsa.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
 
 [lib]
 name = "launcher_manifests"

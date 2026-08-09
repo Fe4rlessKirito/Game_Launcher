@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const MANIFEST_SIGNATURE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChunkingConfig {
@@ -18,7 +19,7 @@ impl Default for ChunkingConfig {
         Self {
             algorithm: "fastcdc".to_owned(),
             format_version: 1,
-            minimum_bytes: 1 * 1024 * 1024,
+            minimum_bytes: 1024 * 1024,
             average_bytes: 4 * 1024 * 1024,
             maximum_bytes: 16 * 1024 * 1024,
         }
@@ -79,6 +80,20 @@ pub struct Manifest {
     pub encoding: EncodingConfig,
     pub files: Vec<FileRecipe>,
     pub launch: LaunchProfile,
+}
+
+/// A detached signature over the exact UTF-8 bytes served as `manifest.json`.
+/// The embedded public key is permitted only for local fixtures; production
+/// clients must resolve `key_id` through a trusted key ring.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestSignature {
+    pub schema_version: u32,
+    pub algorithm: String,
+    pub key_id: String,
+    pub manifest_blake3: String,
+    pub signature_base64: String,
+    #[serde(default)]
+    pub public_key_base64: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

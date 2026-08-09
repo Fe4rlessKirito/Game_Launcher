@@ -8,7 +8,7 @@ use launcher_common::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -21,6 +21,13 @@ pub struct PackageOptions {
     pub executable: Option<String>,
     pub chunking: ChunkingConfig,
     pub encoding: EncodingConfig,
+    pub failure_injection: Option<PackagingFailureInjection>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PackagingFailureInjection {
+    pub fail_after_chunks: u64,
+    pub fail_after_manifest: bool,
 }
 
 impl Default for PackageOptions {
@@ -32,6 +39,7 @@ impl Default for PackageOptions {
             executable: None,
             chunking: ChunkingConfig::default(),
             encoding: EncodingConfig::default(),
+            failure_injection: None,
         }
     }
 }
@@ -48,24 +56,63 @@ pub struct PackageReport {
     pub warnings: Vec<String>,
 }
 
-pub fn package_directory(
-    input: impl AsRef<Path>,
-    output: impl AsRef<Path>,
-    options: &PackageOptions,
-) -> Result<PackageReport> {
-    if options.chunking.minimum_bytes < 64
-        || options.chunking.minimum_bytes > 1_048_576
-        || options.chunking.average_bytes < 256
-        || options.chunking.average_bytes > 4_194_304
-        || options.chunking.maximum_bytes < 1_024
-        || options.chunking.maximum_bytes > 16_777_216
-        || options.chunking.minimum_bytes > options.chunking.average_bytes
-        || options.chunking.average_bytes > options.chunking.maximum_bytes
+pub fn validate_chunking_config(config: &ChunkingConfig) -> Result<()> {
+    if config.algorithm != "fastcdc"
+        || config.format_version != 1
+        || config.minimum_bytes < 64
+        || config.minimum_bytes > 1_048_576
+        || config.average_bytes < 256
+        || config.average_bytes > 4_194_304
+        || config.maximum_bytes < 1_024
+        || config.maximum_bytes > 16_777_216
+        || config.minimum_bytes > config.average_bytes
+        || config.average_bytes > config.maximum_bytes
     {
         anyhow::bail!(
             "FastCDC 4.0 parameters must be within 64..1 MiB, 256..4 MiB, and 1 KiB..16 MiB"
         );
     }
+    Ok(())
+}
+
+/// Test/benchmark helper that exposes the exact v2020 stream boundaries used by
+/// the packager. Production packaging still uses the file reader directly so
+/// an entire file is never accumulated in memory.
+pub fn chunk_bytes(bytes: &[u8], config: &ChunkingConfig) -> Result<Vec<Vec<u8>>> {
+    let mut reader = Cursor::new(bytes);
+    let mut chunks = Vec::new();
+    chunk_reader(&mut reader, config, |chunk| {
+        chunks.push(chunk.to_vec());
+        Ok(())
+    })?;
+    Ok(chunks)
+}
+
+pub fn chunk_reader<R: Read, F: FnMut(&[u8]) -> Result<()>>(
+    reader: R,
+    config: &ChunkingConfig,
+    mut on_chunk: F,
+) -> Result<()> {
+    validate_chunking_config(config)?;
+    let stream = StreamCDC::new(
+        reader,
+        config.minimum_bytes as usize,
+        config.average_bytes as usize,
+        config.maximum_bytes as usize,
+    );
+    for chunk in stream {
+        let chunk = chunk.map_err(|error| anyhow::anyhow!("FastCDC failed: {error:?}"))?;
+        on_chunk(&chunk.data)?;
+    }
+    Ok(())
+}
+
+pub fn package_directory(
+    input: impl AsRef<Path>,
+    output: impl AsRef<Path>,
+    options: &PackageOptions,
+) -> Result<PackageReport> {
+    validate_chunking_config(&options.chunking)?;
     let input = input.as_ref().canonicalize().with_context(|| {
         format!(
             "input directory does not exist: {}",
@@ -108,7 +155,7 @@ pub fn package_directory(
         }
         let metadata = fs::metadata(full_path)?;
         let file = File::open(full_path)?;
-        let mut stream = StreamCDC::new(
+        let stream = StreamCDC::new(
             BufReader::new(file),
             options.chunking.minimum_bytes as usize,
             options.chunking.average_bytes as usize,
@@ -117,9 +164,15 @@ pub fn package_directory(
         let mut file_hasher = blake3::Hasher::new();
         let mut file_chunks = Vec::new();
         let mut file_size = 0_u64;
-        while let Some(chunk) = stream.next() {
+        for chunk in stream {
             let chunk = chunk
                 .map_err(|error| anyhow::anyhow!("FastCDC failed for {portable}: {error:?}"))?;
+            if options
+                .failure_injection
+                .is_some_and(|injection| chunks >= injection.fail_after_chunks)
+            {
+                anyhow::bail!("deterministic packaging failure after {chunks} chunks");
+            }
             let raw_hash = blake3::hash(&chunk.data).to_hex().to_string();
             let encoded = zstd::stream::encode_all(&chunk.data[..], options.encoding.level)?;
             let encoded_hash = blake3::hash(&encoded).to_hex().to_string();
@@ -198,6 +251,12 @@ pub fn package_directory(
         .map_err(|error| anyhow::anyhow!("manifest validation failed: {error}"))?;
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
     fs::write(output.join("manifest.json"), &manifest_bytes)?;
+    if options
+        .failure_injection
+        .is_some_and(|injection| injection.fail_after_manifest)
+    {
+        anyhow::bail!("deterministic packaging failure after manifest creation");
+    }
     let report = PackageReport {
         manifest_id: manifest.manifest_id,
         files: manifest.files.len() as u64,
@@ -213,4 +272,229 @@ pub fn package_directory(
         serde_json::to_vec_pretty(&report)?,
     )?;
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn test_config() -> ChunkingConfig {
+        ChunkingConfig {
+            minimum_bytes: 4 * 1024,
+            average_bytes: 16 * 1024,
+            maximum_bytes: 64 * 1024,
+            ..ChunkingConfig::default()
+        }
+    }
+
+    fn seeded_bytes(length: usize) -> Vec<u8> {
+        let mut value = 0x1234_5678_u64;
+        (0..length)
+            .map(|_| {
+                value ^= value << 13;
+                value ^= value >> 7;
+                value ^= value << 17;
+                value as u8
+            })
+            .collect()
+    }
+
+    fn hashes(chunks: &[Vec<u8>]) -> Vec<String> {
+        chunks
+            .iter()
+            .map(|chunk| blake3::hash(chunk).to_hex().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn fastcdc_boundaries_are_deterministic_for_tiny_boundary_and_random_inputs() {
+        let config = test_config();
+        for bytes in [
+            vec![7_u8; 3],
+            vec![9_u8; 4 * 1024],
+            vec![3_u8; 128 * 1024],
+            seeded_bytes(2 * 1024 * 1024),
+        ] {
+            let first = chunk_bytes(&bytes, &config).unwrap();
+            let second = chunk_bytes(&bytes, &config).unwrap();
+            assert_eq!(hashes(&first), hashes(&second));
+            assert_eq!(first.iter().map(Vec::len).sum::<usize>(), bytes.len());
+            assert!(
+                first
+                    .iter()
+                    .all(|chunk| chunk.len() <= config.maximum_bytes as usize)
+            );
+        }
+    }
+
+    #[test]
+    fn insertion_eventually_resynchronizes_content_defined_boundaries() {
+        let config = test_config();
+        let original = seeded_bytes(4 * 1024 * 1024);
+        let mut inserted = original.clone();
+        inserted.splice(32 * 1024..32 * 1024, [0xA5; 137]);
+        let original_hashes = hashes(&chunk_bytes(&original, &config).unwrap());
+        let inserted_hashes = hashes(&chunk_bytes(&inserted, &config).unwrap());
+        let common_after_insertion = inserted_hashes
+            .iter()
+            .skip(1)
+            .filter(|hash| original_hashes.contains(hash))
+            .count();
+        assert!(
+            common_after_insertion > 0,
+            "FastCDC did not resynchronize any later chunk"
+        );
+    }
+
+    #[test]
+    fn blake3_streaming_and_one_shot_match_and_corruption_is_detected() {
+        let bytes = seeded_bytes(512 * 1024);
+        let one_shot = blake3::hash(&bytes).to_hex().to_string();
+        let mut hasher = blake3::Hasher::new();
+        for part in bytes.chunks(8191) {
+            hasher.update(part);
+        }
+        assert_eq!(one_shot, hasher.finalize().to_hex().to_string());
+        let mut corrupt = bytes.clone();
+        corrupt[123] ^= 1;
+        assert_ne!(one_shot, blake3::hash(&corrupt).to_hex().to_string());
+    }
+
+    #[test]
+    fn zstd_round_trip_is_byte_exact_and_corruption_fails() {
+        let bytes = seeded_bytes(256 * 1024);
+        let encoded = zstd::stream::encode_all(&bytes[..], 3).unwrap();
+        let decoded = zstd::stream::decode_all(&encoded[..]).unwrap();
+        assert_eq!(decoded, bytes);
+        let mut corrupt = encoded.clone();
+        let corruption_index = corrupt.len() / 2;
+        corrupt[corruption_index] ^= 0x80;
+        if let Ok(decoded) = zstd::stream::decode_all(&corrupt[..]) {
+            assert_ne!(decoded, bytes);
+        }
+    }
+
+    #[test]
+    fn package_is_sorted_deduplicated_and_manifest_consistent() {
+        let root = std::env::temp_dir().join(format!("launcher-package-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let input = root.join("input");
+        let output = root.join("output");
+        fs::create_dir_all(input.join("nested")).unwrap();
+        fs::write(input.join("z.bin"), vec![4_u8; 100_000]).unwrap();
+        fs::write(input.join("nested/a.bin"), vec![4_u8; 100_000]).unwrap();
+        let options = PackageOptions {
+            game_id: "game".into(),
+            build_id: "build".into(),
+            display_version: "A".into(),
+            chunking: test_config(),
+            ..PackageOptions::default()
+        };
+        let report = package_directory(&input, &output, &options).unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            manifest
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nested/a.bin", "z.bin"]
+        );
+        assert_eq!(report.files, 2);
+        assert!(report.unique_chunks < report.chunks);
+        for file in &manifest.files {
+            assert_eq!(
+                file.size,
+                file.chunks.iter().map(|chunk| chunk.raw_size).sum::<u64>()
+            );
+            for chunk in &file.chunks {
+                let bytes = fs::read(output.join(&chunk.object_key)).unwrap();
+                assert_eq!(bytes.len() as u64, chunk.encoded_size);
+                assert_eq!(
+                    blake3::hash(&bytes).to_hex().to_string(),
+                    chunk.encoded_hash
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn packaging_failure_injection_leaves_only_verified_objects_and_no_manifest() {
+        let root =
+            std::env::temp_dir().join(format!("launcher-package-failure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let input = root.join("input");
+        let output = root.join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(input.join("game.exe"), seeded_bytes(256 * 1024)).unwrap();
+        let options = PackageOptions {
+            game_id: "game".into(),
+            build_id: "build".into(),
+            display_version: "A".into(),
+            executable: Some("game.exe".into()),
+            chunking: test_config(),
+            failure_injection: Some(PackagingFailureInjection {
+                fail_after_chunks: 1,
+                fail_after_manifest: false,
+            }),
+            ..PackageOptions::default()
+        };
+        assert!(package_directory(&input, &output, &options).is_err());
+        assert!(!output.join("manifest.json").exists());
+        assert!(
+            walkdir::WalkDir::new(&output)
+                .into_iter()
+                .filter_map(Result::ok)
+                .all(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_none_or(|extension| extension != "part")
+                })
+        );
+        for entry in walkdir::WalkDir::new(output.join("chunks/encoded"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let bytes = fs::read(entry.path()).unwrap();
+            assert_eq!(
+                blake3::hash(&bytes).to_hex().to_string(),
+                entry.file_name().to_string_lossy().trim_end_matches(".bin")
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn packaging_failure_after_manifest_creation_does_not_emit_ready_report() {
+        let root = std::env::temp_dir().join(format!(
+            "launcher-package-manifest-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let input = root.join("input");
+        let output = root.join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(input.join("game.exe"), b"game").unwrap();
+        let options = PackageOptions {
+            game_id: "game".into(),
+            build_id: "build".into(),
+            display_version: "A".into(),
+            executable: Some("game.exe".into()),
+            chunking: test_config(),
+            failure_injection: Some(PackagingFailureInjection {
+                fail_after_chunks: u64::MAX,
+                fail_after_manifest: true,
+            }),
+            ..PackageOptions::default()
+        };
+        assert!(package_directory(&input, &output, &options).is_err());
+        assert!(output.join("manifest.json").exists());
+        assert!(!output.join("report.json").exists());
+        let _ = fs::remove_dir_all(root);
+    }
 }

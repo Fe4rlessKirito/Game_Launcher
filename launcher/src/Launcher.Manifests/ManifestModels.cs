@@ -51,6 +51,14 @@ public sealed record Manifest(
     [property: JsonPropertyName("files")] IReadOnlyList<FileRecipe> Files,
     [property: JsonPropertyName("launch")] LaunchProfile Launch);
 
+public sealed record ManifestSignature(
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("algorithm")] string Algorithm,
+    [property: JsonPropertyName("key_id")] string KeyId,
+    [property: JsonPropertyName("manifest_blake3")] string ManifestBlake3,
+    [property: JsonPropertyName("signature_base64")] string SignatureBase64,
+    [property: JsonPropertyName("public_key_base64")] string? PublicKeyBase64);
+
 public static class ManifestJson
 {
     public static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)

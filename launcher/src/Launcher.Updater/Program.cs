@@ -34,6 +34,7 @@ public static class UpdateCoordinator
             {
                 Directory.Move(staging, installDirectory);
                 if (!File.Exists(destination)) throw new InvalidDataException("Swapped launcher executable is missing.");
+                PreserveUserFiles(backup, installDirectory);
                 Directory.Delete(backup, true);
             }
             catch
@@ -64,6 +65,30 @@ public static class UpdateCoordinator
             using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
             input.CopyTo(output);
         }
+    }
+
+    private static void PreserveUserFiles(string backup, string destination)
+    {
+        if (!Directory.Exists(backup)) return;
+        foreach (var source in Directory.EnumerateFiles(backup, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(backup, source);
+            if (!IsUserFile(relative)) continue;
+            var target = PathGuard.ResolveUnderRoot(destination, relative.Replace(Path.DirectorySeparatorChar, '/'));
+            if (File.Exists(target)) continue;
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Move(source, target, true);
+        }
+    }
+
+    private static bool IsUserFile(string relative)
+    {
+        var extension = Path.GetExtension(relative);
+        return !string.Equals(extension, ".exe", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".dll", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".pdb", StringComparison.OrdinalIgnoreCase)
+            && !relative.EndsWith(".deps.json", StringComparison.OrdinalIgnoreCase)
+            && !relative.EndsWith(".runtimeconfig.json", StringComparison.OrdinalIgnoreCase);
     }
 }
 

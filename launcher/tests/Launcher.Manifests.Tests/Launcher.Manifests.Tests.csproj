@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <AssemblyName>Launcher.Manifests.Tests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <ProjectReference Include="..\..\src\Launcher.Manifests\Launcher.Manifests.csproj" />
+    <ProjectReference Include="..\..\src\Launcher.Security\Launcher.Security.csproj" />
+    <Using Include="Xunit" />
+  </ItemGroup>
+</Project>

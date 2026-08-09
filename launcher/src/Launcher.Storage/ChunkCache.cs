@@ -12,6 +12,7 @@ public sealed class ChunkCache(string root, long maxBytes)
 
     public long CurrentBytes { get { lock (_gate) return _currentBytes; } }
     public string GetPath(string encodedHash) { ValidateHash(encodedHash); return Path.Combine(_root, $"{encodedHash}.bin"); }
+    public string GetPartialPath(string encodedHash) { ValidateHash(encodedHash); return Path.Combine(_root, $"{encodedHash}.part"); }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -43,7 +44,7 @@ public sealed class ChunkCache(string root, long maxBytes)
         if (!string.Equals(Hashing.ComputeHash(bytes.Span), encodedHash, StringComparison.Ordinal)) throw new InvalidDataException("Encoded chunk hash mismatch.");
         Directory.CreateDirectory(_root);
         var path = GetPath(encodedHash);
-        var temp = path + ".part";
+        var temp = path + $".{Guid.NewGuid():N}.part";
         await File.WriteAllBytesAsync(temp, bytes.ToArray(), cancellationToken).ConfigureAwait(false);
         File.Move(temp, path, true);
         lock (_gate)
@@ -51,6 +52,27 @@ public sealed class ChunkCache(string root, long maxBytes)
             if (_entries.TryGetValue(encodedHash, out var existing)) _currentBytes -= existing.Size;
             _entries[encodedHash] = new CacheEntry(bytes.Length, DateTime.UtcNow);
             _currentBytes += bytes.Length;
+        }
+        await EvictIfNeededAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task PutFileAsync(string encodedHash, string sourcePath, CancellationToken cancellationToken = default)
+    {
+        ValidateHash(encodedHash);
+        if (!File.Exists(sourcePath)) throw new FileNotFoundException("Chunk source file was not found.", sourcePath);
+        var actual = await Hashing.ComputeFileHashAsync(sourcePath, cancellationToken).ConfigureAwait(false);
+        var length = new FileInfo(sourcePath).Length;
+        if (!string.Equals(actual, encodedHash, StringComparison.Ordinal)) throw new InvalidDataException("Encoded chunk hash mismatch.");
+        Directory.CreateDirectory(_root);
+        var destination = GetPath(encodedHash);
+        var temporary = destination + $".{Guid.NewGuid():N}.part";
+        File.Move(sourcePath, temporary, true);
+        File.Move(temporary, destination, true);
+        lock (_gate)
+        {
+            if (_entries.TryGetValue(encodedHash, out var existing)) _currentBytes -= existing.Size;
+            _entries[encodedHash] = new CacheEntry(length, DateTime.UtcNow);
+            _currentBytes += length;
         }
         await EvictIfNeededAsync(cancellationToken).ConfigureAwait(false);
     }

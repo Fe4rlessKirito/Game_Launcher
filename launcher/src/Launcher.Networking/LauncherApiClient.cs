@@ -28,6 +28,22 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
         return manifest;
     }
 
+    public async Task<(Manifest Manifest, byte[] RawBytes)> GetManifestWithBytesAsync(string buildId, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.GetAsync(new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/manifest"), HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+        var manifest = ManifestJson.Deserialize(System.Text.Encoding.UTF8.GetString(bytes));
+        ManifestValidator.Validate(manifest);
+        return (manifest, bytes);
+    }
+
+    public async Task<ManifestSignature> GetManifestSignatureAsync(string buildId, CancellationToken cancellationToken = default)
+    {
+        return await httpClient.GetFromJsonAsync<ManifestSignature>(new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/signature"), JsonOptions, cancellationToken).ConfigureAwait(false)
+            ?? throw new HttpRequestException("API returned an empty manifest signature.");
+    }
+
     public async Task<IReadOnlyDictionary<string, ResolvedChunk>> ResolveChunksAsync(string buildId, IReadOnlyCollection<string> encodedHashes, CancellationToken cancellationToken = default)
     {
         using var response = await httpClient.PostAsJsonAsync(new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/resolve"), new ChunkResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);

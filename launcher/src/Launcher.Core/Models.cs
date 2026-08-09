@@ -66,6 +66,52 @@ public sealed record DownloadProgress(
     public double Fraction => TotalBytes <= 0 ? 0 : Math.Clamp((double)DownloadedBytes / TotalBytes, 0, 1);
 }
 
+public sealed record PersistedDownloadJob(
+    string JobId,
+    string BuildId,
+    DownloadJobState State,
+    long DownloadedBytes,
+    long TotalBytes,
+    DateTimeOffset UpdatedAt,
+    string? LastError = null);
+
+public enum InstallationFailurePoint
+{
+    None,
+    AfterStagingFirstFile,
+    AfterStagingAllFiles,
+    BeforeDatabaseCommit,
+    AfterFilesystemCommitBeforeDatabaseCommit,
+    DuringUpdateFileSwap
+}
+
+public sealed record InstallationFailureInjection(InstallationFailurePoint Point)
+{
+    public void ThrowIf(InstallationFailurePoint point)
+    {
+        if (Point == point) throw new IOException($"Deterministic failure injection: {point}");
+    }
+}
+
+public sealed class DownloadFailureInjection(long failAfterBytes)
+{
+    private int _triggered;
+
+    public long FailAfterBytes { get; } = Math.Max(1, failAfterBytes);
+
+    public bool TryLimitWrite(long received, int requested, out int writable)
+    {
+        writable = requested;
+        if (received >= FailAfterBytes || received + requested < FailAfterBytes || Interlocked.Exchange(ref _triggered, 1) != 0)
+        {
+            return false;
+        }
+
+        writable = checked((int)(FailAfterBytes - received));
+        return true;
+    }
+}
+
 public sealed record LauncherSettings(
     bool LaunchOnStartup = false,
     bool MinimizeOnClose = true,

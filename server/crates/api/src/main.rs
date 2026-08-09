@@ -8,7 +8,7 @@ use axum::{
 use chrono::Utc;
 use launcher_common::{
     ApiErrorBody, BuildSummary, CatalogPage, ChunkResolutionRequest, GameSummary, Manifest,
-    ResolvedChunk,
+    ManifestSignature, ResolvedChunk,
 };
 use launcher_database::Database;
 use launcher_storage::{LocalStorage, MirrorSet, StorageProvider};
@@ -26,6 +26,8 @@ struct AppState {
     mirrors: MirrorSet,
     games: Arc<RwLock<Vec<GameSummary>>>,
     manifests: Arc<RwLock<HashMap<String, Manifest>>>,
+    manifest_bytes: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    signatures: Arc<RwLock<HashMap<String, ManifestSignature>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -75,19 +77,22 @@ async fn main() -> anyhow::Result<()> {
         },
         Err(_) => None,
     };
-    let (games, manifests) = load_development_catalog();
+    let (games, manifests, manifest_bytes, signatures) = load_development_catalog();
     let state = AppState {
         database,
         storage,
         mirrors,
         games: Arc::new(RwLock::new(games)),
         manifests: Arc::new(RwLock::new(manifests)),
+        manifest_bytes: Arc::new(RwLock::new(manifest_bytes)),
+        signatures: Arc::new(RwLock::new(signatures)),
     };
     let app = Router::new()
         .route("/health", get(health))
         .route("/api/v1/games", get(list_games))
         .route("/api/v1/games/{id}", get(get_game))
         .route("/api/v1/builds/{id}/manifest", get(get_manifest))
+        .route("/api/v1/builds/{id}/signature", get(get_signature))
         .route("/api/v1/builds/{id}/resolve", post(resolve_chunks))
         .route("/objects/{encoded_hash}", get(get_object))
         .layer(CorsLayer::permissive())
@@ -166,28 +171,65 @@ async fn get_game(
 async fn get_manifest(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Manifest>, ApiResponseError> {
+) -> Result<Response, ApiResponseError> {
     if let Some(database) = &state.database {
+        if let Some(bytes) = database
+            .get_manifest_bytes(&id)
+            .await
+            .map_err(ApiResponseError::from)?
+        {
+            return Ok((
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                bytes,
+            )
+                .into_response());
+        }
         return database
             .get_manifest(&id)
             .await
             .map_err(ApiResponseError::from)?
-            .map(Json)
+            .map(|manifest| Json(manifest).into_response())
             .ok_or_else(|| ApiResponseError::not_found("manifest"));
     }
+    let bytes = state
+        .manifest_bytes
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| ApiResponseError::not_found("manifest"))?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bytes,
+    )
+        .into_response())
+}
+
+async fn get_signature(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ManifestSignature>, ApiResponseError> {
+    if let Some(database) = &state.database {
+        return database
+            .get_signature(&id)
+            .await
+            .map_err(ApiResponseError::from)?
+            .map(Json)
+            .ok_or_else(|| ApiResponseError::not_found("manifest signature"));
+    }
     state
-        .manifests
+        .signatures
         .read()
         .await
         .get(&id)
         .cloned()
         .map(Json)
-        .ok_or_else(|| ApiResponseError::not_found("manifest"))
+        .ok_or_else(|| ApiResponseError::not_found("manifest signature"))
 }
 
 async fn resolve_chunks(
     State(state): State<AppState>,
-    Path(_build_id): Path<String>,
+    Path(build_id): Path<String>,
     Json(request): Json<ChunkResolutionRequest>,
 ) -> Result<Json<Vec<ResolvedChunk>>, ApiResponseError> {
     if request.encoded_hashes.len() > 512 {
@@ -195,8 +237,35 @@ async fn resolve_chunks(
             "at most 512 chunks per resolution request",
         ));
     }
+    let allowed = if let Some(database) = &state.database {
+        database
+            .get_manifest(&build_id)
+            .await
+            .map_err(ApiResponseError::from)?
+            .map(|manifest| {
+                manifest
+                    .files
+                    .into_iter()
+                    .flat_map(|file| file.chunks.into_iter().map(|chunk| chunk.encoded_hash))
+                    .collect::<std::collections::HashSet<_>>()
+            })
+    } else {
+        state.manifests.read().await.get(&build_id).map(|manifest| {
+            manifest
+                .files
+                .iter()
+                .flat_map(|file| file.chunks.iter().map(|chunk| chunk.encoded_hash.clone()))
+                .collect::<std::collections::HashSet<_>>()
+        })
+    };
+    let allowed = allowed.ok_or_else(|| ApiResponseError::not_found("build"))?;
     let mut response = Vec::with_capacity(request.encoded_hashes.len());
     for hash in request.encoded_hashes {
+        if !allowed.contains(&hash) {
+            return Err(ApiResponseError::bad_request(
+                "chunk is not referenced by the requested build",
+            ));
+        }
         let urls = state
             .mirrors
             .urls(&hash)
@@ -227,13 +296,87 @@ async fn get_object(
         .into_response())
 }
 
-fn load_development_catalog() -> (Vec<GameSummary>, HashMap<String, Manifest>) {
+type DevelopmentCatalog = (
+    Vec<GameSummary>,
+    HashMap<String, Manifest>,
+    HashMap<String, Vec<u8>>,
+    HashMap<String, ManifestSignature>,
+);
+
+fn load_development_catalog() -> DevelopmentCatalog {
     let mut manifests = HashMap::new();
+    let mut manifest_bytes_by_build = HashMap::new();
+    let mut signatures = HashMap::new();
+    if let Ok(root) = env::var("LAUNCHER_CATALOG_ROOT") {
+        let root = PathBuf::from(root);
+        let mut games_by_id = HashMap::<String, GameSummary>::new();
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let directory = entry.path();
+                if !directory.is_dir() {
+                    continue;
+                }
+                let manifest_path = directory.join("manifest.json");
+                let signature_path = directory.join("manifest.sig.json");
+                let Ok(manifest_bytes) = std::fs::read(&manifest_path) else {
+                    continue;
+                };
+                let Ok(manifest) = serde_json::from_slice::<Manifest>(&manifest_bytes) else {
+                    continue;
+                };
+                if manifest.validate().is_err() {
+                    continue;
+                }
+                manifest_bytes_by_build.insert(manifest.build_id.clone(), manifest_bytes.clone());
+                if let Ok(signature_bytes) = std::fs::read(&signature_path)
+                    && let Ok(signature) =
+                        serde_json::from_slice::<ManifestSignature>(&signature_bytes)
+                {
+                    signatures.insert(manifest.build_id.clone(), signature);
+                }
+                let build = BuildSummary {
+                    id: manifest.build_id.clone(),
+                    game_id: manifest.game_id.clone(),
+                    display_version: manifest.display_version.clone(),
+                    size_bytes: manifest.files.iter().map(|file| file.size).sum(),
+                    published_at: Some(Utc::now()),
+                };
+                let game = GameSummary {
+                    id: manifest.game_id.clone(),
+                    slug: manifest.game_id.clone(),
+                    title: "Synthetic Game".to_owned(),
+                    description: "Published local synthetic build.".to_owned(),
+                    hero_image_url: None,
+                    cover_image_url: None,
+                    latest_build: Some(build),
+                };
+                let replace = games_by_id
+                    .get(&manifest.game_id)
+                    .and_then(|existing| existing.latest_build.as_ref())
+                    .map(|existing| {
+                        game.latest_build
+                            .as_ref()
+                            .map(|latest| latest.id > existing.id)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true);
+                if replace {
+                    games_by_id.insert(manifest.game_id.clone(), game);
+                }
+                manifests.insert(manifest.build_id.clone(), manifest);
+            }
+        }
+        let mut games = games_by_id.into_values().collect::<Vec<_>>();
+        games.sort_by(|a, b| a.id.cmp(&b.id));
+        return (games, manifests, manifest_bytes_by_build, signatures);
+    }
     if let Ok(path) = env::var("LAUNCHER_MANIFEST_PATH") {
-        match std::fs::read_to_string(&path).and_then(|bytes| {
-            serde_json::from_str::<Manifest>(&bytes).map_err(std::io::Error::other)
+        match std::fs::read(&path).and_then(|bytes| {
+            serde_json::from_slice::<Manifest>(&bytes)
+                .map(|manifest| (manifest, bytes))
+                .map_err(std::io::Error::other)
         }) {
-            Ok(manifest) => {
+            Ok((manifest, manifest_bytes)) => {
                 let build = BuildSummary {
                     id: manifest.build_id.clone(),
                     game_id: manifest.game_id.clone(),
@@ -251,13 +394,21 @@ fn load_development_catalog() -> (Vec<GameSummary>, HashMap<String, Manifest>) {
                     cover_image_url: None,
                     latest_build: Some(build),
                 };
+                if let Ok(signature_path) = env::var("LAUNCHER_SIGNATURE_PATH")
+                    && let Ok(signature_bytes) = std::fs::read(signature_path)
+                    && let Ok(signature) =
+                        serde_json::from_slice::<ManifestSignature>(&signature_bytes)
+                {
+                    signatures.insert(manifest.build_id.clone(), signature);
+                }
+                manifest_bytes_by_build.insert(manifest.build_id.clone(), manifest_bytes);
                 manifests.insert(manifest.build_id.clone(), manifest);
-                return (vec![game], manifests);
+                return (vec![game], manifests, manifest_bytes_by_build, signatures);
             }
             Err(error) => warn!(%error, "could not load LAUNCHER_MANIFEST_PATH"),
         }
     }
-    (Vec::new(), manifests)
+    (Vec::new(), manifests, manifest_bytes_by_build, signatures)
 }
 
 struct ApiResponseError {

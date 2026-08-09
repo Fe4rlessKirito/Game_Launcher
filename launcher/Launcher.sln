@@ -22,6 +22,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.Updater", "src\Lau
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.App", "src\Launcher.App\Launcher.App.csproj", "{A2A284D8-2B12-4D4F-9F48-00000000000A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.E2E", "src\Launcher.E2E\Launcher.E2E.csproj", "{A2A284D8-2B12-4D4F-9F48-00000000000B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.SignatureTool", "src\Launcher.SignatureTool\Launcher.SignatureTool.csproj", "{A2A284D8-2B12-4D4F-9F48-00000000000C}"
+EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.Core.Tests", "tests\Launcher.Core.Tests\Launcher.Core.Tests.csproj", "{A2A284D8-2B12-4D4F-9F48-000000000011}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.Downloads.Tests", "tests\Launcher.Downloads.Tests\Launcher.Downloads.Tests.csproj", "{A2A284D8-2B12-4D4F-9F48-000000000012}"
@@ -29,6 +33,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.Installation.Tests", "tests\Launcher.Installation.Tests\Launcher.Installation.Tests.csproj", "{A2A284D8-2B12-4D4F-9F48-000000000013}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.App.Tests", "tests\Launcher.App.Tests\Launcher.App.Tests.csproj", "{A2A284D8-2B12-4D4F-9F48-000000000014}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.Manifests.Tests", "tests\Launcher.Manifests.Tests\Launcher.Manifests.Tests.csproj", "{A2A284D8-2B12-4D4F-9F48-000000000015}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Launcher.Updater.Tests", "tests\Launcher.Updater.Tests\Launcher.Updater.Tests.csproj", "{A2A284D8-2B12-4D4F-9F48-000000000016}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -76,6 +84,14 @@ Global
 		{A2A284D8-2B12-4D4F-9F48-00000000000A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A2A284D8-2B12-4D4F-9F48-00000000000A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A2A284D8-2B12-4D4F-9F48-00000000000A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-00000000000C}.Release|Any CPU.Build.0 = Release|Any CPU
 		{A2A284D8-2B12-4D4F-9F48-000000000011}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{A2A284D8-2B12-4D4F-9F48-000000000011}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A2A284D8-2B12-4D4F-9F48-000000000011}.Release|Any CPU.ActiveCfg = Release|Any CPU
@@ -92,6 +108,14 @@ Global
 		{A2A284D8-2B12-4D4F-9F48-000000000014}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{A2A284D8-2B12-4D4F-9F48-000000000014}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{A2A284D8-2B12-4D4F-9F48-000000000014}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000015}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000015}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000015}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000015}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000016}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000016}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000016}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A2A284D8-2B12-4D4F-9F48-000000000016}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

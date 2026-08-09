@@ -89,6 +89,12 @@ def analyze_directory(directory: Path) -> AnalysisReport:
 
     for path in paths:
         portable = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            warnings.append(f"symlink skipped: {portable}")
+            findings.append(
+                Finding(FindingKind.WARNING, portable, 1.0, ("symbolic link is outside the owned build input",))
+            )
+            continue
         try:
             size = path.stat().st_size
             scanned_files += 1
@@ -117,15 +123,49 @@ def analyze_directory(directory: Path) -> AnalysisReport:
                 ExecutableCandidate(portable, architecture, size, score, tuple(pe_evidence + evidence))
             )
 
+        if lower_name in {"steam_api.dll", "steam_api64.dll", "steamclient.dll"}:
+            findings.append(Finding(FindingKind.FRAMEWORK, "Steamworks", 0.9, (f"adjacent file {portable}",)))
+        if any(token in lower_name for token in ("eos_sdk", "eos-overlay", "epiconlineservices")):
+            frameworks.add("Epic Online Services")
+            findings.append(
+                Finding(FindingKind.FRAMEWORK, "Epic Online Services", 0.8, (f"indicator file {portable}",))
+            )
+        if "playfab" in lower_name:
+            frameworks.add("PlayFab")
+            findings.append(Finding(FindingKind.FRAMEWORK, "PlayFab", 0.8, (f"indicator file {portable}",)))
+        if (
+            lower_name in {"easyanticheat.sys", "easyanticheat_x64.dll", "easyanticheat_launcher.exe"}
+            or "easyanticheat" in lower_name
+        ):
+            prerequisites.add("Easy Anti-Cheat")
+            findings.append(Finding(FindingKind.PREREQUISITE, "Easy Anti-Cheat", 0.9, (f"indicator file {portable}",)))
+        if lower_name in {"battleye.dll", "beservice.exe", "beservice_x64.exe"} or "battleye" in lower_name:
+            prerequisites.add("BattlEye")
+            findings.append(Finding(FindingKind.PREREQUISITE, "BattlEye", 0.9, (f"indicator file {portable}",)))
+
         if lower_name == "steam_appid.txt":
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
-                app_ids.update(re.findall(r"\b\d{3,12}\b", text))
+                found = re.findall(r"\b\d{3,12}\b", text)
+                app_ids.update(found)
+                for app_id in found:
+                    findings.append(Finding(FindingKind.APP_ID, app_id, 1.0, (f"steam_appid.txt at {portable}",)))
             except OSError as error:
                 warnings.append(f"could not read {portable}: {error}")
         match = re.fullmatch(r"appmanifest_(\d+)\.acf", lower_name)
         if match:
             app_ids.add(match.group(1))
+            findings.append(Finding(FindingKind.APP_ID, match.group(1), 0.95, (f"Steam ACF filename {portable}",)))
+
+        if lower_name.endswith(("crashreportclient.exe", "crashreporter.exe")) or "crashreport" in lower_name:
+            findings.append(
+                Finding(FindingKind.WARNING, "crash reporter candidate", 0.95, (f"utility filename {portable}",))
+            )
+        if lower_name in {"dotnet", "dotnet.exe", "vc_redist.x64.exe", "vc_redist.x86.exe"}:
+            prerequisites.add("runtime installer")
+            findings.append(
+                Finding(FindingKind.PREREQUISITE, "runtime installer", 0.8, (f"prerequisite filename {portable}",))
+            )
 
     executable_candidates.sort(key=lambda candidate: (-candidate.score, candidate.path.casefold()))
     for candidate in executable_candidates:
@@ -135,11 +175,21 @@ def analyze_directory(directory: Path) -> AnalysisReport:
             )
         )
     for framework in sorted(frameworks):
-        findings.append(Finding(FindingKind.FRAMEWORK, framework, 0.9))
+        if not any(finding.kind == FindingKind.FRAMEWORK and finding.value == framework for finding in findings):
+            framework_evidence = tuple(_framework_evidence(framework, paths, root))
+            findings.append(Finding(FindingKind.FRAMEWORK, framework, 0.9, framework_evidence))
     for app_id in sorted(app_ids):
-        findings.append(Finding(FindingKind.APP_ID, app_id, 0.85))
+        if not any(finding.kind == FindingKind.APP_ID and finding.value == app_id for finding in findings):
+            findings.append(Finding(FindingKind.APP_ID, app_id, 0.85, ("app ID metadata",)))
     for prerequisite in sorted(prerequisites):
-        findings.append(Finding(FindingKind.PREREQUISITE, prerequisite, 0.7))
+        if not any(finding.kind == FindingKind.PREREQUISITE and finding.value == prerequisite for finding in findings):
+            findings.append(Finding(FindingKind.PREREQUISITE, prerequisite, 0.7, ("prerequisite metadata",)))
+    if len(app_ids) > 1:
+        warnings.append(f"conflicting AppID candidates: {', '.join(sorted(app_ids))}")
+        findings.append(Finding(FindingKind.WARNING, "conflicting AppID candidates", 0.9, tuple(sorted(app_ids))))
+    if not executable_candidates:
+        warnings.append("no executable candidates found")
+        findings.append(Finding(FindingKind.WARNING, "no executable", 1.0, ("no .exe files found in the build",)))
 
     return AnalysisReport(
         schema_version=SCHEMA_VERSION,
@@ -187,10 +237,26 @@ def _read_pe_architecture(path: Path) -> tuple[Architecture, list[str]]:
     if len(header) < 0x40 or header[:2] != b"MZ":
         return Architecture.UNKNOWN, ["not a valid DOS PE header"]
     pe_offset = struct.unpack_from("<I", header, 0x3C)[0]
-    if pe_offset + 6 > len(header) or header[pe_offset : pe_offset + 4] != b"PE\0\0":
+    if pe_offset < 0x40 or pe_offset + 6 > len(header) or header[pe_offset : pe_offset + 4] != b"PE\0\0":
         return Architecture.UNKNOWN, ["missing PE signature"]
     machine = struct.unpack_from("<H", header, pe_offset + 4)[0]
     architecture = {0x014C: Architecture.X86, 0x8664: Architecture.X64, 0xAA64: Architecture.ARM64}.get(
         machine, Architecture.UNKNOWN
     )
     return architecture, [f"PE machine 0x{machine:04x}"]
+
+
+def _framework_evidence(framework: str, paths: list[Path], root: Path) -> list[str]:
+    evidence: list[str] = []
+    for path in paths:
+        name = path.name.casefold()
+        portable = path.relative_to(root).as_posix()
+        if framework == "Unity" and (name in {"unityplayer.dll", "gameassembly.dll"} or "unity" in name):
+            evidence.append(f"{portable} matches Unity indicator")
+        elif framework == "Unreal Engine" and (
+            name.startswith(("ue4", "ue5", "unreal")) or "/engine/" in f"/{portable.casefold()}/"
+        ):
+            evidence.append(f"{portable} matches Unreal indicator")
+        elif framework == ".NET" and name.endswith((".runtimeconfig.json", ".deps.json")):
+            evidence.append(f"{portable} is a .NET runtime descriptor")
+    return evidence or ["framework indicator metadata"]

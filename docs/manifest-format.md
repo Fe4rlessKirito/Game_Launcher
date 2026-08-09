@@ -45,4 +45,6 @@ Manifest paths always use `/`, are UTF-8, and are relative to the installation r
 
 `raw_hash` is BLAKE3 of decompressed bytes and identifies reusable content. `encoded_hash` is BLAKE3 of the Zstandard transport object and protects downloads before decompression. Files are reconstructed into a temporary sibling, verified, then atomically promoted.
 
+`manifest.sig.json` is a detached RSA PKCS#1 v1.5/SHA-256 envelope over the exact UTF-8 bytes served as `manifest.json`. It includes the BLAKE3 digest, algorithm, and `key_id`; the embedded public key is accepted only by local fixtures. Production clients must resolve `key_id` through a trusted key ring. PostgreSQL stores the exact manifest bytes in `builds.manifest_bytes` so a database-backed API does not reserialize JSON and invalidate the signature.
+
 The current Rust FastCDC 4.0 implementation uses the library-supported v1 profile of 1 MiB minimum, 4 MiB average, and 16 MiB maximum. The larger 16/64/128 MiB figures are future tuning targets only; they must not be placed in a v1 manifest until the selected chunker supports them.

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Launcher.E2E</AssemblyName>
+    <RootNamespace>Launcher.E2E</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Launcher.Core\Launcher.Core.csproj" />
+    <ProjectReference Include="..\Launcher.Downloads\Launcher.Downloads.csproj" />
+    <ProjectReference Include="..\Launcher.Installation\Launcher.Installation.csproj" />
+    <ProjectReference Include="..\Launcher.Manifests\Launcher.Manifests.csproj" />
+    <ProjectReference Include="..\Launcher.Networking\Launcher.Networking.csproj" />
+    <ProjectReference Include="..\Launcher.Security\Launcher.Security.csproj" />
+    <ProjectReference Include="..\Launcher.Storage\Launcher.Storage.csproj" />
+  </ItemGroup>
+</Project>

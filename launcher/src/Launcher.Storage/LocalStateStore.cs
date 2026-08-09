@@ -11,12 +11,15 @@ public sealed class LocalStateStore(string databasePath)
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(databasePath))!);
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText = """
             PRAGMA journal_mode = WAL;
             PRAGMA foreign_keys = ON;
+            CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+            INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, $applied_at);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS installed_games (
                 game_id TEXT PRIMARY KEY,
@@ -32,10 +35,13 @@ public sealed class LocalStateStore(string databasePath)
                 state TEXT NOT NULL,
                 downloaded_bytes INTEGER NOT NULL DEFAULT 0,
                 total_bytes INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                last_error TEXT
             );
             """;
+        command.Parameters.AddWithValue("$applied_at", DateTimeOffset.UtcNow.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureColumnAsync(connection, "download_jobs", "last_error", "TEXT", cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<InstalledGame>> GetInstalledGamesAsync(CancellationToken cancellationToken = default)
@@ -76,5 +82,67 @@ public sealed class LocalStateStore(string databasePath)
         command.CommandText = "DELETE FROM installed_games WHERE game_id = $game_id";
         command.Parameters.AddWithValue("$game_id", gameId);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SaveDownloadJobAsync(PersistedDownloadJob job, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO download_jobs(job_id, build_id, state, downloaded_bytes, total_bytes, updated_at, last_error) VALUES($job_id, $build_id, $state, $downloaded_bytes, $total_bytes, $updated_at, $last_error) ON CONFLICT(job_id) DO UPDATE SET build_id=excluded.build_id, state=excluded.state, downloaded_bytes=excluded.downloaded_bytes, total_bytes=excluded.total_bytes, updated_at=excluded.updated_at, last_error=excluded.last_error";
+        command.Parameters.AddWithValue("$job_id", job.JobId);
+        command.Parameters.AddWithValue("$build_id", job.BuildId);
+        command.Parameters.AddWithValue("$state", job.State.ToString());
+        command.Parameters.AddWithValue("$downloaded_bytes", job.DownloadedBytes);
+        command.Parameters.AddWithValue("$total_bytes", job.TotalBytes);
+        command.Parameters.AddWithValue("$updated_at", job.UpdatedAt.ToUniversalTime().ToString("O"));
+        command.Parameters.AddWithValue("$last_error", (object?)job.LastError ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PersistedDownloadJob?> GetDownloadJobAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT job_id, build_id, state, downloaded_bytes, total_bytes, updated_at, last_error FROM download_jobs WHERE job_id = $job_id";
+        command.Parameters.AddWithValue("$job_id", jobId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        return new PersistedDownloadJob(reader.GetString(0), reader.GetString(1), Enum.Parse<DownloadJobState>(reader.GetString(2)), reader.GetInt64(3), reader.GetInt64(4), DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(6) ? null : reader.GetString(6));
+    }
+
+    public async Task<IReadOnlyList<PersistedDownloadJob>> GetDownloadJobsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT job_id, build_id, state, downloaded_bytes, total_bytes, updated_at, last_error FROM download_jobs ORDER BY updated_at DESC";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var jobs = new List<PersistedDownloadJob>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) jobs.Add(new PersistedDownloadJob(reader.GetString(0), reader.GetString(1), Enum.Parse<DownloadJobState>(reader.GetString(2)), reader.GetInt64(3), reader.GetInt64(4), DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(6) ? null : reader.GetString(6)));
+        return jobs;
+    }
+
+    public async Task DeleteDownloadJobAsync(string jobId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM download_jobs WHERE job_id = $job_id";
+        command.Parameters.AddWithValue("$job_id", jobId);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task EnsureColumnAsync(SqliteConnection connection, string table, string column, string type, CancellationToken cancellationToken)
+    {
+        await using var check = connection.CreateCommand();
+        check.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = $column";
+        check.Parameters.AddWithValue("$column", column);
+        var exists = Convert.ToInt64(await check.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) != 0;
+        if (exists) return;
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {type}";
+        await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 }
