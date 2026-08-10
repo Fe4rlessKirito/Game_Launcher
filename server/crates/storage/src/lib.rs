@@ -10,25 +10,28 @@ use aws_sdk_s3::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
+use std::{collections::HashMap, env};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 
 mod tiering;
 
 pub use tiering::{
-    CapacityReservationStore, CapacitySnapshot, FakeMegaAccount, FakeMegaFailure,
-    InMemoryCapacityReservationStore, MegaAccountBackend, MegaAccountConfig, MegaCliAccount,
-    MegaColdStorageConfig, MegaColdStorageOptions, MegaColdStoragePool, PlacementProvider,
-    RestoreMode, StorageAccountSnapshot, StorageAccountStatus, StoragePlacementAction,
-    StoragePlacementEngine, StoragePlacementPlan, StoragePolicy, StoragePoolHealth,
-    StoragePoolStatus, StorageReservation, StorageTier,
+    CapacityReservationStore, CapacitySnapshot, ExistingStorageReplica, FakeMegaAccount,
+    FakeMegaFailure, InMemoryCapacityReservationStore, ManualStorageCapacityProvisioner,
+    MegaAccountBackend, MegaAccountConfig, MegaCliAccount, MegaColdStorageConfig,
+    MegaColdStorageOptions, MegaColdStoragePool, PlacementPool, PlacementProvider,
+    ProvisionedCapacity, ProvisioningMode, RestoreMode, StorageAccountSnapshot,
+    StorageAccountStatus, StorageCapacityManager, StorageCapacityProvisioner, StorageClass,
+    StoragePlacementAction, StoragePlacementEngine, StoragePlacementPlan, StoragePolicy,
+    StoragePool, StoragePoolCandidate, StoragePoolHealth, StoragePoolMetadata, StoragePoolStatus,
+    StorageReservation, StorageTier,
 };
 
 const OBJECT_PREFIX: &str = "chunks/encoded/";
@@ -79,6 +82,9 @@ pub struct DownloadLocation {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageProviderHealth {
     pub provider: String,
+    pub pool_id: String,
+    pub failure_domain: String,
+    pub storage_class: StorageClass,
     pub tier: StorageTier,
     pub healthy: bool,
     pub error: Option<String>,
@@ -88,6 +94,18 @@ pub struct StorageProviderHealth {
 pub trait StorageProvider: Send + Sync {
     fn provider_id(&self) -> &str;
     fn tier(&self) -> StorageTier;
+    fn storage_class(&self) -> StorageClass {
+        self.tier()
+    }
+    fn pool_id(&self) -> &str {
+        self.provider_id()
+    }
+    fn provider_type(&self) -> &str {
+        self.provider_id()
+    }
+    fn failure_domain(&self) -> &str {
+        self.provider_id()
+    }
     async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError>;
     async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
         match self.read_encoded(encoded_hash).await {
@@ -113,17 +131,109 @@ pub trait StorageProvider: Send + Sync {
 #[derive(Clone, Default)]
 pub struct StorageRegistry {
     providers: Arc<Vec<Arc<dyn StorageProvider>>>,
+    pools: Arc<Vec<StoragePool>>,
+    provider_pool_ids: Arc<HashMap<String, String>>,
 }
 
 impl StorageRegistry {
     pub fn new(providers: Vec<Arc<dyn StorageProvider>>) -> Result<Self, StorageError> {
+        let mut pools = Vec::new();
+        for provider in &providers {
+            if pools
+                .iter()
+                .any(|pool: &StoragePool| pool.id == provider.pool_id())
+            {
+                continue;
+            }
+            pools.push(StoragePool::for_provider(
+                provider.pool_id().to_owned(),
+                provider.storage_class(),
+                provider.provider_type().to_owned(),
+                provider.failure_domain().to_owned(),
+            ));
+        }
+        Self::with_pools(providers, pools)
+    }
+
+    pub fn with_pools(
+        providers: Vec<Arc<dyn StorageProvider>>,
+        pools: Vec<StoragePool>,
+    ) -> Result<Self, StorageError> {
+        let provider_pool_ids = providers
+            .iter()
+            .map(|provider| {
+                (
+                    provider.provider_id().to_owned(),
+                    provider.pool_id().to_owned(),
+                )
+            })
+            .collect();
+        Self::with_pool_mapping(providers, pools, provider_pool_ids)
+    }
+
+    pub fn with_provider_pools(
+        entries: Vec<(Arc<dyn StorageProvider>, StoragePool)>,
+    ) -> Result<Self, StorageError> {
+        let mut providers = Vec::with_capacity(entries.len());
+        let mut pools = Vec::with_capacity(entries.len());
+        let mut provider_pool_ids = HashMap::new();
+        for (provider, pool) in entries {
+            provider_pool_ids.insert(provider.provider_id().to_owned(), pool.id.clone());
+            if !pools
+                .iter()
+                .any(|candidate: &StoragePool| candidate.id == pool.id)
+            {
+                pools.push(pool);
+            }
+            providers.push(provider);
+        }
+        Self::with_pool_mapping(providers, pools, provider_pool_ids)
+    }
+
+    fn with_pool_mapping(
+        providers: Vec<Arc<dyn StorageProvider>>,
+        mut pools: Vec<StoragePool>,
+        mut provider_pool_ids: HashMap<String, String>,
+    ) -> Result<Self, StorageError> {
         if providers.is_empty() {
             return Err(StorageError::Configuration(
                 "at least one storage provider is required".to_owned(),
             ));
         }
+        let mut pool_ids = std::collections::HashSet::new();
+        for pool in &pools {
+            if pool.id.trim().is_empty()
+                || pool.failure_domain.trim().is_empty()
+                || !pool_ids.insert(pool.id.clone())
+            {
+                return Err(StorageError::Configuration(
+                    "storage pools require unique IDs and failure domains".to_owned(),
+                ));
+            }
+        }
+        for provider in &providers {
+            let pool_id = provider_pool_ids
+                .entry(provider.provider_id().to_owned())
+                .or_insert_with(|| provider.pool_id().to_owned())
+                .clone();
+            if !pools.iter().any(|pool| pool.id == pool_id) {
+                pools.push(StoragePool::for_provider(
+                    pool_id,
+                    provider.storage_class(),
+                    provider.provider_type().to_owned(),
+                    provider.failure_domain().to_owned(),
+                ));
+            }
+        }
+        pools.sort_by(|left, right| {
+            left.priority
+                .cmp(&right.priority)
+                .then_with(|| left.id.cmp(&right.id))
+        });
         Ok(Self {
             providers: Arc::new(providers),
+            pools: Arc::new(pools),
+            provider_pool_ids: Arc::new(provider_pool_ids),
         })
     }
 
@@ -134,9 +244,113 @@ impl StorageRegistry {
     pub fn providers_for_tier(&self, tier: StorageTier) -> Vec<Arc<dyn StorageProvider>> {
         self.providers
             .iter()
-            .filter(|provider| provider.tier() == tier)
+            .filter(|provider| {
+                self.pool_for_provider(provider.provider_id())
+                    .is_some_and(|pool| pool.storage_class == tier)
+            })
             .cloned()
             .collect()
+    }
+
+    pub fn providers_for_class(&self, class: StorageClass) -> Vec<Arc<dyn StorageProvider>> {
+        self.providers_for_tier(class)
+    }
+
+    pub fn pools(&self) -> &[StoragePool] {
+        self.pools.as_ref()
+    }
+
+    pub fn pool(&self, pool_id: &str) -> Option<&StoragePool> {
+        self.pools.iter().find(|pool| pool.id == pool_id)
+    }
+
+    pub fn pool_for_provider(&self, provider_id: &str) -> Option<&StoragePool> {
+        let pool_id = self.provider_pool_ids.get(provider_id)?;
+        self.pool(pool_id)
+    }
+
+    pub fn providers_for_pool(&self, pool_id: &str) -> Vec<Arc<dyn StorageProvider>> {
+        self.providers
+            .iter()
+            .filter(|provider| {
+                self.pool_for_provider(provider.provider_id())
+                    .is_some_and(|pool| pool.id == pool_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn restore_sources(&self, class: StorageClass) -> Vec<Arc<dyn StorageProvider>> {
+        let mut providers = self
+            .providers
+            .iter()
+            .filter(|provider| {
+                self.pool_for_provider(provider.provider_id())
+                    .is_some_and(|pool| pool.storage_class == class && pool.enabled)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        providers.sort_by(|left, right| {
+            let left_pool = self.pool_for_provider(left.provider_id());
+            let right_pool = self.pool_for_provider(right.provider_id());
+            left_pool
+                .map(|pool| pool.priority)
+                .unwrap_or(i32::MAX)
+                .cmp(&right_pool.map(|pool| pool.priority).unwrap_or(i32::MAX))
+                .then_with(|| left.provider_id().cmp(right.provider_id()))
+        });
+        providers
+    }
+
+    pub async fn read_from_restore_source(
+        &self,
+        encoded_hash: &str,
+        class: StorageClass,
+    ) -> Result<(String, Vec<u8>), StorageError> {
+        let mut last_error = None;
+        for provider in self.restore_sources(class) {
+            match provider.read_encoded(encoded_hash).await {
+                Ok(bytes) => return Ok((provider.provider_id().to_owned(), bytes)),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            StorageError::Unavailable(format!(
+                "no {} restore source is configured",
+                class.as_str()
+            ))
+        }))
+    }
+
+    pub async fn placement_pools(&self) -> Vec<StoragePoolCandidate> {
+        let mut candidates = Vec::with_capacity(self.providers.len());
+        for provider in self.providers.iter() {
+            let Some(pool) = self.pool_for_provider(provider.provider_id()) else {
+                continue;
+            };
+            let health = provider.health_check().await;
+            let healthy = health.is_ok();
+            let status = if !pool.enabled {
+                StoragePoolStatus::Disabled
+            } else if healthy {
+                pool.status
+            } else {
+                StoragePoolStatus::Unavailable
+            };
+            candidates.push(StoragePoolCandidate {
+                pool_id: pool.id.clone(),
+                provider_id: provider.provider_id().to_owned(),
+                storage_class: pool.storage_class,
+                provider_type: pool.provider_type.clone(),
+                priority: pool.priority,
+                failure_domain: pool.failure_domain.clone(),
+                enabled: pool.enabled,
+                status,
+                healthy,
+                capacity_available_bytes: None,
+            });
+        }
+        candidates
     }
 
     pub fn provider(&self, provider_id: &str) -> Option<Arc<dyn StorageProvider>> {
@@ -168,7 +382,10 @@ impl StorageRegistry {
         validate_hash(encoded_hash)?;
         let mut locations = Vec::with_capacity(self.providers.len());
         for provider in self.providers.iter() {
-            if tier.is_some_and(|expected| provider.tier() != expected) {
+            if tier.is_some_and(|expected| {
+                self.pool_for_provider(provider.provider_id())
+                    .is_none_or(|pool| pool.storage_class != expected)
+            }) {
                 continue;
             }
             if let Ok(location) = provider.download_location(encoded_hash).await
@@ -185,10 +402,33 @@ impl StorageRegistry {
     pub async fn health(&self) -> Vec<StorageProviderHealth> {
         let mut health = Vec::with_capacity(self.providers.len());
         for provider in self.providers.iter() {
-            let result = provider.health_check().await;
+            let pool = self.pool_for_provider(provider.provider_id());
+            let storage_class = pool
+                .map(|pool| pool.storage_class)
+                .unwrap_or_else(|| provider.storage_class());
+            let pool_id = pool
+                .map(|pool| pool.id.clone())
+                .unwrap_or_else(|| provider.pool_id().to_owned());
+            let failure_domain = pool
+                .map(|pool| pool.failure_domain.clone())
+                .unwrap_or_else(|| provider.failure_domain().to_owned());
+            let result = match pool {
+                Some(pool)
+                    if !pool.enabled || matches!(pool.status, StoragePoolStatus::Disabled) =>
+                {
+                    Err(StorageError::Unavailable(format!(
+                        "storage pool {} is disabled",
+                        pool.id
+                    )))
+                }
+                _ => provider.health_check().await,
+            };
             health.push(StorageProviderHealth {
                 provider: provider.provider_id().to_owned(),
-                tier: provider.tier(),
+                pool_id,
+                failure_domain,
+                storage_class,
+                tier: storage_class,
                 healthy: result.is_ok(),
                 error: result.err().map(|error| error.to_string()),
             });
@@ -396,6 +636,14 @@ impl StorageProvider for LocalStorage {
 
     fn tier(&self) -> StorageTier {
         self.tier
+    }
+
+    fn provider_type(&self) -> &str {
+        "local"
+    }
+
+    fn failure_domain(&self) -> &str {
+        "local"
     }
 
     async fn health_check(&self) -> Result<(), StorageError> {
@@ -881,6 +1129,10 @@ impl StorageProvider for S3CompatibleStorage {
         self.config.tier
     }
 
+    fn provider_type(&self) -> &str {
+        "s3"
+    }
+
     async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
         validate_hash(encoded_hash)?;
         verify_encoded_bytes(encoded_hash, bytes)?;
@@ -1284,7 +1536,85 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn restore_source_selection_falls_back_by_pool_priority() {
+        let root = std::env::temp_dir().join(format!("launcher-restore-fallback-{}", uuid_like()));
+        let fallback =
+            LocalStorage::with_tier(&root, "https://fallback.example", StorageClass::Cold);
+        let bytes = b"restore fallback";
+        let hash = blake3::hash(bytes).to_hex().to_string();
+        fallback.put_encoded(&hash, bytes).await.unwrap();
+        let registry = StorageRegistry::with_pools(
+            vec![
+                Arc::new(ColdUnavailableProvider),
+                Arc::new(fallback.clone()),
+            ],
+            vec![
+                StoragePool::for_provider("cold-preferred", StorageClass::Cold, "mega", "mega"),
+                StoragePool {
+                    id: "local".to_owned(),
+                    storage_class: StorageClass::Cold,
+                    provider_type: "s3".to_owned(),
+                    priority: 200,
+                    failure_domain: "archive-provider".to_owned(),
+                    enabled: true,
+                    status: StoragePoolStatus::Ready,
+                    provisioning_mode: ProvisioningMode::Disabled,
+                },
+            ],
+        )
+        .unwrap();
+        let (provider, restored) = registry
+            .read_from_restore_source(&hash, StorageClass::Cold)
+            .await
+            .unwrap();
+        assert_eq!(provider, "local");
+        assert_eq!(restored, bytes);
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn restore_source_selection_reports_when_all_pools_are_unavailable() {
+        let registry = StorageRegistry::new(vec![Arc::new(ColdUnavailableProvider)]).unwrap();
+        let error = registry
+            .read_from_restore_source(&"a".repeat(64), StorageClass::Cold)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("unavailable"));
+    }
+
     struct UnavailableProvider;
+
+    struct ColdUnavailableProvider;
+
+    #[async_trait::async_trait]
+    impl StorageProvider for ColdUnavailableProvider {
+        fn provider_id(&self) -> &str {
+            "cold-preferred"
+        }
+
+        fn tier(&self) -> StorageTier {
+            StorageClass::Cold
+        }
+
+        async fn put_encoded(&self, _: &str, _: &[u8]) -> Result<(), StorageError> {
+            Err(StorageError::Provider("unavailable".to_owned()))
+        }
+
+        async fn read_encoded(&self, _: &str) -> Result<Vec<u8>, StorageError> {
+            Err(StorageError::Unavailable(
+                "cold preferred unavailable".to_owned(),
+            ))
+        }
+
+        async fn delete_encoded(&self, _: &str) -> Result<(), StorageError> {
+            Err(StorageError::Provider("unavailable".to_owned()))
+        }
+
+        async fn download_location(&self, _: &str) -> Result<DownloadLocation, StorageError> {
+            Err(StorageError::Provider("unavailable".to_owned()))
+        }
+    }
 
     #[async_trait::async_trait]
     impl StorageProvider for UnavailableProvider {

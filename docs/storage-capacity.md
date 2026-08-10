@@ -1,9 +1,11 @@
 # Storage capacity and reservations
 
-Cold accounts are modeled as a pool, not as one oversized logical disk.
-`storage_accounts` stores capacity, used bytes, held bytes, safety margin, and
-operator-visible status. `storage_reservations` stores the chunk, byte count,
-expiry, and lifecycle state (`HELD`, `COMMITTED`, `RELEASED`, or `EXPIRED`).
+Cold accounts are modeled as capacity members of a provider pool, not as one
+oversized logical disk. `storage_pools` identifies the logical class/provider
+pool and failure domain. `storage_accounts` stores capacity, used bytes, held
+bytes, safety margin, and operator-visible status. `storage_reservations`
+stores the chunk, byte count, expiry, and lifecycle state (`HELD`, `COMMITTED`,
+`RELEASED`, or `EXPIRED`).
 
 Before a cold upload, the worker:
 
@@ -19,16 +21,23 @@ PostgreSQL implementation is the production authority; account rows are locked
 with `FOR UPDATE`, and a partial unique index prevents two active reservations
 for the same account/chunk.
 
-Configure the margin explicitly per account with
-`safety_margin_bytes`. Capacity thresholds are not hardcoded. A full pool
-returns typed `NeedsCapacity` and leaves the build unpublished; it does not
-silently delete content or lower the policy.
+A full pool returns typed `NeedsCapacity` and leaves the build unpublished; it
+does not silently delete content or lower the policy. The pool-level
+`StorageCapacityProvisioner` seam supports `DISABLED`, `MANUAL`, and
+`AUTOMATIC` modes. The current MEGA implementation is
+`ManualStorageCapacityProvisioner`: it reports `NEEDS_CAPACITY` until an
+operator enrolls another account through the existing admin command.
+
+An automatic provisioner may later return an account/credential reference. It
+does not perform consumer signup. The existing authentication, capacity query,
+smoke test, enrollment, and `ACTIVE` transition remain the safety boundary.
 
 Operators can inspect capacity without exposing credentials:
 
 ```powershell
 launcher-admin storage accounts list
 launcher-admin storage accounts inspect --account-id mega-a
+launcher-admin storage pools list
 launcher-admin storage health
 ```
 

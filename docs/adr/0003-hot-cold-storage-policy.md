@@ -6,10 +6,12 @@ Accepted
 
 ## Decision
 
-Storage providers declare `HOT` or `COLD`, while `StoragePolicy` declares
-minimum and preferred verified replica counts. Publication checks every build
-chunk against the policy. The API resolver returns only hot locations and
-reports a typed restore-pending response when only cold coverage exists.
+`StorageClass` declares logical `HOT`, `COLD`, or future `ARCHIVE`, while
+provider pools carry provider identity and failure-domain metadata.
+`StoragePolicy` declares minimum and preferred verified replica counts plus
+optional minimum failure domains. Publication checks every build chunk against
+the class/pool policy. The API resolver returns only hot locations and reports a
+typed restore-pending response when only cold coverage exists.
 
 ## Consequences
 

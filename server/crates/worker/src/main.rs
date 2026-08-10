@@ -10,10 +10,10 @@ use launcher_manifests::{
 };
 use launcher_packager::{PackageOptions, package_directory};
 use launcher_storage::{
-    CapacityReservationStore, InMemoryCapacityReservationStore, MegaAccountBackend,
-    MegaAccountConfig, MegaCliAccount, MegaColdStorageConfig, PlacementProvider,
-    StorageAccountStatus, StoragePlacementEngine, StoragePolicy, StorageProvider, StorageRegistry,
-    StorageTier, storage_from_env_with_reservation_store,
+    CapacityReservationStore, ExistingStorageReplica, InMemoryCapacityReservationStore,
+    MegaAccountBackend, MegaAccountConfig, MegaCliAccount, MegaColdStorageConfig,
+    StorageAccountStatus, StorageClass, StoragePlacementEngine, StoragePolicy, StorageProvider,
+    StorageRegistry, StorageTier, storage_from_env_with_reservation_store,
 };
 use launcher_worker::IngestionProgress;
 use rand::{RngCore, rngs::OsRng};
@@ -150,6 +150,10 @@ enum StagingCommands {
 #[derive(Debug, Subcommand)]
 enum StorageCommands {
     Policy,
+    Pools {
+        #[command(subcommand)]
+        command: StoragePoolCommands,
+    },
     Smoke {
         #[arg(long, default_value = "hot")]
         provider: String,
@@ -211,6 +215,12 @@ enum StorageCommands {
         #[arg(long, default_value_t = 100)]
         limit: u32,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum StoragePoolCommands {
+    List,
+    Inspect { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -835,6 +845,45 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
             println!("{}", serde_json::to_string_pretty(&policy)?);
         }
+        StorageCommands::Pools { command } => {
+            let storage_root = env::var_os("LAUNCHER_STORAGE_ROOT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("storage"));
+            let (storage, _) = storage_command_context(&storage_root).await?;
+            let health = storage.health().await;
+            match command {
+                StoragePoolCommands::List => {
+                    for pool in storage.pools() {
+                        let provider_health =
+                            health.iter().find(|candidate| candidate.pool_id == pool.id);
+                        println!(
+                            "pool={} class={} provider_type={} priority={} failure_domain={} enabled={} status={} provisioning={} healthy={}",
+                            pool.id,
+                            pool.storage_class,
+                            pool.provider_type,
+                            pool.priority,
+                            pool.failure_domain,
+                            pool.enabled,
+                            pool.status.as_str(),
+                            pool.provisioning_mode,
+                            provider_health.is_some_and(|candidate| candidate.healthy),
+                        );
+                    }
+                }
+                StoragePoolCommands::Inspect { id } => {
+                    let pool = storage
+                        .pool(&id)
+                        .with_context(|| format!("storage pool {id:?} is not configured"))?;
+                    println!("{}", serde_json::to_string_pretty(pool)?);
+                    if let Some(provider_health) =
+                        health.iter().find(|candidate| candidate.pool_id == id)
+                    {
+                        println!("health=");
+                        println!("{}", serde_json::to_string_pretty(provider_health)?);
+                    }
+                }
+            }
+        }
         StorageCommands::Smoke {
             provider,
             storage_root,
@@ -888,24 +937,46 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
             let (storage, database) = storage_command_context(&storage_root).await?;
             let health = storage.health().await;
-            let hot_healthy = health
-                .iter()
-                .filter(|provider| provider.tier == StorageTier::Hot && provider.healthy)
-                .count() as u32;
-            let cold_healthy = health
-                .iter()
-                .filter(|provider| provider.tier == StorageTier::Cold && provider.healthy)
-                .count() as u32;
-            if hot_healthy < policy.required_replicas(StorageTier::Hot) {
+            let class_coverage = |class: StorageClass| {
+                let healthy = health
+                    .iter()
+                    .filter(|provider| provider.storage_class == class && provider.healthy)
+                    .collect::<Vec<_>>();
+                let domains = healthy
+                    .iter()
+                    .map(|provider| provider.failure_domain.as_str())
+                    .collect::<HashSet<_>>()
+                    .len() as u32;
+                (healthy.len() as u32, domains)
+            };
+            let (hot_healthy, hot_domains) = class_coverage(StorageClass::Hot);
+            let (cold_healthy, cold_domains) = class_coverage(StorageClass::Cold);
+            let (archive_healthy, archive_domains) = class_coverage(StorageClass::Archive);
+            if hot_healthy < policy.required_replicas(StorageTier::Hot)
+                || hot_domains < policy.required_failure_domains(StorageClass::Hot)
+            {
                 anyhow::bail!(
-                    "staging readiness failed: healthy hot providers {hot_healthy} below required {}",
-                    policy.required_replicas(StorageTier::Hot)
+                    "staging readiness failed: hot coverage is {hot_healthy} replica(s)/{hot_domains} failure domain(s), required {}/{}",
+                    policy.required_replicas(StorageTier::Hot),
+                    policy.required_failure_domains(StorageClass::Hot),
                 );
             }
-            if cold_healthy < policy.required_replicas(StorageTier::Cold) {
+            if cold_healthy < policy.required_replicas(StorageTier::Cold)
+                || cold_domains < policy.required_failure_domains(StorageClass::Cold)
+            {
                 anyhow::bail!(
-                    "staging readiness failed: healthy cold providers {cold_healthy} below required {}",
-                    policy.required_replicas(StorageTier::Cold)
+                    "staging readiness failed: cold coverage is {cold_healthy} replica(s)/{cold_domains} failure domain(s), required {}/{}",
+                    policy.required_replicas(StorageTier::Cold),
+                    policy.required_failure_domains(StorageClass::Cold),
+                );
+            }
+            if archive_healthy < policy.required_replicas(StorageClass::Archive)
+                || archive_domains < policy.required_failure_domains(StorageClass::Archive)
+            {
+                anyhow::bail!(
+                    "staging readiness failed: archive coverage is {archive_healthy} replica(s)/{archive_domains} failure domain(s), required {}/{}",
+                    policy.required_replicas(StorageClass::Archive),
+                    policy.required_failure_domains(StorageClass::Archive),
                 );
             }
             if policy.required_replicas(StorageTier::Cold) > 0 {
@@ -929,11 +1000,19 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                 }
             }
             println!(
-                "readiness=READY hot_healthy={} cold_healthy={} required_hot={} required_cold={}",
+                "readiness=READY hot_healthy={} hot_failure_domains={} cold_healthy={} cold_failure_domains={} archive_healthy={} archive_failure_domains={} required_hot={} required_hot_failure_domains={} required_cold={} required_cold_failure_domains={} required_archive={} required_archive_failure_domains={}",
                 hot_healthy,
+                hot_domains,
                 cold_healthy,
+                cold_domains,
+                archive_healthy,
+                archive_domains,
                 policy.required_replicas(StorageTier::Hot),
-                policy.required_replicas(StorageTier::Cold)
+                policy.required_failure_domains(StorageClass::Hot),
+                policy.required_replicas(StorageTier::Cold),
+                policy.required_failure_domains(StorageClass::Cold),
+                policy.required_replicas(StorageClass::Archive),
+                policy.required_failure_domains(StorageClass::Archive),
             );
         }
         StorageCommands::Accounts { command } => handle_storage_account_command(command).await?,
@@ -1055,6 +1134,7 @@ fn select_provider(
     if !selector.eq_ignore_ascii_case("hot") && !selector.eq_ignore_ascii_case("cold") {
         return storage
             .provider(selector)
+            .or_else(|| storage.providers_for_pool(selector).into_iter().next())
             .with_context(|| format!("provider {selector:?} is not configured"));
     }
     storage
@@ -1214,7 +1294,7 @@ async fn run_cold_restore_smoke(
     let (storage, _) = storage_command_context(storage_root).await?;
     let hot = select_provider(&storage, target_provider, StorageTier::Hot)?;
     let cold = storage
-        .providers_for_tier(StorageTier::Cold)
+        .restore_sources(StorageClass::Cold)
         .into_iter()
         .next()
         .context("no COLD provider is configured")?;
@@ -1472,31 +1552,27 @@ async fn process_restore_job(
     storage: &StorageRegistry,
     job: &launcher_database::RestoreJob,
 ) -> Result<()> {
-    let mut bytes = None;
-    let mut last_error = None;
-    for provider in storage.providers_for_tier(StorageTier::Cold) {
-        match provider.read_encoded(&job.encoded_hash).await {
-            Ok(value) => {
-                bytes = Some(value);
-                break;
-            }
-            Err(error) => last_error = Some(error),
+    let (source_provider_id, bytes) = match storage
+        .read_from_restore_source(&job.encoded_hash, StorageClass::Cold)
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let error = error.to_string();
+
+            database
+                .fail_restore_job(job.id, &error, job.attempts < job.max_attempts)
+                .await?;
+            anyhow::bail!(error);
         }
-    }
-    let bytes = if let Some(bytes) = bytes {
-        bytes
-    } else {
-        let error = last_error
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| "no cold provider is configured".to_owned());
-        database
-            .fail_restore_job(job.id, &error, job.attempts < job.max_attempts)
-            .await?;
-        anyhow::bail!(error);
     };
     let Some(hot_provider) = storage
         .provider(&job.target_provider)
-        .filter(|provider| provider.tier() == StorageTier::Hot)
+        .filter(|provider| {
+            storage
+                .pool_for_provider(provider.provider_id())
+                .is_some_and(|pool| pool.storage_class == StorageClass::Hot)
+        })
         .or_else(|| {
             storage
                 .providers_for_tier(StorageTier::Hot)
@@ -1510,6 +1586,30 @@ async fn process_restore_job(
             .await?;
         anyhow::bail!(error);
     };
+    if blake3::hash(&bytes).to_hex().as_str() != job.encoded_hash {
+        let error = format!(
+            "restore integrity verification failed for {}",
+            job.encoded_hash
+        );
+        database
+            .fail_restore_job(job.id, &error, job.attempts < job.max_attempts)
+            .await?;
+        anyhow::bail!(error);
+    }
+    let object_key = format!("chunks/encoded/{}.bin", job.encoded_hash);
+    let hot_pool = storage
+        .pool_for_provider(hot_provider.provider_id())
+        .cloned()
+        .with_context(|| {
+            format!(
+                "provider {} has no storage pool",
+                hot_provider.provider_id()
+            )
+        })?;
+    let source_pool = storage
+        .pool_for_provider(&source_provider_id)
+        .cloned()
+        .with_context(|| format!("provider {source_provider_id} has no storage pool"))?;
     if let Err(error) = hot_provider.put_encoded(&job.encoded_hash, &bytes).await {
         let message = error.to_string();
         database
@@ -1517,12 +1617,22 @@ async fn process_restore_job(
             .await?;
         return Err(error.into());
     }
-    let object_key = format!("chunks/encoded/{}.bin", job.encoded_hash);
+    println!(
+        "restore_source hash={} class={} pool={} failure_domain={} target_pool={} target_failure_domain={}",
+        job.encoded_hash,
+        source_pool.storage_class,
+        source_pool.id,
+        source_pool.failure_domain,
+        hot_pool.id,
+        hot_pool.failure_domain
+    );
     database
-        .add_storage_object_with_tier(
+        .add_storage_object_with_pool(
             &job.encoded_hash,
             i64::try_from(bytes.len())?,
             hot_provider.provider_id(),
+            &hot_pool.id,
+            &hot_pool.failure_domain,
             StorageTier::Hot,
             &object_key,
         )
@@ -1531,9 +1641,11 @@ async fn process_restore_job(
         && location.expires_at.is_none()
     {
         database
-            .add_storage_location_with_tier(
+            .add_storage_location_with_pool(
                 &job.encoded_hash,
                 hot_provider.provider_id(),
+                &hot_pool.id,
+                &hot_pool.failure_domain,
                 StorageTier::Hot,
                 &object_key,
                 &location.url,
@@ -1592,15 +1704,7 @@ async fn publish_verified_build(
         }
     }
 
-    let mut placement_providers = Vec::with_capacity(storage.providers().len());
-    for provider in storage.providers() {
-        placement_providers.push(PlacementProvider {
-            provider_id: provider.provider_id().to_owned(),
-            tier: provider.tier(),
-            healthy: provider.health_check().await.is_ok(),
-            capacity_available_bytes: None,
-        });
-    }
+    let placement_pools = storage.placement_pools().await;
     let mut uploaded = HashSet::new();
     for file in &manifest.files {
         for chunk in &file.chunks {
@@ -1623,15 +1727,29 @@ async fn publish_verified_build(
             } else {
                 Vec::new()
             };
-            let existing_provider_ids = existing_objects
+            let existing_replicas = existing_objects
                 .iter()
                 .filter(|object| object.verified_at.is_some())
-                .map(|object| object.provider.clone())
+                .filter_map(|object| {
+                    let pool = storage
+                        .pool_for_provider(&object.provider)
+                        .or_else(|| storage.pool(&object.pool_id))?;
+                    Some(ExistingStorageReplica {
+                        provider_id: object.provider.clone(),
+                        pool_id: pool.id.clone(),
+                        storage_class: object.tier,
+                        failure_domain: if object.failure_domain.is_empty() {
+                            pool.failure_domain.clone()
+                        } else {
+                            object.failure_domain.clone()
+                        },
+                    })
+                })
                 .collect::<Vec<_>>();
-            let plan = placement_engine.plan(
+            let plan = placement_engine.plan_with_pools(
                 bytes.len() as u64,
-                &existing_provider_ids,
-                &placement_providers,
+                &existing_replicas,
+                &placement_pools,
             );
             if !plan.policy_satisfied {
                 anyhow::bail!(
@@ -1656,10 +1774,12 @@ async fn publish_verified_build(
                 if let Some(database) = database {
                     let encoded_size = i64::try_from(bytes.len())?;
                     database
-                        .add_storage_object_with_tier(
+                        .add_storage_object_with_pool(
                             &chunk.encoded_hash,
                             encoded_size,
                             provider.provider_id(),
+                            &action.pool_id,
+                            &action.failure_domain,
                             action.tier,
                             &chunk.object_key,
                         )
@@ -1669,21 +1789,15 @@ async fn publish_verified_build(
                         && location.expires_at.is_none()
                     {
                         database
-                            .add_storage_location_with_tier(
+                            .add_storage_location_with_pool(
                                 &chunk.encoded_hash,
                                 provider.provider_id(),
+                                &action.pool_id,
+                                &action.failure_domain,
                                 action.tier,
                                 &chunk.object_key,
                                 &location.url,
-                                i32::try_from(
-                                    storage
-                                        .providers()
-                                        .iter()
-                                        .position(|candidate| {
-                                            candidate.provider_id() == provider.provider_id()
-                                        })
-                                        .unwrap_or_default(),
-                                )?,
+                                action.priority,
                             )
                             .await?;
                     }
@@ -1693,11 +1807,7 @@ async fn publish_verified_build(
     }
     if let Some(database) = database {
         database
-            .publish_build_with_policy(
-                &manifest.build_id,
-                policy.required_replicas(StorageTier::Hot),
-                policy.required_replicas(StorageTier::Cold),
-            )
+            .publish_build_with_storage_policy(&manifest.build_id, &policy)
             .await?;
     }
     Ok(())

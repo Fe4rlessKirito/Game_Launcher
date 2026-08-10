@@ -2,7 +2,7 @@ use super::{DownloadLocation, StorageError, StorageProvider, verify_encoded_byte
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
@@ -16,37 +16,49 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum StorageTier {
+pub enum StorageClass {
     #[serde(rename = "HOT")]
     Hot,
     #[serde(rename = "COLD")]
     Cold,
+    #[serde(rename = "ARCHIVE")]
+    Archive,
 }
 
-impl StorageTier {
+// Compatibility alias. Existing callers and operator commands can continue to
+// use StorageTier while the storage domain speaks in logical classes.
+pub use StorageClass as StorageTier;
+
+impl StorageClass {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hot => "HOT",
             Self::Cold => "COLD",
+            Self::Archive => "ARCHIVE",
         }
+    }
+
+    pub fn all() -> [Self; 3] {
+        [Self::Hot, Self::Cold, Self::Archive]
     }
 }
 
-impl std::fmt::Display for StorageTier {
+impl std::fmt::Display for StorageClass {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
-impl FromStr for StorageTier {
+impl FromStr for StorageClass {
     type Err = StorageError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_uppercase().as_str() {
             "HOT" => Ok(Self::Hot),
             "COLD" => Ok(Self::Cold),
+            "ARCHIVE" => Ok(Self::Archive),
             other => Err(StorageError::Configuration(format!(
-                "unknown storage tier {other:?}; expected HOT or COLD"
+                "unknown storage class {other:?}; expected HOT, COLD, or ARCHIVE"
             ))),
         }
     }
@@ -78,10 +90,24 @@ impl FromStr for RestoreMode {
 pub struct StoragePolicy {
     pub min_verified_hot_replicas: u32,
     pub min_verified_cold_replicas: u32,
+    #[serde(default)]
+    pub min_verified_archive_replicas: u32,
     pub preferred_hot_replicas: u32,
     pub preferred_cold_replicas: u32,
+    #[serde(default)]
+    pub preferred_archive_replicas: u32,
+    #[serde(default = "default_hot_failure_domains")]
+    pub min_hot_failure_domains: u32,
+    #[serde(default)]
+    pub min_cold_failure_domains: u32,
+    #[serde(default)]
+    pub min_archive_failure_domains: u32,
     pub cold_backup_required: bool,
     pub restore_mode: RestoreMode,
+}
+
+fn default_hot_failure_domains() -> u32 {
+    1
 }
 
 impl Default for StoragePolicy {
@@ -89,8 +115,13 @@ impl Default for StoragePolicy {
         Self {
             min_verified_hot_replicas: 1,
             min_verified_cold_replicas: 0,
+            min_verified_archive_replicas: 0,
             preferred_hot_replicas: 1,
             preferred_cold_replicas: 0,
+            preferred_archive_replicas: 0,
+            min_hot_failure_domains: 1,
+            min_cold_failure_domains: 0,
+            min_archive_failure_domains: 0,
             cold_backup_required: false,
             restore_mode: RestoreMode::OnDemand,
         }
@@ -102,8 +133,13 @@ impl StoragePolicy {
         Self {
             min_verified_hot_replicas: 1,
             min_verified_cold_replicas: 1,
+            min_verified_archive_replicas: 0,
             preferred_hot_replicas: 1,
             preferred_cold_replicas: 1,
+            preferred_archive_replicas: 0,
+            min_hot_failure_domains: 1,
+            min_cold_failure_domains: 1,
+            min_archive_failure_domains: 0,
             cold_backup_required: true,
             restore_mode: RestoreMode::Proactive,
         }
@@ -117,6 +153,7 @@ impl StoragePolicy {
         }
         if self.preferred_hot_replicas < self.min_verified_hot_replicas
             || self.preferred_cold_replicas < self.min_verified_cold_replicas
+            || self.preferred_archive_replicas < self.min_verified_archive_replicas
         {
             return Err(StorageError::Configuration(
                 "preferred replica counts cannot be below minimum counts".to_owned(),
@@ -126,6 +163,29 @@ impl StoragePolicy {
             return Err(StorageError::Configuration(
                 "cold backup required must have at least one cold replica".to_owned(),
             ));
+        }
+        for (class, replicas, domains) in [
+            (
+                StorageClass::Hot,
+                self.min_verified_hot_replicas,
+                self.min_hot_failure_domains,
+            ),
+            (
+                StorageClass::Cold,
+                self.min_verified_cold_replicas,
+                self.min_cold_failure_domains,
+            ),
+            (
+                StorageClass::Archive,
+                self.min_verified_archive_replicas,
+                self.min_archive_failure_domains,
+            ),
+        ] {
+            if domains > replicas {
+                return Err(StorageError::Configuration(format!(
+                    "{class} failure-domain requirement {domains} exceeds replica requirement {replicas}"
+                )));
+            }
         }
         Ok(())
     }
@@ -152,8 +212,19 @@ impl StoragePolicy {
         let policy = Self {
             min_verified_hot_replicas: parse_u32("LAUNCHER_STORAGE_MIN_HOT_REPLICAS", 1)?,
             min_verified_cold_replicas: parse_u32("LAUNCHER_STORAGE_MIN_COLD_REPLICAS", 0)?,
+            min_verified_archive_replicas: parse_u32("LAUNCHER_STORAGE_MIN_ARCHIVE_REPLICAS", 0)?,
             preferred_hot_replicas: parse_u32("LAUNCHER_STORAGE_PREFERRED_HOT_REPLICAS", 1)?,
             preferred_cold_replicas: parse_u32("LAUNCHER_STORAGE_PREFERRED_COLD_REPLICAS", 0)?,
+            preferred_archive_replicas: parse_u32(
+                "LAUNCHER_STORAGE_PREFERRED_ARCHIVE_REPLICAS",
+                0,
+            )?,
+            min_hot_failure_domains: parse_u32("LAUNCHER_STORAGE_MIN_HOT_FAILURE_DOMAINS", 1)?,
+            min_cold_failure_domains: parse_u32("LAUNCHER_STORAGE_MIN_COLD_FAILURE_DOMAINS", 0)?,
+            min_archive_failure_domains: parse_u32(
+                "LAUNCHER_STORAGE_MIN_ARCHIVE_FAILURE_DOMAINS",
+                0,
+            )?,
             cold_backup_required: parse_bool("LAUNCHER_STORAGE_COLD_BACKUP_REQUIRED", false)?,
             restore_mode: std::env::var("LAUNCHER_STORAGE_RESTORE_MODE")
                 .unwrap_or_else(|_| "ON_DEMAND".to_owned())
@@ -169,6 +240,7 @@ impl StoragePolicy {
             StorageTier::Cold => self
                 .min_verified_cold_replicas
                 .max(if self.cold_backup_required { 1 } else { 0 }),
+            StorageTier::Archive => self.min_verified_archive_replicas,
         }
     }
 
@@ -178,6 +250,15 @@ impl StoragePolicy {
             StorageTier::Cold => self
                 .preferred_cold_replicas
                 .max(if self.cold_backup_required { 1 } else { 0 }),
+            StorageTier::Archive => self.preferred_archive_replicas,
+        }
+    }
+
+    pub fn required_failure_domains(&self, class: StorageClass) -> u32 {
+        match class {
+            StorageClass::Hot => self.min_hot_failure_domains,
+            StorageClass::Cold => self.min_cold_failure_domains,
+            StorageClass::Archive => self.min_archive_failure_domains,
         }
     }
 }
@@ -191,9 +272,60 @@ pub struct PlacementProvider {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoragePoolCandidate {
+    pub pool_id: String,
+    pub provider_id: String,
+    pub storage_class: StorageClass,
+    pub provider_type: String,
+    pub priority: i32,
+    pub failure_domain: String,
+    pub enabled: bool,
+    pub status: StoragePoolStatus,
+    pub healthy: bool,
+    pub capacity_available_bytes: Option<u64>,
+}
+
+pub type PlacementPool = StoragePoolCandidate;
+
+impl StoragePoolCandidate {
+    pub fn new(
+        pool_id: impl Into<String>,
+        provider_id: impl Into<String>,
+        storage_class: StorageClass,
+        provider_type: impl Into<String>,
+        priority: i32,
+        failure_domain: impl Into<String>,
+    ) -> Self {
+        Self {
+            pool_id: pool_id.into(),
+            provider_id: provider_id.into(),
+            storage_class,
+            provider_type: provider_type.into(),
+            priority,
+            failure_domain: failure_domain.into(),
+            enabled: true,
+            status: StoragePoolStatus::Ready,
+            healthy: true,
+            capacity_available_bytes: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExistingStorageReplica {
+    pub provider_id: String,
+    pub pool_id: String,
+    pub storage_class: StorageClass,
+    pub failure_domain: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoragePlacementAction {
     pub provider_id: String,
     pub tier: StorageTier,
+    pub pool_id: String,
+    pub failure_domain: String,
+    pub priority: i32,
     pub reason: String,
 }
 
@@ -202,10 +334,22 @@ pub struct StoragePlacementPlan {
     pub actions: Vec<StoragePlacementAction>,
     pub existing_hot_replicas: u32,
     pub existing_cold_replicas: u32,
+    pub existing_archive_replicas: u32,
+    pub existing_hot_failure_domains: u32,
+    pub existing_cold_failure_domains: u32,
+    pub existing_archive_failure_domains: u32,
     pub projected_hot_replicas: u32,
     pub projected_cold_replicas: u32,
+    pub projected_archive_replicas: u32,
+    pub projected_hot_failure_domains: u32,
+    pub projected_cold_failure_domains: u32,
+    pub projected_archive_failure_domains: u32,
     pub required_hot_replicas: u32,
     pub required_cold_replicas: u32,
+    pub required_archive_replicas: u32,
+    pub required_hot_failure_domains: u32,
+    pub required_cold_failure_domains: u32,
+    pub required_archive_failure_domains: u32,
     pub policy_satisfied: bool,
     pub explanation: String,
 }
@@ -231,38 +375,105 @@ impl StoragePlacementEngine {
         existing_provider_ids: &[String],
         providers: &[PlacementProvider],
     ) -> StoragePlacementPlan {
-        let mut existing_hot = 0;
-        let mut existing_cold = 0;
+        let candidates = providers
+            .iter()
+            .map(|provider| StoragePoolCandidate {
+                pool_id: provider.provider_id.clone(),
+                provider_id: provider.provider_id.clone(),
+                storage_class: provider.tier,
+                provider_type: provider.provider_id.clone(),
+                priority: 100,
+                failure_domain: provider.provider_id.clone(),
+                enabled: true,
+                status: if provider.healthy {
+                    StoragePoolStatus::Ready
+                } else {
+                    StoragePoolStatus::Unavailable
+                },
+                healthy: provider.healthy,
+                capacity_available_bytes: provider.capacity_available_bytes,
+            })
+            .collect::<Vec<_>>();
         let existing = existing_provider_ids
             .iter()
-            .collect::<std::collections::HashSet<_>>();
-        for provider in providers {
-            if !existing.contains(&provider.provider_id) {
-                continue;
-            }
-            match provider.tier {
-                StorageTier::Hot => existing_hot += 1,
-                StorageTier::Cold => existing_cold += 1,
-            }
+            .filter_map(|provider_id| {
+                candidates
+                    .iter()
+                    .find(|candidate| &candidate.provider_id == provider_id)
+            })
+            .map(|candidate| ExistingStorageReplica {
+                provider_id: candidate.provider_id.clone(),
+                pool_id: candidate.pool_id.clone(),
+                storage_class: candidate.storage_class,
+                failure_domain: candidate.failure_domain.clone(),
+            })
+            .collect::<Vec<_>>();
+        self.plan_with_pools(encoded_size, &existing, &candidates)
+    }
+
+    pub fn plan_with_pools(
+        &self,
+        encoded_size: u64,
+        existing_replicas: &[ExistingStorageReplica],
+        pools: &[StoragePoolCandidate],
+    ) -> StoragePlacementPlan {
+        let existing_providers = existing_replicas
+            .iter()
+            .map(|replica| replica.provider_id.clone())
+            .collect::<HashSet<_>>();
+        let mut replica_counts = BTreeMap::<StorageClass, u32>::new();
+        let mut domain_sets = BTreeMap::<StorageClass, HashSet<String>>::new();
+        for replica in existing_replicas {
+            *replica_counts.entry(replica.storage_class).or_default() += 1;
+            domain_sets
+                .entry(replica.storage_class)
+                .or_default()
+                .insert(replica.failure_domain.clone());
         }
-        let mut candidates = providers.to_vec();
+        let mut candidates = pools.to_vec();
         candidates.sort_by(|left, right| {
-            left.tier
-                .cmp(&right.tier)
+            left.storage_class
+                .cmp(&right.storage_class)
+                .then_with(|| {
+                    let left_domain_seen = domain_sets
+                        .get(&left.storage_class)
+                        .is_some_and(|domains| domains.contains(&left.failure_domain));
+                    let right_domain_seen = domain_sets
+                        .get(&right.storage_class)
+                        .is_some_and(|domains| domains.contains(&right.failure_domain));
+                    left_domain_seen
+                        .cmp(&right_domain_seen)
+                        .then_with(|| left.priority.cmp(&right.priority))
+                })
+                .then_with(|| left.pool_id.cmp(&right.pool_id))
                 .then_with(|| left.provider_id.cmp(&right.provider_id))
         });
+
         let mut actions = Vec::new();
-        for tier in [StorageTier::Hot, StorageTier::Cold] {
-            let current = match tier {
-                StorageTier::Hot => existing_hot,
-                StorageTier::Cold => existing_cold,
-            };
-            let desired = self.policy.preferred_replicas(tier);
+        for class in StorageClass::all() {
+            let desired = self.policy.preferred_replicas(class);
+            let desired_domains = self.policy.required_failure_domains(class);
+            let current = replica_counts.get(&class).copied().unwrap_or_default();
+            let current_domains = domain_sets.get(&class).map_or(0, HashSet::len) as u32;
             let mut projected = current;
-            for candidate in candidates.iter().filter(|candidate| candidate.tier == tier) {
-                if projected >= desired
+            let mut projected_domains = current_domains;
+            let mut selected_providers = existing_providers.clone();
+            let class_candidates = candidates
+                .iter()
+                .filter(|candidate| candidate.storage_class == class)
+                .collect::<Vec<_>>();
+            for candidate in class_candidates {
+                if (projected >= desired && projected_domains >= desired_domains)
+                    || !candidate.enabled
                     || !candidate.healthy
-                    || existing.contains(&candidate.provider_id)
+                    || matches!(
+                        candidate.status,
+                        StoragePoolStatus::Disabled
+                            | StoragePoolStatus::Unavailable
+                            | StoragePoolStatus::NeedsCapacity
+                    )
+                    || existing_providers.contains(&candidate.provider_id)
+                    || selected_providers.contains(&candidate.provider_id)
                     || candidate
                         .capacity_available_bytes
                         .is_some_and(|available| available < encoded_size)
@@ -271,43 +482,122 @@ impl StoragePlacementEngine {
                 }
                 actions.push(StoragePlacementAction {
                     provider_id: candidate.provider_id.clone(),
-                    tier,
-                    reason: match tier {
-                        StorageTier::Hot => "satisfy hot replica policy".to_owned(),
-                        StorageTier::Cold => "satisfy cold backup policy".to_owned(),
-                    },
+                    tier: class,
+                    pool_id: candidate.pool_id.clone(),
+                    failure_domain: candidate.failure_domain.clone(),
+                    priority: candidate.priority,
+                    reason: format!(
+                        "satisfy {} replica policy in pool {} (priority {})",
+                        class.as_str(),
+                        candidate.pool_id,
+                        candidate.priority
+                    ),
                 });
                 projected += 1;
+                projected_domains += u32::from(
+                    domain_sets
+                        .get(&class)
+                        .is_none_or(|domains| !domains.contains(&candidate.failure_domain)),
+                );
+                domain_sets
+                    .entry(class)
+                    .or_default()
+                    .insert(candidate.failure_domain.clone());
+                selected_providers.insert(candidate.provider_id.clone());
+                if projected >= desired && projected_domains >= desired_domains {
+                    break;
+                }
             }
         }
-        let projected_hot = existing_hot
-            + actions
+
+        let planned_actions = actions.clone();
+        let projected = |class: StorageClass| {
+            replica_counts.get(&class).copied().unwrap_or_default()
+                + planned_actions
+                    .iter()
+                    .filter(|action| action.tier == class)
+                    .count() as u32
+        };
+        let projected_domains = |class: StorageClass| {
+            let mut domains = existing_replicas
                 .iter()
-                .filter(|action| action.tier == StorageTier::Hot)
-                .count() as u32;
-        let projected_cold = existing_cold
-            + actions
-                .iter()
-                .filter(|action| action.tier == StorageTier::Cold)
-                .count() as u32;
-        let required_hot = self.policy.required_replicas(StorageTier::Hot);
-        let required_cold = self.policy.required_replicas(StorageTier::Cold);
-        let policy_satisfied = projected_hot >= required_hot && projected_cold >= required_cold;
+                .filter(|replica| replica.storage_class == class)
+                .map(|replica| replica.failure_domain.clone())
+                .collect::<HashSet<_>>();
+            domains.extend(
+                planned_actions
+                    .iter()
+                    .filter(|action| action.tier == class)
+                    .map(|action| action.failure_domain.clone()),
+            );
+            domains.len() as u32
+        };
+        let existing_replicas_for =
+            |class: StorageClass| replica_counts.get(&class).copied().unwrap_or_default();
+        let required = |class: StorageClass| self.policy.required_replicas(class);
+        let required_domains = |class: StorageClass| self.policy.required_failure_domains(class);
+        let class_satisfied = |class: StorageClass| {
+            projected(class) >= required(class)
+                && projected_domains(class) >= required_domains(class)
+        };
+        let hot = StorageClass::Hot;
+        let cold = StorageClass::Cold;
+        let archive = StorageClass::Archive;
+        let policy_satisfied = StorageClass::all().into_iter().all(class_satisfied);
         let explanation = if policy_satisfied {
             "storage policy satisfied".to_owned()
         } else {
-            format!(
-                "storage policy unsatisfied: hot {projected_hot}/{required_hot}, cold {projected_cold}/{required_cold}"
-            )
+            StorageClass::all()
+                .into_iter()
+                .filter(|class| !class_satisfied(*class))
+                .map(|class| {
+                    format!(
+                        "{} {}/{} replicas and {}/{} failure domains",
+                        class.as_str(),
+                        projected(class),
+                        required(class),
+                        projected_domains(class),
+                        required_domains(class)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
         };
         StoragePlacementPlan {
             actions,
-            existing_hot_replicas: existing_hot,
-            existing_cold_replicas: existing_cold,
-            projected_hot_replicas: projected_hot,
-            projected_cold_replicas: projected_cold,
-            required_hot_replicas: required_hot,
-            required_cold_replicas: required_cold,
+            existing_hot_replicas: existing_replicas_for(hot),
+            existing_cold_replicas: existing_replicas_for(cold),
+            existing_archive_replicas: existing_replicas_for(archive),
+            existing_hot_failure_domains: existing_replicas
+                .iter()
+                .filter(|replica| replica.storage_class == hot)
+                .map(|replica| replica.failure_domain.as_str())
+                .collect::<HashSet<_>>()
+                .len() as u32,
+            existing_cold_failure_domains: existing_replicas
+                .iter()
+                .filter(|replica| replica.storage_class == cold)
+                .map(|replica| replica.failure_domain.as_str())
+                .collect::<HashSet<_>>()
+                .len() as u32,
+            existing_archive_failure_domains: existing_replicas
+                .iter()
+                .filter(|replica| replica.storage_class == archive)
+                .map(|replica| replica.failure_domain.as_str())
+                .collect::<HashSet<_>>()
+                .len() as u32,
+            projected_hot_replicas: projected(hot),
+            projected_cold_replicas: projected(cold),
+            projected_archive_replicas: projected(archive),
+            projected_hot_failure_domains: projected_domains(hot),
+            projected_cold_failure_domains: projected_domains(cold),
+            projected_archive_failure_domains: projected_domains(archive),
+            required_hot_replicas: required(hot),
+            required_cold_replicas: required(cold),
+            required_archive_replicas: required(archive),
+            required_hot_failure_domains: required_domains(hot),
+            required_cold_failure_domains: required_domains(cold),
+            required_archive_failure_domains: required_domains(archive),
             policy_satisfied,
             explanation,
         }
@@ -354,6 +644,8 @@ impl StorageAccountStatus {
 pub struct StorageAccountSnapshot {
     pub account_id: String,
     pub provider_id: String,
+    pub pool_id: String,
+    pub failure_domain: String,
     pub tier: StorageTier,
     pub status: StorageAccountStatus,
     pub capacity_bytes: u64,
@@ -1020,11 +1312,14 @@ impl InMemoryCapacityReservationStore {
         safety_margin_bytes: u64,
     ) {
         let account_id = account_id.into();
+        let provider_id = provider_id.into();
         self.state.lock().await.accounts.insert(
             account_id.clone(),
             StorageAccountSnapshot {
                 account_id,
-                provider_id: provider_id.into(),
+                provider_id: provider_id.clone(),
+                pool_id: provider_id,
+                failure_domain: "mega".to_owned(),
                 tier: StorageTier::Cold,
                 status: StorageAccountStatus::Active,
                 capacity_bytes,
@@ -1258,15 +1553,202 @@ impl CapacityReservationStore for InMemoryCapacityReservationStore {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StoragePoolStatus {
+    #[serde(rename = "READY")]
     Ready,
+    #[serde(rename = "DEGRADED")]
     Degraded,
+    #[serde(rename = "NEEDS_CAPACITY")]
     NeedsCapacity,
+    #[serde(rename = "UNAVAILABLE")]
     Unavailable,
+    #[serde(rename = "DISABLED")]
+    Disabled,
+}
+
+impl StoragePoolStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "READY",
+            Self::Degraded => "DEGRADED",
+            Self::NeedsCapacity => "NEEDS_CAPACITY",
+            Self::Unavailable => "UNAVAILABLE",
+            Self::Disabled => "DISABLED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ProvisioningMode {
+    #[serde(rename = "DISABLED")]
+    Disabled,
+    #[serde(rename = "MANUAL")]
+    #[default]
+    Manual,
+    #[serde(rename = "AUTOMATIC")]
+    Automatic,
+}
+
+impl std::fmt::Display for ProvisioningMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Disabled => "DISABLED",
+            Self::Manual => "MANUAL",
+            Self::Automatic => "AUTOMATIC",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StoragePool {
+    pub id: String,
+    pub storage_class: StorageClass,
+    pub provider_type: String,
+    pub priority: i32,
+    pub failure_domain: String,
+    pub enabled: bool,
+    pub status: StoragePoolStatus,
+    #[serde(default)]
+    pub provisioning_mode: ProvisioningMode,
+}
+
+pub type StoragePoolMetadata = StoragePool;
+
+impl StoragePool {
+    pub fn for_provider(
+        provider_id: impl Into<String>,
+        storage_class: StorageClass,
+        provider_type: impl Into<String>,
+        failure_domain: impl Into<String>,
+    ) -> Self {
+        let id = provider_id.into();
+        let provider_type = provider_type.into();
+        Self {
+            failure_domain: failure_domain.into(),
+            id,
+            storage_class,
+            provisioning_mode: if provider_type.eq_ignore_ascii_case("mega") {
+                ProvisioningMode::Manual
+            } else {
+                ProvisioningMode::Disabled
+            },
+            priority: 100,
+            enabled: true,
+            status: StoragePoolStatus::Ready,
+            provider_type,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProvisionedCapacity {
+    pub pool_id: String,
+    pub account_id: String,
+    pub credential_reference: String,
+    pub capacity_bytes: u64,
+    pub safety_margin_bytes: u64,
+}
+
+#[async_trait]
+pub trait StorageCapacityProvisioner: Send + Sync {
+    fn pool_id(&self) -> &str;
+    fn mode(&self) -> ProvisioningMode;
+    async fn can_provision(&self, required_bytes: u64) -> Result<bool, StorageError>;
+    async fn provision(&self, required_bytes: u64) -> Result<ProvisionedCapacity, StorageError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualStorageCapacityProvisioner {
+    pool_id: String,
+}
+
+impl ManualStorageCapacityProvisioner {
+    pub fn new(pool_id: impl Into<String>) -> Self {
+        Self {
+            pool_id: pool_id.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl StorageCapacityProvisioner for ManualStorageCapacityProvisioner {
+    fn pool_id(&self) -> &str {
+        &self.pool_id
+    }
+
+    fn mode(&self) -> ProvisioningMode {
+        ProvisioningMode::Manual
+    }
+
+    async fn can_provision(&self, _required_bytes: u64) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn provision(&self, required_bytes: u64) -> Result<ProvisionedCapacity, StorageError> {
+        Err(StorageError::NeedsCapacity {
+            required_bytes,
+            available_bytes: 0,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CapacityPoolSnapshot {
+    pub pool: StoragePool,
+    pub available_bytes: u64,
+    pub reserved_bytes: u64,
+    pub healthy: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StorageCapacityManager;
+
+impl StorageCapacityManager {
+    pub fn select_pool(
+        required_bytes: u64,
+        pools: &[CapacityPoolSnapshot],
+    ) -> Result<String, StorageError> {
+        let mut candidates = pools
+            .iter()
+            .filter(|pool| {
+                pool.pool.enabled
+                    && pool.healthy
+                    && matches!(
+                        pool.pool.status,
+                        StoragePoolStatus::Ready | StoragePoolStatus::Degraded
+                    )
+                    && pool.available_bytes >= required_bytes
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.pool
+                .priority
+                .cmp(&right.pool.priority)
+                .then_with(|| left.pool.id.cmp(&right.pool.id))
+        });
+        candidates
+            .first()
+            .map(|pool| pool.pool.id.clone())
+            .ok_or(StorageError::NeedsCapacity {
+                required_bytes,
+                available_bytes: pools
+                    .iter()
+                    .map(|pool| pool.available_bytes)
+                    .max()
+                    .unwrap_or_default(),
+            })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoragePoolHealth {
+    pub pool_id: String,
     pub provider_id: String,
+    pub storage_class: StorageClass,
+    pub provider_type: String,
+    pub priority: i32,
+    pub failure_domain: String,
+    pub enabled: bool,
+    pub provisioning_mode: ProvisioningMode,
     pub status: StoragePoolStatus,
     pub total_capacity_bytes: u64,
     pub total_used_bytes: u64,
@@ -1295,9 +1777,11 @@ impl Default for MegaColdStorageOptions {
 #[derive(Clone)]
 pub struct MegaColdStoragePool {
     provider_id: String,
+    pool: StoragePool,
     accounts: Arc<Vec<Arc<dyn MegaAccountBackend>>>,
     ledger: Arc<dyn CapacityReservationStore>,
     options: Arc<MegaColdStorageOptions>,
+    provisioner: Arc<dyn StorageCapacityProvisioner>,
     temp_counter: Arc<AtomicU64>,
 }
 
@@ -1321,9 +1805,19 @@ impl std::fmt::Debug for MegaColdStoragePool {
 impl MegaColdStoragePool {
     pub fn new(
         provider_id: impl Into<String>,
+        accounts: Vec<Arc<dyn MegaAccountBackend>>,
+        ledger: Arc<dyn CapacityReservationStore>,
+        options: MegaColdStorageOptions,
+    ) -> Result<Self, StorageError> {
+        Self::new_with_provisioner(provider_id, accounts, ledger, options, None)
+    }
+
+    pub fn new_with_provisioner(
+        provider_id: impl Into<String>,
         mut accounts: Vec<Arc<dyn MegaAccountBackend>>,
         ledger: Arc<dyn CapacityReservationStore>,
         options: MegaColdStorageOptions,
+        provisioner: Option<Arc<dyn StorageCapacityProvisioner>>,
     ) -> Result<Self, StorageError> {
         let provider_id = provider_id.into();
         if provider_id.trim().is_empty() || accounts.is_empty() {
@@ -1332,11 +1826,27 @@ impl MegaColdStoragePool {
             ));
         }
         accounts.sort_by(|left, right| left.account_id().cmp(right.account_id()));
+        let provisioner = provisioner.unwrap_or_else(|| {
+            Arc::new(ManualStorageCapacityProvisioner::new(provider_id.clone()))
+                as Arc<dyn StorageCapacityProvisioner>
+        });
+        let pool = StoragePool {
+            id: provider_id.clone(),
+            storage_class: StorageClass::Cold,
+            provider_type: "mega".to_owned(),
+            priority: 100,
+            failure_domain: "mega".to_owned(),
+            enabled: true,
+            status: StoragePoolStatus::Ready,
+            provisioning_mode: provisioner.mode(),
+        };
         Ok(Self {
-            provider_id,
+            provider_id: provider_id.clone(),
+            pool,
             accounts: Arc::new(accounts),
             ledger,
             options: Arc::new(options),
+            provisioner,
             temp_counter: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -1382,6 +1892,8 @@ impl MegaColdStoragePool {
                 .ensure_account(StorageAccountSnapshot {
                     account_id: account.account_id.clone(),
                     provider_id: config.provider_id.clone(),
+                    pool_id: config.provider_id.clone(),
+                    failure_domain: "mega".to_owned(),
                     tier: StorageTier::Cold,
                     status: StorageAccountStatus::Active,
                     capacity_bytes: account.capacity_bytes,
@@ -1397,6 +1909,34 @@ impl MegaColdStoragePool {
 
     pub fn provider_id(&self) -> &str {
         &self.provider_id
+    }
+
+    pub fn pool(&self) -> &StoragePool {
+        &self.pool
+    }
+
+    pub fn provisioner(&self) -> &dyn StorageCapacityProvisioner {
+        self.provisioner.as_ref()
+    }
+
+    pub async fn provision_capacity(
+        &self,
+        required_bytes: u64,
+    ) -> Result<ProvisionedCapacity, StorageError> {
+        if !self.provisioner.can_provision(required_bytes).await? {
+            return Err(StorageError::NeedsCapacity {
+                required_bytes,
+                available_bytes: 0,
+            });
+        }
+        let provisioned = self.provisioner.provision(required_bytes).await?;
+        if provisioned.pool_id != self.pool.id {
+            return Err(StorageError::Configuration(format!(
+                "capacity provisioner returned pool {} for {}",
+                provisioned.pool_id, self.pool.id
+            )));
+        }
+        Ok(provisioned)
     }
 
     pub fn account_ids(&self) -> Vec<String> {
@@ -1534,7 +2074,9 @@ impl MegaColdStoragePool {
             .iter()
             .filter(|account| account.status.can_allocate())
             .count();
-        let status = if active == 0 && (auth_failed || network_unavailable) {
+        let status = if !self.pool.enabled {
+            StoragePoolStatus::Disabled
+        } else if active == 0 && (auth_failed || network_unavailable) {
             StoragePoolStatus::Unavailable
         } else if active == 0 || available_bytes == 0 {
             StoragePoolStatus::NeedsCapacity
@@ -1544,7 +2086,14 @@ impl MegaColdStoragePool {
             StoragePoolStatus::Ready
         };
         StoragePoolHealth {
+            pool_id: self.pool.id.clone(),
             provider_id: self.provider_id.clone(),
+            storage_class: self.pool.storage_class,
+            provider_type: self.pool.provider_type.clone(),
+            priority: self.pool.priority,
+            failure_domain: self.pool.failure_domain.clone(),
+            enabled: self.pool.enabled,
+            provisioning_mode: self.provisioner.mode(),
             status,
             total_capacity_bytes,
             total_used_bytes,
@@ -1675,6 +2224,18 @@ impl StorageProvider for MegaColdStoragePool {
         StorageTier::Cold
     }
 
+    fn pool_id(&self) -> &str {
+        &self.pool.id
+    }
+
+    fn provider_type(&self) -> &str {
+        &self.pool.provider_type
+    }
+
+    fn failure_domain(&self) -> &str {
+        &self.pool.failure_domain
+    }
+
     async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
         super::validate_hash(encoded_hash)?;
         verify_encoded_bytes(encoded_hash, bytes)?;
@@ -1782,7 +2343,9 @@ impl StorageProvider for MegaColdStoragePool {
                 required_bytes: 1,
                 available_bytes: health.available_bytes,
             }),
-            StoragePoolStatus::Unavailable => Err(StorageError::PoolUnavailable),
+            StoragePoolStatus::Unavailable | StoragePoolStatus::Disabled => {
+                Err(StorageError::PoolUnavailable)
+            }
         }
     }
 }
@@ -1836,6 +2399,253 @@ mod tests {
                 .iter()
                 .any(|action| action.provider_id == "cold-full")
         );
+    }
+
+    #[test]
+    fn parses_all_storage_classes() {
+        assert_eq!("HOT".parse::<StorageClass>().unwrap(), StorageClass::Hot);
+        assert_eq!("cold".parse::<StorageClass>().unwrap(), StorageClass::Cold);
+        assert_eq!(
+            "archive".parse::<StorageClass>().unwrap(),
+            StorageClass::Archive
+        );
+    }
+
+    #[test]
+    fn placement_prefers_enabled_healthy_pool_priority_and_skips_full_pools() {
+        let policy = StoragePolicy {
+            min_verified_cold_replicas: 1,
+            preferred_cold_replicas: 1,
+            min_cold_failure_domains: 1,
+            ..StoragePolicy::default()
+        };
+        let engine = StoragePlacementEngine::new(policy).unwrap();
+        let plan = engine.plan_with_pools(
+            100,
+            &[ExistingStorageReplica {
+                provider_id: "hot-provider".to_owned(),
+                pool_id: "hot-primary".to_owned(),
+                storage_class: StorageClass::Hot,
+                failure_domain: "railway".to_owned(),
+            }],
+            &[
+                StoragePoolCandidate {
+                    capacity_available_bytes: Some(10),
+                    ..StoragePoolCandidate::new(
+                        "cold-full",
+                        "cold-full-provider",
+                        StorageClass::Cold,
+                        "mega",
+                        10,
+                        "mega",
+                    )
+                },
+                StoragePoolCandidate {
+                    capacity_available_bytes: Some(10),
+                    ..StoragePoolCandidate::new(
+                        "cold-too-small",
+                        "cold-too-small-provider",
+                        StorageClass::Cold,
+                        "mega",
+                        20,
+                        "mega",
+                    )
+                },
+                StoragePoolCandidate::new(
+                    "cold-primary",
+                    "cold-primary-provider",
+                    StorageClass::Cold,
+                    "mega",
+                    100,
+                    "mega",
+                ),
+                StoragePoolCandidate::new(
+                    "hot-primary",
+                    "hot-provider",
+                    StorageClass::Hot,
+                    "s3",
+                    100,
+                    "railway",
+                ),
+            ],
+        );
+        assert!(plan.policy_satisfied);
+        assert_eq!(plan.actions.len(), 1);
+        assert_eq!(plan.actions[0].pool_id, "cold-primary");
+        assert_eq!(plan.actions[0].priority, 100);
+    }
+
+    #[test]
+    fn failure_domain_requirement_distinguishes_same_pool_replicas() {
+        let policy = StoragePolicy {
+            min_verified_cold_replicas: 2,
+            preferred_cold_replicas: 2,
+            min_cold_failure_domains: 2,
+            ..StoragePolicy::default()
+        };
+        let engine = StoragePlacementEngine::new(policy).unwrap();
+        let existing = [
+            ExistingStorageReplica {
+                provider_id: "hot".to_owned(),
+                pool_id: "hot".to_owned(),
+                storage_class: StorageClass::Hot,
+                failure_domain: "railway".to_owned(),
+            },
+            ExistingStorageReplica {
+                provider_id: "mega-a".to_owned(),
+                pool_id: "mega".to_owned(),
+                storage_class: StorageClass::Cold,
+                failure_domain: "mega".to_owned(),
+            },
+            ExistingStorageReplica {
+                provider_id: "mega-b".to_owned(),
+                pool_id: "mega".to_owned(),
+                storage_class: StorageClass::Cold,
+                failure_domain: "mega".to_owned(),
+            },
+        ];
+        let plan = engine.plan_with_pools(
+            10,
+            &existing,
+            &[
+                StoragePoolCandidate::new("hot", "hot", StorageClass::Hot, "s3", 100, "railway"),
+                StoragePoolCandidate::new(
+                    "mega",
+                    "mega-c",
+                    StorageClass::Cold,
+                    "mega",
+                    100,
+                    "mega",
+                ),
+                StoragePoolCandidate::new(
+                    "archive-fallback",
+                    "archive-fallback",
+                    StorageClass::Cold,
+                    "s3",
+                    200,
+                    "archive-provider",
+                ),
+            ],
+        );
+        assert!(plan.policy_satisfied);
+        assert_eq!(plan.existing_cold_replicas, 2);
+        assert_eq!(plan.existing_cold_failure_domains, 1);
+        assert_eq!(plan.projected_cold_failure_domains, 2);
+        assert_eq!(plan.actions[0].pool_id, "archive-fallback");
+    }
+
+    #[test]
+    fn capacity_manager_skips_disabled_unhealthy_and_full_pools() {
+        let make_pool = |id: &str, priority: i32| StoragePool {
+            id: id.to_owned(),
+            storage_class: StorageClass::Cold,
+            provider_type: "test".to_owned(),
+            priority,
+            failure_domain: id.to_owned(),
+            enabled: true,
+            status: StoragePoolStatus::Ready,
+            provisioning_mode: ProvisioningMode::Manual,
+        };
+        let mut disabled = make_pool("disabled", 1);
+        disabled.enabled = false;
+        let mut unhealthy = make_pool("unhealthy", 2);
+        unhealthy.status = StoragePoolStatus::Unavailable;
+        let full = make_pool("full", 3);
+        let fallback = make_pool("fallback", 4);
+        let selected = StorageCapacityManager::select_pool(
+            100,
+            &[
+                CapacityPoolSnapshot {
+                    pool: disabled,
+                    available_bytes: 1000,
+                    reserved_bytes: 0,
+                    healthy: true,
+                },
+                CapacityPoolSnapshot {
+                    pool: unhealthy,
+                    available_bytes: 1000,
+                    reserved_bytes: 0,
+                    healthy: true,
+                },
+                CapacityPoolSnapshot {
+                    pool: full,
+                    available_bytes: 10,
+                    reserved_bytes: 0,
+                    healthy: true,
+                },
+                CapacityPoolSnapshot {
+                    pool: fallback,
+                    available_bytes: 1000,
+                    reserved_bytes: 0,
+                    healthy: true,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(selected, "fallback");
+    }
+
+    struct AutomaticProvisioner {
+        pool_id: String,
+    }
+
+    #[async_trait]
+    impl StorageCapacityProvisioner for AutomaticProvisioner {
+        fn pool_id(&self) -> &str {
+            &self.pool_id
+        }
+
+        fn mode(&self) -> ProvisioningMode {
+            ProvisioningMode::Automatic
+        }
+
+        async fn can_provision(&self, required_bytes: u64) -> Result<bool, StorageError> {
+            Ok(required_bytes <= 1024)
+        }
+
+        async fn provision(
+            &self,
+            required_bytes: u64,
+        ) -> Result<ProvisionedCapacity, StorageError> {
+            Ok(ProvisionedCapacity {
+                pool_id: self.pool_id.clone(),
+                account_id: "auto-account".to_owned(),
+                credential_reference: "secret://auto/session".to_owned(),
+                capacity_bytes: required_bytes,
+                safety_margin_bytes: 0,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_provisioning_reports_needs_capacity_and_automatic_hook_returns_capacity() {
+        let ledger = InMemoryCapacityReservationStore::default();
+        ledger.register_account("a", "mega", 1, 1).await;
+        let account = Arc::new(FakeMegaAccount::new("a", 1));
+        let manual = MegaColdStoragePool::new(
+            "mega",
+            vec![account.clone()],
+            Arc::new(ledger.clone()),
+            MegaColdStorageOptions::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            manual.provision_capacity(100).await,
+            Err(StorageError::NeedsCapacity { .. })
+        ));
+        let automatic = MegaColdStoragePool::new_with_provisioner(
+            "mega",
+            vec![account],
+            Arc::new(ledger),
+            MegaColdStorageOptions::default(),
+            Some(Arc::new(AutomaticProvisioner {
+                pool_id: "mega".to_owned(),
+            })),
+        )
+        .unwrap();
+        let provisioned = automatic.provision_capacity(100).await.unwrap();
+        assert_eq!(provisioned.account_id, "auto-account");
+        assert_eq!(automatic.provisioner().mode(), ProvisioningMode::Automatic);
     }
 
     #[test]

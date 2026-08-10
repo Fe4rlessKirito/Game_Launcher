@@ -5,7 +5,8 @@ use launcher_common::{
 };
 use launcher_database::Database;
 use launcher_storage::{
-    CapacityReservationStore, MegaAccountConfig, StorageAccountStatus, StorageError, StorageTier,
+    CapacityReservationStore, MegaAccountConfig, StorageAccountStatus, StorageError, StoragePolicy,
+    StorageTier,
 };
 use postgresql_embedded::{PostgreSQL, SettingsBuilder};
 use std::time::Duration;
@@ -56,8 +57,65 @@ async fn postgres_repository_migrates_publishes_and_recovers_leases()
     postgres.create_database(&database_name).await?;
 
     let database = Database::connect(&postgres.settings().url(&database_name)).await?;
+    // Build a database at the pre-pool schema first, seed legacy locations,
+    // then run the real forward migration. This protects the upgrade path from
+    // silently assuming a freshly-created database.
+    sqlx::raw_sql(include_str!("../../../../migrations/001_initial.sql"))
+        .execute(database.pool())
+        .await?;
+    sqlx::raw_sql(include_str!(
+        "../../../../migrations/002_storage_tiering.sql"
+    ))
+    .execute(database.pool())
+    .await?;
+    let legacy_hot_hash = "a".repeat(64);
+    let legacy_cold_hash = "b".repeat(64);
+    for hash in [&legacy_hot_hash, &legacy_cold_hash] {
+        sqlx::query(
+            "INSERT INTO chunks(encoded_hash, encoded_size, encoding_id) VALUES($1,1,'legacy')",
+        )
+        .bind(hash)
+        .execute(database.pool())
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO storage_objects(encoded_hash, encoded_size, provider, tier, object_key, verified_at)
+         VALUES($1,1,'legacy-s3','HOT','chunks/encoded/a.bin',now())",
+    )
+    .bind(&legacy_hot_hash)
+    .execute(database.pool())
+    .await?;
+    sqlx::query(
+        "INSERT INTO storage_locations(encoded_hash, provider, tier, object_key, direct_url, priority, verified_at)
+         VALUES($1,'legacy-mega','COLD','chunks/encoded/b.bin','',0,now())",
+    )
+    .bind(&legacy_cold_hash)
+    .execute(database.pool())
+    .await?;
     database.migrate().await?;
     assert!(database.schema_status().await?.ready());
+    let migrated_pools: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT id, storage_class, failure_domain FROM storage_pools ORDER BY id")
+            .fetch_all(database.pool())
+            .await?;
+    assert!(migrated_pools.iter().any(|(id, class, domain)| {
+        id == "legacy-s3" && class == "HOT" && domain == "legacy-s3"
+    }));
+    assert!(
+        migrated_pools.iter().any(|(id, class, domain)| {
+            id == "legacy-mega" && class == "COLD" && domain == "mega"
+        })
+    );
+    let migrated_location: (String, String) = sqlx::query_as(
+        "SELECT pool_id, failure_domain FROM storage_locations WHERE encoded_hash=$1",
+    )
+    .bind(&legacy_cold_hash)
+    .fetch_one(database.pool())
+    .await?;
+    assert_eq!(
+        migrated_location,
+        ("legacy-mega".to_owned(), "mega".to_owned())
+    );
 
     let game = GameSummary {
         id: "game-1".to_owned(),
@@ -114,7 +172,9 @@ async fn postgres_repository_migrates_publishes_and_recovers_leases()
         .get_storage_locations(std::slice::from_ref(&chunk.encoded_hash))
         .await?;
     assert_eq!(locations[&chunk.encoded_hash][0].provider, "local");
-    database.publish_build(&manifest.build_id).await?;
+    database
+        .publish_build_with_storage_policy(&manifest.build_id, &StoragePolicy::default())
+        .await?;
 
     assert_eq!(
         database.get_manifest(&manifest.build_id).await?,

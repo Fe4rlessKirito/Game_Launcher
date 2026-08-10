@@ -3,7 +3,8 @@ use chrono::{DateTime, Utc};
 use launcher_common::{BuildSummary, CatalogPage, GameSummary, Manifest, ManifestSignature};
 use launcher_storage::{
     CapacityReservationStore, CapacitySnapshot, MegaAccountConfig, StorageAccountSnapshot,
-    StorageAccountStatus, StorageError, StorageReservation, StorageTier,
+    StorageAccountStatus, StorageClass, StorageError, StoragePolicy, StorageReservation,
+    StorageTier,
 };
 use sqlx::{
     PgPool, Row,
@@ -36,6 +37,8 @@ pub struct ClaimedIngestionJob {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageLocationRecord {
     pub provider: String,
+    pub pool_id: String,
+    pub failure_domain: String,
     pub tier: StorageTier,
     pub object_key: String,
     pub direct_url: String,
@@ -47,6 +50,8 @@ pub struct StorageLocationRecord {
 pub struct StorageAccountRecord {
     pub snapshot: StorageAccountSnapshot,
     pub credential_reference: String,
+    pub pool_id: String,
+    pub failure_domain: String,
     pub configuration_json: serde_json::Value,
     pub last_health_check: Option<DateTime<Utc>>,
 }
@@ -70,6 +75,8 @@ pub struct StorageObjectRecord {
     pub encoded_hash: String,
     pub encoded_size: i64,
     pub provider: String,
+    pub pool_id: String,
+    pub failure_domain: String,
     pub tier: StorageTier,
     pub object_key: String,
     pub verified_at: Option<DateTime<Utc>>,
@@ -126,9 +133,18 @@ fn parse_storage_status(value: &str) -> Result<StorageAccountStatus, DatabaseErr
 }
 
 fn account_snapshot_from_row(row: &PgRow) -> Result<StorageAccountSnapshot, DatabaseError> {
+    let provider_id: String = row.try_get("provider_id")?;
+    let pool_id: String = row
+        .try_get("pool_id")
+        .unwrap_or_else(|_| provider_id.clone());
+    let failure_domain: String = row
+        .try_get("failure_domain")
+        .unwrap_or_else(|_| pool_id.clone());
     Ok(StorageAccountSnapshot {
         account_id: row.try_get("id")?,
-        provider_id: row.try_get("provider_id")?,
+        provider_id,
+        pool_id,
+        failure_domain,
         tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
         status: parse_storage_status(row.try_get::<String, _>("status")?.as_str())?,
         capacity_bytes: i64_to_u64(row.try_get("capacity_bytes")?)?,
@@ -173,6 +189,8 @@ impl Database {
         sqlx::raw_sql(initial).execute(&self.pool).await?;
         let storage_tiering = include_str!("../../../../migrations/002_storage_tiering.sql");
         sqlx::raw_sql(storage_tiering).execute(&self.pool).await?;
+        let storage_pools = include_str!("../../../../migrations/003_storage_pools.sql");
+        sqlx::raw_sql(storage_pools).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -187,7 +205,7 @@ impl Database {
                  SELECT table_name
                  FROM unnest(ARRAY[
                      'games', 'builds', 'chunks', 'build_chunks', 'storage_locations',
-                     'storage_objects', 'ingestion_jobs', 'storage_providers', 'storage_accounts',
+                     'storage_objects', 'ingestion_jobs', 'storage_providers', 'storage_pools', 'storage_accounts',
                      'storage_reservations', 'storage_health_events', 'restore_jobs'
                  ]::text[]) AS table_name
              ),
@@ -211,8 +229,24 @@ impl Database {
                               AND table_name='storage_objects'
                               AND column_name='tier'
                         )
-                 UNION ALL
-                 SELECT 'primary_key:storage_objects(encoded_hash,provider)',
+                UNION ALL
+                SELECT 'column:storage_providers.pool_id',
+                       EXISTS(
+                           SELECT 1 FROM information_schema.columns
+                           WHERE table_schema='public'
+                             AND table_name='storage_providers'
+                             AND column_name='pool_id'
+                       )
+                UNION ALL
+                SELECT 'column:storage_locations.pool_id',
+                       EXISTS(
+                           SELECT 1 FROM information_schema.columns
+                           WHERE table_schema='public'
+                             AND table_name='storage_locations'
+                             AND column_name='pool_id'
+                       )
+                UNION ALL
+                SELECT 'primary_key:storage_objects(encoded_hash,provider)',
                         EXISTS(
                             SELECT 1
                             FROM pg_constraint
@@ -397,9 +431,38 @@ impl Database {
         direct_url: &str,
         priority: i32,
     ) -> Result<(), DatabaseError> {
-        sqlx::query("INSERT INTO storage_locations(encoded_hash, provider, tier, object_key, direct_url, priority, verified_at) VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(encoded_hash, provider, direct_url) DO UPDATE SET tier=excluded.tier, object_key=excluded.object_key, priority=excluded.priority, verified_at=now()")
+        self.add_storage_location_with_pool(
+            encoded_hash,
+            provider,
+            provider,
+            provider,
+            tier,
+            object_key,
+            direct_url,
+            priority,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_storage_location_with_pool(
+        &self,
+        encoded_hash: &str,
+        provider: &str,
+        pool_id: &str,
+        failure_domain: &str,
+        tier: StorageTier,
+        object_key: &str,
+        direct_url: &str,
+        priority: i32,
+    ) -> Result<(), DatabaseError> {
+        self.ensure_storage_pool_compatibility(pool_id, tier, provider, failure_domain)
+            .await?;
+        sqlx::query("INSERT INTO storage_locations(encoded_hash, provider, pool_id, failure_domain, tier, object_key, direct_url, priority, verified_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,now()) ON CONFLICT(encoded_hash, provider, direct_url) DO UPDATE SET pool_id=excluded.pool_id, failure_domain=excluded.failure_domain, tier=excluded.tier, object_key=excluded.object_key, priority=excluded.priority, verified_at=now()")
             .bind(encoded_hash)
             .bind(provider)
+            .bind(pool_id)
+            .bind(failure_domain)
             .bind(tier.as_str())
             .bind(object_key)
             .bind(direct_url)
@@ -434,14 +497,65 @@ impl Database {
         tier: StorageTier,
         object_key: &str,
     ) -> Result<(), DatabaseError> {
-        sqlx::query("INSERT INTO storage_objects(encoded_hash, encoded_size, provider, tier, object_key, verified_at) VALUES($1,$2,$3,$4,$5,now()) ON CONFLICT(encoded_hash, provider) DO UPDATE SET encoded_size=excluded.encoded_size, tier=excluded.tier, object_key=excluded.object_key, verified_at=now()")
+        self.add_storage_object_with_pool(
+            encoded_hash,
+            encoded_size,
+            provider,
+            provider,
+            provider,
+            tier,
+            object_key,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_storage_object_with_pool(
+        &self,
+        encoded_hash: &str,
+        encoded_size: i64,
+        provider: &str,
+        pool_id: &str,
+        failure_domain: &str,
+        tier: StorageTier,
+        object_key: &str,
+    ) -> Result<(), DatabaseError> {
+        self.ensure_storage_pool_compatibility(pool_id, tier, provider, failure_domain)
+            .await?;
+        sqlx::query("INSERT INTO storage_objects(encoded_hash, encoded_size, provider, pool_id, failure_domain, tier, object_key, verified_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(encoded_hash, provider) DO UPDATE SET encoded_size=excluded.encoded_size, pool_id=excluded.pool_id, failure_domain=excluded.failure_domain, tier=excluded.tier, object_key=excluded.object_key, verified_at=now()")
             .bind(encoded_hash)
             .bind(encoded_size)
             .bind(provider)
+            .bind(pool_id)
+            .bind(failure_domain)
             .bind(tier.as_str())
             .bind(object_key)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    async fn ensure_storage_pool_compatibility(
+        &self,
+        pool_id: &str,
+        class: StorageClass,
+        provider_type: &str,
+        failure_domain: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "INSERT INTO storage_pools(
+                id, storage_class, provider_type, priority, failure_domain,
+                enabled, status, provisioning_mode
+             ) VALUES($1,$2,$3,100,$4,TRUE,'READY',
+                      CASE WHEN lower($3) LIKE '%mega%' THEN 'MANUAL' ELSE 'DISABLED' END)
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(pool_id)
+        .bind(class.as_str())
+        .bind(provider_type)
+        .bind(failure_domain)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -453,7 +567,10 @@ impl Database {
             return Ok(HashMap::new());
         }
         let rows = sqlx::query(
-            "SELECT encoded_hash, provider, tier, object_key, direct_url, priority, verified_at
+            "SELECT encoded_hash, provider,
+                    COALESCE(pool_id, provider) AS pool_id,
+                    COALESCE(failure_domain, pool_id, provider) AS failure_domain,
+                    tier, object_key, direct_url, priority, verified_at
              FROM storage_locations
              WHERE encoded_hash = ANY($1) AND verified_at IS NOT NULL
              ORDER BY encoded_hash, priority, provider, direct_url",
@@ -469,6 +586,8 @@ impl Database {
                 .or_default()
                 .push(StorageLocationRecord {
                     provider: row.try_get("provider")?,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
                     tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
                     object_key: row.try_get("object_key")?,
                     direct_url: row.try_get("direct_url")?,
@@ -556,6 +675,78 @@ impl Database {
         Ok(())
     }
 
+    pub async fn publish_build_with_storage_policy(
+        &self,
+        build_id: &str,
+        policy: &StoragePolicy,
+    ) -> Result<(), DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(
+            "WITH replicas AS (
+                SELECT encoded_hash, tier, provider,
+                       COALESCE(pool_id, provider) AS pool_id,
+                       COALESCE(failure_domain, pool_id, provider) AS failure_domain
+                FROM storage_objects
+                WHERE verified_at IS NOT NULL
+                UNION
+                SELECT encoded_hash, tier, provider,
+                       COALESCE(pool_id, provider) AS pool_id,
+                       COALESCE(failure_domain, pool_id, provider) AS failure_domain
+                FROM storage_locations
+                WHERE verified_at IS NOT NULL
+            )
+            SELECT COUNT(*) AS missing
+            FROM build_chunks bc
+            WHERE bc.build_id = $1
+              AND (
+                (SELECT COUNT(DISTINCT provider) FROM replicas
+                 WHERE encoded_hash=bc.encoded_hash AND tier='HOT') < $2
+                OR (SELECT COUNT(DISTINCT failure_domain) FROM replicas
+                 WHERE encoded_hash=bc.encoded_hash AND tier='HOT') < $3
+                OR (SELECT COUNT(DISTINCT provider) FROM replicas
+                 WHERE encoded_hash=bc.encoded_hash AND tier='COLD') < $4
+                OR (SELECT COUNT(DISTINCT failure_domain) FROM replicas
+                 WHERE encoded_hash=bc.encoded_hash AND tier='COLD') < $5
+                OR (SELECT COUNT(DISTINCT provider) FROM replicas
+                 WHERE encoded_hash=bc.encoded_hash AND tier='ARCHIVE') < $6
+                OR (SELECT COUNT(DISTINCT failure_domain) FROM replicas
+                 WHERE encoded_hash=bc.encoded_hash AND tier='ARCHIVE') < $7
+              )",
+        )
+        .bind(build_id)
+        .bind(i64::from(policy.required_replicas(StorageClass::Hot)))
+        .bind(i64::from(
+            policy.required_failure_domains(StorageClass::Hot),
+        ))
+        .bind(i64::from(policy.required_replicas(StorageClass::Cold)))
+        .bind(i64::from(
+            policy.required_failure_domains(StorageClass::Cold),
+        ))
+        .bind(i64::from(policy.required_replicas(StorageClass::Archive)))
+        .bind(i64::from(
+            policy.required_failure_domains(StorageClass::Archive),
+        ))
+        .fetch_one(&mut *transaction)
+        .await?;
+        let missing: i64 = row.try_get("missing")?;
+        if missing != 0 {
+            return Err(DatabaseError::Manifest(format!(
+                "cannot publish build {build_id}: {missing} chunks do not satisfy the storage class/pool policy"
+            )));
+        }
+        let result = sqlx::query("UPDATE builds SET state='PUBLISHED', published_at=now() WHERE id=$1 AND state IN ('READY','VERIFIED')")
+            .bind(build_id)
+            .execute(&mut *transaction)
+            .await?;
+        if result.rows_affected() != 1 {
+            return Err(DatabaseError::Manifest(format!(
+                "build {build_id} is not publishable"
+            )));
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
     pub async fn upsert_storage_provider(
         &self,
         provider_id: &str,
@@ -564,9 +755,26 @@ impl Database {
         configuration_json: serde_json::Value,
     ) -> Result<(), DatabaseError> {
         sqlx::query(
-            "INSERT INTO storage_providers(id, kind, tier, configuration_json, updated_at)
-             VALUES($1,$2,$3,$4,now())
+            "INSERT INTO storage_pools(
+                id, storage_class, provider_type, priority, failure_domain,
+                enabled, status, provisioning_mode, configuration_json, updated_at
+             ) VALUES($1,$2,$3,100,CASE WHEN lower($3)='mega' THEN 'mega' ELSE $1 END,TRUE,'READY',
+                      CASE WHEN lower($3)='mega' THEN 'MANUAL' ELSE 'DISABLED' END,$4,now())
+             ON CONFLICT(id) DO UPDATE SET storage_class=excluded.storage_class,
+                 provider_type=excluded.provider_type,
+                 configuration_json=excluded.configuration_json, updated_at=now()",
+        )
+        .bind(provider_id)
+        .bind(tier.as_str())
+        .bind(kind)
+        .bind(&configuration_json)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO storage_providers(id, kind, tier, pool_id, configuration_json, updated_at)
+             VALUES($1,$2,$3,$1,$4,now())
              ON CONFLICT(id) DO UPDATE SET kind=excluded.kind, tier=excluded.tier,
+                 pool_id=excluded.pool_id,
                  configuration_json=excluded.configuration_json, updated_at=now()",
         )
         .bind(provider_id)
@@ -590,10 +798,11 @@ impl Database {
         let safety_margin_bytes = u64_to_i64(config.safety_margin_bytes)?;
         sqlx::query(
             "INSERT INTO storage_accounts(
-                id, provider_id, credential_reference, tier, status,
+                id, provider_id, pool_id, failure_domain, credential_reference, tier, status,
                 capacity_bytes, safety_margin_bytes, configuration_json, updated_at
-             ) VALUES($1,$2,$3,'COLD',$4,$5,$6,$7,now())
+             ) VALUES($1,$2,$2,$2,$3,'COLD',$4,$5,$6,$7,now())
              ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,
+                 pool_id=excluded.pool_id, failure_domain=excluded.failure_domain,
                  credential_reference=excluded.credential_reference,
                  tier=excluded.tier, status=excluded.status,
                  capacity_bytes=excluded.capacity_bytes,
@@ -618,7 +827,9 @@ impl Database {
     ) -> Result<Vec<StorageAccountRecord>, DatabaseError> {
         let rows = if let Some(provider_id) = provider_id {
             sqlx::query(
-                "SELECT id, provider_id, credential_reference, tier, status,
+                "SELECT id, provider_id, COALESCE(pool_id, provider_id) AS pool_id,
+                        COALESCE(failure_domain, pool_id, provider_id) AS failure_domain,
+                        credential_reference, tier, status,
                         capacity_bytes, used_bytes, reserved_bytes, safety_margin_bytes,
                         configuration_json, last_capacity_check, last_health_check
                  FROM storage_accounts WHERE provider_id=$1 ORDER BY id",
@@ -628,7 +839,9 @@ impl Database {
             .await?
         } else {
             sqlx::query(
-                "SELECT id, provider_id, credential_reference, tier, status,
+                "SELECT id, provider_id, COALESCE(pool_id, provider_id) AS pool_id,
+                        COALESCE(failure_domain, pool_id, provider_id) AS failure_domain,
+                        credential_reference, tier, status,
                         capacity_bytes, used_bytes, reserved_bytes, safety_margin_bytes,
                         configuration_json, last_capacity_check, last_health_check
                  FROM storage_accounts ORDER BY provider_id, id",
@@ -641,6 +854,8 @@ impl Database {
                 Ok(StorageAccountRecord {
                     snapshot: account_snapshot_from_row(row)?,
                     credential_reference: row.try_get("credential_reference")?,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
                     configuration_json: row.try_get("configuration_json")?,
                     last_health_check: row.try_get("last_health_check")?,
                 })
@@ -695,7 +910,10 @@ impl Database {
             return Ok(Vec::new());
         }
         let rows = sqlx::query(
-            "SELECT encoded_hash, encoded_size, provider, tier, object_key, verified_at
+            "SELECT encoded_hash, encoded_size, provider,
+                    COALESCE(pool_id, provider) AS pool_id,
+                    COALESCE(failure_domain, pool_id, provider) AS failure_domain,
+                    tier, object_key, verified_at
              FROM storage_objects
              WHERE encoded_hash = ANY($1)
              ORDER BY encoded_hash, tier, provider",
@@ -709,6 +927,8 @@ impl Database {
                     encoded_hash: row.try_get("encoded_hash")?,
                     encoded_size: row.try_get("encoded_size")?,
                     provider: row.try_get("provider")?,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
                     tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
                     object_key: row.try_get("object_key")?,
                     verified_at: row.try_get("verified_at")?,
@@ -739,8 +959,10 @@ impl Database {
         limit: u32,
     ) -> Result<Vec<StorageObjectRecord>, DatabaseError> {
         let rows = sqlx::query(
-            "SELECT so.encoded_hash, so.encoded_size, so.provider, so.tier,
-                    so.object_key, so.verified_at
+            "SELECT so.encoded_hash, so.encoded_size, so.provider,
+                    COALESCE(so.pool_id, so.provider) AS pool_id,
+                    COALESCE(so.failure_domain, so.pool_id, so.provider) AS failure_domain,
+                    so.tier, so.object_key, so.verified_at
              FROM storage_objects so
              WHERE NOT EXISTS (
                  SELECT 1
@@ -761,6 +983,8 @@ impl Database {
                     encoded_hash: row.try_get("encoded_hash")?,
                     encoded_size: row.try_get("encoded_size")?,
                     provider: row.try_get("provider")?,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
                     tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
                     object_key: row.try_get("object_key")?,
                     verified_at: row.try_get("verified_at")?,
@@ -1076,25 +1300,51 @@ impl CapacityReservationStore for Database {
             .map_err(|error| StorageError::Configuration(error.to_string()))?;
         let safety_margin_bytes = u64_to_i64(account.safety_margin_bytes)
             .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let pool_id = if account.pool_id.is_empty() {
+            account.provider_id.clone()
+        } else {
+            account.pool_id.clone()
+        };
+        let failure_domain = if account.failure_domain.is_empty() {
+            "mega".to_owned()
+        } else {
+            account.failure_domain.clone()
+        };
         sqlx::query(
-            "INSERT INTO storage_providers(id, kind, tier)
-             VALUES($1,'mega','COLD') ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO storage_pools(
+                id, storage_class, provider_type, priority, failure_domain,
+                enabled, status, provisioning_mode
+             ) VALUES($1,'COLD','mega',100,$2,TRUE,'READY','MANUAL')
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(&pool_id)
+        .bind(&failure_domain)
+        .execute(&self.pool)
+        .await
+        .map_err(storage_error)?;
+        sqlx::query(
+            "INSERT INTO storage_providers(id, kind, tier, pool_id)
+             VALUES($1,'mega','COLD',$2) ON CONFLICT(id) DO UPDATE SET pool_id=excluded.pool_id",
         )
         .bind(&account.provider_id)
+        .bind(&pool_id)
         .execute(&self.pool)
         .await
         .map_err(storage_error)?;
         sqlx::query(
             "INSERT INTO storage_accounts(
-                id, provider_id, credential_reference, tier, status,
+                id, provider_id, pool_id, failure_domain, credential_reference, tier, status,
                 capacity_bytes, safety_margin_bytes
-             ) VALUES($1,$2,'operator-managed','COLD',$3,$4,$5)
+             ) VALUES($1,$2,$3,$4,'operator-managed','COLD',$5,$6,$7)
              ON CONFLICT(id) DO UPDATE SET provider_id=excluded.provider_id,
+                 pool_id=excluded.pool_id, failure_domain=excluded.failure_domain,
                  tier=excluded.tier, capacity_bytes=excluded.capacity_bytes,
                  safety_margin_bytes=excluded.safety_margin_bytes, updated_at=now()",
         )
         .bind(&account.account_id)
         .bind(&account.provider_id)
+        .bind(&pool_id)
+        .bind(&failure_domain)
         .bind(account.status.as_str())
         .bind(capacity_bytes)
         .bind(safety_margin_bytes)
@@ -1136,8 +1386,9 @@ impl CapacityReservationStore for Database {
                  END,
                  last_capacity_check=now(), updated_at=now()
              WHERE id=$3
-             RETURNING id, provider_id, tier, status, capacity_bytes, used_bytes,
-                       reserved_bytes, safety_margin_bytes, last_capacity_check",
+             RETURNING id, provider_id, pool_id, failure_domain, tier, status,
+                       capacity_bytes, used_bytes, reserved_bytes, safety_margin_bytes,
+                       last_capacity_check",
         )
         .bind(capacity_bytes)
         .bind(used_bytes)
@@ -1156,7 +1407,10 @@ impl CapacityReservationStore for Database {
         provider_id: &str,
     ) -> Result<Vec<StorageAccountSnapshot>, StorageError> {
         let rows = sqlx::query(
-            "SELECT id, provider_id, tier, status, capacity_bytes, used_bytes,
+            "SELECT id, provider_id,
+                    COALESCE(pool_id, provider_id) AS pool_id,
+                    COALESCE(failure_domain, pool_id, provider_id) AS failure_domain,
+                    tier, status, capacity_bytes, used_bytes,
                     reserved_bytes, safety_margin_bytes, last_capacity_check
              FROM storage_accounts WHERE provider_id=$1 ORDER BY id",
         )
@@ -1184,7 +1438,10 @@ impl CapacityReservationStore for Database {
             .map_err(|error| StorageError::Configuration(error.to_string()))?;
         let mut transaction = self.pool.begin().await.map_err(storage_error)?;
         let account = sqlx::query(
-            "SELECT id, provider_id, tier, status, capacity_bytes, used_bytes,
+            "SELECT id, provider_id,
+                    COALESCE(pool_id, provider_id) AS pool_id,
+                    COALESCE(failure_domain, pool_id, provider_id) AS failure_domain,
+                    tier, status, capacity_bytes, used_bytes,
                     reserved_bytes, safety_margin_bytes, last_capacity_check
              FROM storage_accounts WHERE id=$1 FOR UPDATE",
         )

@@ -13,8 +13,8 @@ use launcher_common::{
 use launcher_database::Database;
 use launcher_storage::{
     CapacityReservationStore, InMemoryCapacityReservationStore, LocalStorage, MirrorSet,
-    StoragePolicy, StorageProvider, StorageProviderHealth, StorageRegistry, StorageTier,
-    storage_from_env_with_reservation_store,
+    StoragePolicy, StoragePool, StorageProvider, StorageProviderHealth, StorageRegistry,
+    StorageTier, storage_from_env_with_reservation_store,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -68,6 +68,7 @@ struct ReadinessResponse {
 #[derive(Debug, Serialize)]
 struct StorageStatusResponse {
     policy: StoragePolicy,
+    pools: Vec<StoragePool>,
     storage_health: Vec<StorageProviderHealth>,
     accounts: Vec<StorageAccountStatusResponse>,
     pending_restores: usize,
@@ -77,6 +78,8 @@ struct StorageStatusResponse {
 struct StorageAccountStatusResponse {
     account_id: String,
     provider_id: String,
+    pool_id: String,
+    failure_domain: String,
     tier: StorageTier,
     status: launcher_storage::StorageAccountStatus,
     capacity_bytes: u64,
@@ -241,6 +244,8 @@ async fn storage_status(
                 StorageAccountStatusResponse {
                     account_id: snapshot.account_id,
                     provider_id: snapshot.provider_id,
+                    pool_id: snapshot.pool_id,
+                    failure_domain: snapshot.failure_domain,
                     tier: snapshot.tier,
                     status: snapshot.status,
                     capacity_bytes: snapshot.capacity_bytes,
@@ -265,6 +270,7 @@ async fn storage_status(
     };
     Ok(Json(StorageStatusResponse {
         policy,
+        pools: state.storage.pools().to_vec(),
         storage_health: state.storage.health().await,
         accounts,
         pending_restores,
@@ -293,17 +299,56 @@ async fn storage_metrics(State(state): State<AppState>) -> Result<Response, ApiR
     };
     let mut body = String::new();
     body.push_str(&format!(
-        "launcher_storage_policy_min_hot_replicas {}\nlauncher_storage_policy_min_cold_replicas {}\nlauncher_storage_restore_pending {}\n",
+        "launcher_storage_policy_min_hot_replicas {}\nlauncher_storage_policy_min_cold_replicas {}\nlauncher_storage_policy_min_archive_replicas {}\nlauncher_storage_policy_min_hot_failure_domains {}\nlauncher_storage_policy_min_cold_failure_domains {}\nlauncher_storage_policy_min_archive_failure_domains {}\nlauncher_storage_restore_pending {}\n",
         policy.min_verified_hot_replicas,
         policy.min_verified_cold_replicas,
+        policy.min_verified_archive_replicas,
+        policy.min_hot_failure_domains,
+        policy.min_cold_failure_domains,
+        policy.min_archive_failure_domains,
         pending_restores,
     ));
-    for provider in health {
+    for provider in &health {
         let label = metric_label(&provider.provider);
+        let pool = metric_label(&provider.pool_id);
+        let failure_domain = metric_label(&provider.failure_domain);
         let tier = provider.tier.as_str();
         body.push_str(&format!(
-            "launcher_storage_provider_healthy{{provider=\"{label}\",tier=\"{tier}\"}} {}\n",
+            "launcher_storage_provider_healthy{{provider=\"{label}\",pool=\"{pool}\",failure_domain=\"{failure_domain}\",tier=\"{tier}\"}} {}\n",
             if provider.healthy { 1 } else { 0 }
+        ));
+    }
+    let mut pool_capacity = HashMap::<String, (u64, u64)>::new();
+    for account in &accounts {
+        let entry = pool_capacity
+            .entry(account.snapshot.pool_id.clone())
+            .or_default();
+        entry.0 = entry.0.saturating_add(account.snapshot.usable_free_bytes());
+        entry.1 = entry.1.saturating_add(account.snapshot.reserved_bytes);
+    }
+    for pool in state.storage.pools() {
+        let pool_label = metric_label(&pool.id);
+        let class = pool.storage_class.as_str();
+        let domain = metric_label(&pool.failure_domain);
+        let (free_bytes, reserved_bytes) = pool_capacity.get(&pool.id).copied().unwrap_or_default();
+        body.push_str(&format!(
+            "launcher_storage_pool_enabled{{pool=\"{pool_label}\",class=\"{class}\",failure_domain=\"{domain}\"}} {}\n",
+            if pool.enabled { 1 } else { 0 }
+        ));
+        body.push_str(&format!(
+            "launcher_storage_pool_free_bytes{{pool=\"{pool_label}\",class=\"{class}\"}} {free_bytes}\nlauncher_storage_pool_reserved_bytes{{pool=\"{pool_label}\",class=\"{class}\"}} {reserved_bytes}\n"
+        ));
+    }
+    for class in [StorageTier::Hot, StorageTier::Cold, StorageTier::Archive] {
+        let domains = health
+            .iter()
+            .filter(|provider| provider.storage_class == class && provider.healthy)
+            .map(|provider| provider.failure_domain.as_str())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        let class_label = class.as_str();
+        body.push_str(&format!(
+            "launcher_storage_class_failure_domains{{class=\"{class_label}\"}} {domains}\n"
         ));
     }
     for account in accounts {
