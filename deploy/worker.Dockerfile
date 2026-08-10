@@ -5,8 +5,14 @@ COPY migrations ./migrations
 RUN cargo build --manifest-path server/Cargo.toml --release -p launcher-worker
 
 FROM debian:bookworm-slim
+ARG MEGACMD_DEB_URL=https://mega.nz/linux/repo/Debian_12/amd64/megacmd-Debian_12_amd64.deb
+ARG MEGACMD_DEB_SHA256=7CA78364DA0234B06A623DF19DE9A7DB3D6AB6F2A42924C1B99AF7B1170F4C06
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates gosu \
+    && apt-get install -y --no-install-recommends ca-certificates curl gosu \
+    && curl --fail --location --retry 3 --output /tmp/megacmd.deb "$MEGACMD_DEB_URL" \
+    && echo "$MEGACMD_DEB_SHA256  /tmp/megacmd.deb" | sha256sum --check --status \
+    && apt-get install -y --no-install-recommends /tmp/megacmd.deb \
+    && rm -f /tmp/megacmd.deb \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/server/target/release/launcher-admin /usr/local/bin/launcher-admin
 COPY deploy/worker-entrypoint.sh /usr/local/bin/worker-entrypoint

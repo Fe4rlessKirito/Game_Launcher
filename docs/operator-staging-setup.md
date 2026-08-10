@@ -205,11 +205,10 @@ Success: the worker deployment shows no public domain and the volume mount is
 
 ## 8. Install and verify the official MEGAcmd runtime
 
-The checked-in worker image intentionally does not download an unpinned
-third-party MEGAcmd artifact. Before enabling `mega`, use the official
-MEGAcmd package or an operator-owned image built from the official MEGAcmd
-source. Pin the version and image/package digest in the operator's image
-registry. Official references:
+The checked-in worker image installs the official Debian 12 amd64 MEGAcmd
+package `2.5.2-1.1` from MEGA's package endpoint and verifies its pinned
+SHA-256 before installation. Update the URL and digest together when rotating
+the package. Official references:
 
 - Packages and platform guidance: https://github.com/meganz/MEGAcmd
 - Command and session guide: https://github.com/meganz/MEGAcmd/blob/master/UserGuide.md

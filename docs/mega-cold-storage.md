@@ -8,6 +8,10 @@ documents the scriptable `mega-whoami`, `mega-df`, `mega-du`, `mega-put`,
 [MEGA C++ SDK](https://github.com/meganz/sdk) remains a possible future adapter,
 but is intentionally not pulled into the Rust server build.
 
+The Railway worker image pins the official Debian 12 amd64 MEGAcmd package
+`2.5.2-1.1` by SHA-256. The package is installed in the image; only the
+authenticated MEGAcmd home is persisted on the Railway volume.
+
 ## Account configuration
 
 `LAUNCHER_MEGA_ACCOUNTS_FILE` points to an operator-managed JSON file. It
