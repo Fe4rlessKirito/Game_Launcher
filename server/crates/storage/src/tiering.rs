@@ -462,6 +462,21 @@ fn default_max_output() -> usize {
     64 * 1024
 }
 
+fn is_mega_network_failure(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    lowered.contains("network")
+        || lowered.contains("connection")
+        || lowered.contains("timed out")
+        || lowered.contains("timeout")
+        || lowered.contains("dns")
+        || lowered.contains("resolve host")
+        || lowered.contains("could not connect")
+        || lowered.contains("failed to connect")
+        || lowered.contains("connection refused")
+        || lowered.contains("network is unreachable")
+        || lowered.contains("name or service not known")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MegaColdStorageConfig {
     pub provider_id: String,
@@ -599,7 +614,7 @@ impl MegaCliAccount {
             Ok(result) => result.map_err(|error| StorageError::Unavailable(error.to_string()))?,
             Err(_) => {
                 let _ = child.kill().await;
-                return Err(StorageError::Unavailable(format!(
+                return Err(StorageError::NetworkUnavailable(format!(
                     "MEGAcmd {command} timed out"
                 )));
             }
@@ -630,6 +645,11 @@ impl MegaCliAccount {
             {
                 return Err(StorageError::Authentication(
                     "MEGAcmd session authentication failed".to_owned(),
+                ));
+            }
+            if is_mega_network_failure(&message) {
+                return Err(StorageError::NetworkUnavailable(
+                    "MEGAcmd could not reach the MEGA service".to_owned(),
                 ));
             }
             return Err(StorageError::Unavailable(if message.is_empty() {
@@ -1435,6 +1455,7 @@ impl MegaColdStoragePool {
             .unwrap_or_default();
         let mut healthy = 0;
         let mut auth_failed = false;
+        let mut network_unavailable = false;
         for account in self.accounts.iter() {
             match account.health().await {
                 Ok(()) => match account.capacity().await {
@@ -1455,6 +1476,16 @@ impl MegaColdStoragePool {
                             )
                             .await;
                     }
+                    Err(StorageError::NetworkUnavailable(_)) => {
+                        network_unavailable = true;
+                        let _ = self
+                            .ledger
+                            .set_account_status(
+                                account.account_id(),
+                                StorageAccountStatus::Unavailable,
+                            )
+                            .await;
+                    }
                     Err(_) => {
                         let _ = self
                             .ledger
@@ -1470,6 +1501,13 @@ impl MegaColdStoragePool {
                     let _ = self
                         .ledger
                         .set_account_status(account.account_id(), StorageAccountStatus::AuthFailed)
+                        .await;
+                }
+                Err(StorageError::NetworkUnavailable(_)) => {
+                    network_unavailable = true;
+                    let _ = self
+                        .ledger
+                        .set_account_status(account.account_id(), StorageAccountStatus::Unavailable)
                         .await;
                 }
                 Err(_) => {
@@ -1496,7 +1534,7 @@ impl MegaColdStoragePool {
             .iter()
             .filter(|account| account.status.can_allocate())
             .count();
-        let status = if active == 0 && auth_failed {
+        let status = if active == 0 && (auth_failed || network_unavailable) {
             StoragePoolStatus::Unavailable
         } else if active == 0 || available_bytes == 0 {
             StoragePoolStatus::NeedsCapacity
@@ -1686,6 +1724,23 @@ impl StorageProvider for MegaColdStoragePool {
         )))
     }
 
+    async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
+        super::validate_hash(encoded_hash)?;
+        let mut last_error = None;
+        for account in self.accounts.iter() {
+            let remote_path = Self::object_path(account.as_ref(), encoded_hash);
+            match account.object_size(&remote_path).await {
+                Ok(Some(size)) => return Ok(Some(size)),
+                Ok(None) => {}
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if let Some(error) = last_error {
+            return Err(error);
+        }
+        Ok(None)
+    }
+
     async fn delete_encoded(&self, encoded_hash: &str) -> Result<(), StorageError> {
         super::validate_hash(encoded_hash)?;
         let mut last_error = None;
@@ -1794,6 +1849,13 @@ mod tests {
             vec![123]
         );
         assert_eq!(parse_size_values("123MB"), vec![128_974_848]);
+    }
+
+    #[test]
+    fn classifies_mega_network_failures_without_mislabeling_authentication() {
+        assert!(is_mega_network_failure("connection refused"));
+        assert!(is_mega_network_failure("DNS resolution failed"));
+        assert!(!is_mega_network_failure("authentication failed"));
     }
 
     #[tokio::test]

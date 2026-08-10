@@ -14,10 +14,19 @@ public class ModelsTests
         try
         {
             var store = new JsonSettingsStore(path);
-            await store.SaveAsync(new LauncherSettings(LaunchOnStartup: true, ConcurrentDownloads: 8));
+            await store.SaveAsync(new LauncherSettings(
+                LaunchOnStartup: true,
+                ConcurrentDownloads: 8,
+                ApiBaseUrl: "https://staging.example.invalid/",
+                TrustedManifestKeysPem: new Dictionary<string, string>
+                {
+                    ["staging-2026-01"] = "-----BEGIN PUBLIC KEY-----\nredacted\n-----END PUBLIC KEY-----"
+                }));
             var settings = await store.LoadAsync();
             Assert.True(settings.LaunchOnStartup);
             Assert.Equal(8, settings.ConcurrentDownloads);
+            Assert.Equal("https://staging.example.invalid/", settings.ApiBaseUrl);
+            Assert.Contains("staging-2026-01", settings.TrustedManifestKeysPem!.Keys);
         }
         finally
         {

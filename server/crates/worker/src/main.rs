@@ -5,22 +5,25 @@ use launcher_common::{GameSummary, Manifest, ManifestSignature};
 use launcher_database::Database;
 use launcher_domain::BuildState;
 use launcher_manifests::{
-    generate_signing_key, load_private_key_pem, sign_bytes, validate_json, verify_bytes,
+    generate_signing_key, load_private_key_pem, private_key_pem, public_key_pem, sign_bytes,
+    validate_json, verify_bytes,
 };
 use launcher_packager::{PackageOptions, package_directory};
 use launcher_storage::{
     CapacityReservationStore, InMemoryCapacityReservationStore, MegaAccountBackend,
     MegaAccountConfig, MegaCliAccount, MegaColdStorageConfig, PlacementProvider,
-    StorageAccountStatus, StoragePlacementEngine, StoragePolicy, StorageRegistry, StorageTier,
-    storage_from_env_with_reservation_store,
+    StorageAccountStatus, StoragePlacementEngine, StoragePolicy, StorageProvider, StorageRegistry,
+    StorageTier, storage_from_env_with_reservation_store,
 };
 use launcher_worker::IngestionProgress;
+use rand::{RngCore, rngs::OsRng};
 use std::process::Command;
 use std::{
     collections::HashSet,
     env,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 #[derive(Debug, Parser)]
@@ -73,6 +76,32 @@ enum Commands {
         #[arg(long)]
         storage_root: PathBuf,
     },
+    Db {
+        #[command(subcommand)]
+        command: DbCommands,
+    },
+    Signing {
+        #[command(subcommand)]
+        command: SigningCommands,
+    },
+    ConfigureStaging {
+        #[arg(long)]
+        api_url: String,
+        #[arg(long)]
+        public_key: PathBuf,
+        #[arg(long, default_value = "staging-2026-01")]
+        key_id: String,
+        #[arg(long, default_value = "launcher-staging.json")]
+        output: PathBuf,
+        #[arg(long)]
+        allow_http: bool,
+        #[arg(long)]
+        force: bool,
+    },
+    Staging {
+        #[command(subcommand)]
+        command: StagingCommands,
+    },
     Storage {
         #[command(subcommand)]
         command: StorageCommands,
@@ -80,8 +109,60 @@ enum Commands {
 }
 
 #[derive(Debug, Subcommand)]
+enum DbCommands {
+    Status,
+    Migrate,
+}
+
+#[derive(Debug, Subcommand)]
+enum SigningCommands {
+    InitStaging {
+        #[arg(long, default_value = "staging-keys")]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "staging-2026-01")]
+        key_id: String,
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum StagingCommands {
+    Verify {
+        #[arg(long)]
+        api_url: Option<String>,
+        #[arg(long)]
+        manifest_build_id: Option<String>,
+        #[arg(long)]
+        trusted_public_key: Option<PathBuf>,
+        #[arg(long, default_value = "staging-2026-01")]
+        expected_key_id: String,
+        #[arg(long)]
+        require_cold: bool,
+        #[arg(long)]
+        allow_http: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum StorageCommands {
     Policy,
+    Smoke {
+        #[arg(long, default_value = "hot")]
+        provider: String,
+        #[arg(long, default_value = "storage")]
+        storage_root: PathBuf,
+        #[arg(long, default_value_t = 32 * 1024)]
+        bytes: usize,
+        #[arg(long)]
+        skip_download_url: bool,
+    },
+    MegaSmoke {
+        #[arg(long, default_value = "storage")]
+        storage_root: PathBuf,
+        #[arg(long, default_value_t = 32 * 1024)]
+        bytes: usize,
+    },
     Health {
         #[arg(long, default_value = "storage")]
         storage_root: PathBuf,
@@ -100,6 +181,26 @@ enum StorageCommands {
     RestorePending {
         #[arg(long, default_value_t = 100)]
         limit: u32,
+    },
+    Worker {
+        #[arg(long, default_value = "launcher-restore-worker")]
+        worker_id: String,
+        #[arg(long, default_value_t = 15)]
+        poll_seconds: u64,
+        #[arg(long, default_value = "storage")]
+        storage_root: PathBuf,
+    },
+    ColdRestoreSmoke {
+        #[arg(long)]
+        build_id: String,
+        #[arg(long)]
+        encoded_hash: String,
+        #[arg(long, default_value = "hot")]
+        target_provider: String,
+        #[arg(long)]
+        confirm: bool,
+        #[arg(long, default_value = "storage")]
+        storage_root: PathBuf,
     },
     Gc {
         #[arg(long)]
@@ -242,6 +343,17 @@ async fn main() -> Result<()> {
                 database.is_some()
             );
         }
+        Commands::Db { command } => handle_db_command(command).await?,
+        Commands::Signing { command } => handle_signing_command(command)?,
+        Commands::ConfigureStaging {
+            api_url,
+            public_key,
+            key_id,
+            output,
+            allow_http,
+            force,
+        } => configure_staging(&api_url, &public_key, &key_id, &output, allow_http, force)?,
+        Commands::Staging { command } => handle_staging_command(command).await?,
         Commands::Storage { command } => handle_storage_command(command).await?,
         Commands::Ingest {
             input,
@@ -306,6 +418,379 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn handle_db_command(command: DbCommands) -> Result<()> {
+    match command {
+        DbCommands::Status => {
+            let database = connect_database().await?;
+            let status = database.schema_status().await?;
+            let tables = status
+                .tables
+                .iter()
+                .map(|table| {
+                    serde_json::json!({
+                        "table": table.table,
+                        "present": table.present,
+                    })
+                })
+                .collect::<Vec<_>>();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "database": "CONNECTED",
+                    "schema_ready": status.ready(),
+                    "tables": tables,
+                }))?
+            );
+            if !status.ready() {
+                anyhow::bail!("database schema is incomplete; run the controlled migration")
+            }
+        }
+        DbCommands::Migrate => {
+            let database = connect_database().await?;
+            database.migrate().await?;
+            println!("database=CONNECTED migration=APPLIED");
+        }
+    }
+    Ok(())
+}
+
+fn handle_signing_command(command: SigningCommands) -> Result<()> {
+    match command {
+        SigningCommands::InitStaging {
+            output_dir,
+            key_id,
+            force,
+        } => init_staging_signing_key(&output_dir, &key_id, force),
+    }
+}
+
+fn init_staging_signing_key(output_dir: &Path, key_id: &str, force: bool) -> Result<()> {
+    validate_key_id(key_id)?;
+    std::fs::create_dir_all(output_dir)?;
+    let private_path = output_dir.join(format!("{key_id}.private.pem"));
+    let public_path = output_dir.join(format!("{key_id}.public.pem"));
+    if !force && (private_path.exists() || public_path.exists()) {
+        anyhow::bail!(
+            "refusing to overwrite existing staging key files; pass --force only after backing them up"
+        );
+    }
+    let private_key = generate_signing_key()?;
+    write_key_file(&private_path, &private_key_pem(&private_key)?, true, force)?;
+    write_key_file(&public_path, &public_key_pem(&private_key)?, false, force)?;
+    println!(
+        "staging_signing=INITIALIZED key_id={key_id} private_key={} public_key={}",
+        private_path.display(),
+        public_path.display()
+    );
+    println!("private_key_output=DO_NOT_COMMIT_OR_SEND");
+    Ok(())
+}
+
+fn configure_staging(
+    api_url: &str,
+    public_key_path: &Path,
+    key_id: &str,
+    output: &Path,
+    allow_http: bool,
+    force: bool,
+) -> Result<()> {
+    validate_key_id(key_id)?;
+    let parsed = reqwest::Url::parse(api_url)
+        .with_context(|| format!("invalid staging API URL: {api_url}"))?;
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        anyhow::bail!("staging API URL must not contain a query or fragment")
+    }
+    if parsed.scheme() != "https" && !allow_http {
+        anyhow::bail!(
+            "staging launcher configuration requires HTTPS; use --allow-http only for local smoke tests"
+        )
+    }
+    let public_key = std::fs::read_to_string(public_key_path)
+        .with_context(|| format!("could not read {}", public_key_path.display()))?;
+    if !public_key.contains("BEGIN PUBLIC KEY") && !public_key.contains("BEGIN RSA PUBLIC KEY") {
+        anyhow::bail!("public key must be PEM encoded")
+    }
+    if output.exists() && !force {
+        anyhow::bail!(
+            "refusing to overwrite {}; pass --force to replace it",
+            output.display()
+        )
+    }
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let api_base_url = format!("{}/", api_url.trim_end_matches('/'));
+    let config = serde_json::json!({
+        "apiBaseUrl": api_base_url,
+        "trustedManifestKeysPem": { key_id: public_key },
+    });
+    std::fs::write(output, serde_json::to_vec_pretty(&config)?)?;
+    println!(
+        "launcher_staging_config=WRITTEN output={} api_url={} key_id={key_id}",
+        output.display(),
+        api_base_url
+    );
+    Ok(())
+}
+
+fn validate_key_id(key_id: &str) -> Result<()> {
+    if key_id.trim().is_empty()
+        || !key_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        anyhow::bail!("key ID may contain only ASCII letters, digits, '-', '_', and '.'")
+    }
+    Ok(())
+}
+
+fn write_key_file(path: &Path, contents: &str, private: bool, force: bool) -> Result<()> {
+    if path.exists() && !force {
+        anyhow::bail!("refusing to overwrite {}", path.display())
+    }
+    std::fs::write(path, contents)?;
+    if private {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_staging_command(command: StagingCommands) -> Result<()> {
+    match command {
+        StagingCommands::Verify {
+            api_url,
+            manifest_build_id,
+            trusted_public_key,
+            expected_key_id,
+            require_cold,
+            allow_http,
+        } => {
+            verify_staging(
+                api_url,
+                manifest_build_id,
+                trusted_public_key,
+                expected_key_id,
+                require_cold,
+                allow_http,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn verify_staging(
+    api_url: Option<String>,
+    manifest_build_id: Option<String>,
+    trusted_public_key: Option<PathBuf>,
+    expected_key_id: String,
+    require_cold: bool,
+    allow_http: bool,
+) -> Result<()> {
+    let raw_api_url = api_url
+        .or_else(|| env::var("LAUNCHER_STAGING_API_URL").ok())
+        .context("provide --api-url or LAUNCHER_STAGING_API_URL")?;
+    let mut base_url = reqwest::Url::parse(&raw_api_url)
+        .with_context(|| format!("invalid staging API URL: {raw_api_url}"))?;
+    if base_url.query().is_some() || base_url.fragment().is_some() {
+        anyhow::bail!("staging API URL must not contain a query or fragment")
+    }
+    if base_url.scheme() != "https" && !allow_http {
+        anyhow::bail!(
+            "staging verification requires an HTTPS API URL; use --allow-http only for local smoke tests"
+        )
+    }
+    let root = base_url.path().trim_end_matches('/');
+    let path = if root.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("{root}/")
+    };
+    base_url.set_path(&path);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+
+    fetch_success(&client, &base_url.join("v1/health")?, "api_liveness").await?;
+    fetch_success(&client, &base_url.join("v1/ready")?, "api_readiness").await?;
+    let storage_status = fetch_json(
+        &client,
+        &base_url.join("api/v1/storage/status")?,
+        "storage_status",
+    )
+    .await?;
+    fetch_success(&client, &base_url.join("metrics")?, "metrics").await?;
+
+    let policy = storage_status
+        .get("policy")
+        .context("storage status did not return policy")?;
+    let required_hot = policy
+        .get("min_verified_hot_replicas")
+        .and_then(serde_json::Value::as_u64)
+        .context("storage policy is missing min_verified_hot_replicas")?;
+    let required_cold = policy
+        .get("min_verified_cold_replicas")
+        .and_then(serde_json::Value::as_u64)
+        .context("storage policy is missing min_verified_cold_replicas")?;
+    let cold_backup_required = policy
+        .get("cold_backup_required")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let health = storage_status
+        .get("storage_health")
+        .and_then(serde_json::Value::as_array)
+        .context("storage status did not return storage_health")?;
+    let healthy_count = |tier: &str| {
+        health
+            .iter()
+            .filter(|provider| {
+                provider.get("tier").and_then(serde_json::Value::as_str) == Some(tier)
+                    && provider
+                        .get("healthy")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+            })
+            .count() as u64
+    };
+    let hot_healthy = healthy_count("HOT");
+    let cold_provider_healthy = healthy_count("COLD");
+    let cold_account_healthy = storage_status
+        .get("accounts")
+        .and_then(serde_json::Value::as_array)
+        .map(|accounts| {
+            accounts
+                .iter()
+                .filter(|account| {
+                    account.get("tier").and_then(serde_json::Value::as_str) == Some("COLD")
+                        && matches!(
+                            account.get("status").and_then(serde_json::Value::as_str),
+                            Some("ACTIVE" | "NEAR_FULL")
+                        )
+                        && account
+                            .get("available_bytes")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0)
+                            > 0
+                })
+                .count() as u64
+        })
+        .unwrap_or(0);
+    let cold_healthy = cold_provider_healthy.max(cold_account_healthy);
+    if hot_healthy < required_hot {
+        anyhow::bail!(
+            "staging HOT policy is not satisfied: healthy={hot_healthy} required={required_hot}"
+        )
+    }
+    if require_cold && (required_cold == 0 || !cold_backup_required) {
+        anyhow::bail!("staging cold policy is not enabled")
+    }
+    if cold_healthy < required_cold || (require_cold && cold_healthy == 0) {
+        anyhow::bail!(
+            "staging COLD policy is not satisfied: healthy={cold_healthy} required={required_cold}"
+        )
+    }
+    println!(
+        "check=storage_policy status=PASS hot_healthy={hot_healthy} cold_healthy={cold_healthy} required_hot={required_hot} required_cold={required_cold}"
+    );
+
+    if let Some(build_id) = manifest_build_id {
+        let public_key_path = trusted_public_key
+            .context("--trusted-public-key is required when --manifest-build-id is used")?;
+        let manifest_url = build_endpoint(&base_url, &build_id, "manifest")?;
+        let manifest_response = client.get(manifest_url).send().await?;
+        if !manifest_response.status().is_success() {
+            anyhow::bail!(
+                "staging manifest check failed: HTTP {}",
+                manifest_response.status()
+            )
+        }
+        let manifest_bytes = manifest_response.bytes().await?;
+        let manifest = launcher_manifests::validate_json(&manifest_bytes)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        let signature_url = build_endpoint(&base_url, &build_id, "signature")?;
+        let signature: ManifestSignature = client
+            .get(signature_url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if signature.key_id != expected_key_id {
+            anyhow::bail!(
+                "staging signature key ID mismatch: expected {}, got {}",
+                expected_key_id,
+                signature.key_id
+            )
+        }
+        let public_key = read_public_key_der(&public_key_path)?;
+        verify_bytes(&manifest_bytes, &signature, &public_key)
+            .map_err(|error| anyhow::anyhow!(error))?;
+        println!(
+            "check=signing status=PASS build={} key_id={} files={}",
+            manifest.build_id,
+            signature.key_id,
+            manifest.files.len()
+        );
+    }
+    println!("staging_verify=PASS");
+    Ok(())
+}
+
+async fn fetch_success(client: &reqwest::Client, url: &reqwest::Url, name: &str) -> Result<()> {
+    let response = client.get(url.clone()).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("staging check {name} failed: HTTP {}", response.status())
+    }
+    println!("check={name} status=PASS http={}", response.status());
+    Ok(())
+}
+
+async fn fetch_json(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    name: &str,
+) -> Result<serde_json::Value> {
+    let response = client.get(url.clone()).send().await?;
+    if !response.status().is_success() {
+        anyhow::bail!("staging check {name} failed: HTTP {}", response.status())
+    }
+    let status = response.status();
+    let value = response.json().await?;
+    println!("check={name} status=PASS http={status}");
+    Ok(value)
+}
+
+fn read_public_key_der(path: &Path) -> Result<Vec<u8>> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
+    if bytes.starts_with(b"-----BEGIN") {
+        let pem = String::from_utf8(bytes).context("trusted public key PEM is not UTF-8")?;
+        let body = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect::<String>();
+        return STANDARD
+            .decode(body)
+            .context("trusted public key PEM is not valid base64");
+    }
+    Ok(bytes)
+}
+
+fn build_endpoint(base_url: &reqwest::Url, build_id: &str, suffix: &str) -> Result<reqwest::Url> {
+    let mut url = base_url.join("api/v1/builds/")?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("staging API URL cannot be a base URL"))?;
+        segments.push(build_id).push(suffix);
+    }
+    Ok(url)
+}
+
 async fn storage_command_context(
     storage_root: &Path,
 ) -> Result<(StorageRegistry, Option<Database>)> {
@@ -332,6 +817,36 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
         StorageCommands::Policy => {
             let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
             println!("{}", serde_json::to_string_pretty(&policy)?);
+        }
+        StorageCommands::Smoke {
+            provider,
+            storage_root,
+            bytes,
+            skip_download_url,
+        } => {
+            let (storage, _) = storage_command_context(&storage_root).await?;
+            let provider = select_provider(&storage, &provider, StorageTier::Hot)?;
+            if provider.tier() != StorageTier::Hot {
+                anyhow::bail!(
+                    "storage smoke requires a HOT provider; use storage mega-smoke for COLD"
+                )
+            }
+            run_storage_smoke(provider, bytes, !skip_download_url, "HOT").await?;
+        }
+        StorageCommands::MegaSmoke {
+            storage_root,
+            bytes,
+        } => {
+            let (storage, _) = storage_command_context(&storage_root).await?;
+            let provider = storage
+                .providers_for_tier(StorageTier::Cold)
+                .into_iter()
+                .next()
+                .context("no COLD provider is configured")?;
+            if let Err(error) = run_storage_smoke(provider, bytes, false, "COLD").await {
+                println!("diagnostic={}", mega_diagnostic(&error));
+                return Err(error);
+            }
         }
         StorageCommands::Health { storage_root } => {
             let (storage, database) = storage_command_context(&storage_root).await?;
@@ -437,6 +952,50 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                 );
             }
         }
+        StorageCommands::Worker {
+            worker_id,
+            poll_seconds,
+            storage_root,
+        } => {
+            let database = command_database().await?;
+            let (storage, _) = storage_command_context(&storage_root).await?;
+            let poll = Duration::from_secs(poll_seconds.clamp(1, 300));
+            println!(
+                "restore_worker=STARTED worker_id={worker_id} poll_seconds={}",
+                poll.as_secs()
+            );
+            loop {
+                database.recover_expired_restore_jobs().await?;
+                if let Some(job) = database.claim_restore_job(&worker_id, 600).await? {
+                    if let Err(error) = process_restore_job(&database, &storage, &job).await {
+                        eprintln!("restore_job={} status=RETRY error={error}", job.id);
+                    } else {
+                        println!(
+                            "restore_job={} status=DONE hash={}",
+                            job.id, job.encoded_hash
+                        );
+                    }
+                } else {
+                    tokio::time::sleep(poll).await;
+                }
+            }
+        }
+        StorageCommands::ColdRestoreSmoke {
+            build_id,
+            encoded_hash,
+            target_provider,
+            confirm,
+            storage_root,
+        } => {
+            run_cold_restore_smoke(
+                &build_id,
+                &encoded_hash,
+                &target_provider,
+                confirm,
+                &storage_root,
+            )
+            .await?;
+        }
         StorageCommands::Gc { dry_run, limit } => {
             let database = command_database().await?;
             let objects = database.list_unreachable_storage_objects(limit).await?;
@@ -471,10 +1030,223 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
     Ok(())
 }
 
-async fn command_database() -> Result<Database> {
+fn select_provider(
+    storage: &StorageRegistry,
+    selector: &str,
+    tier: StorageTier,
+) -> Result<Arc<dyn StorageProvider>> {
+    if !selector.eq_ignore_ascii_case("hot") && !selector.eq_ignore_ascii_case("cold") {
+        return storage
+            .provider(selector)
+            .with_context(|| format!("provider {selector:?} is not configured"));
+    }
+    storage
+        .providers_for_tier(tier)
+        .into_iter()
+        .next()
+        .with_context(|| format!("no {} provider is configured", tier.as_str()))
+}
+
+async fn run_storage_smoke(
+    provider: Arc<dyn StorageProvider>,
+    requested_bytes: usize,
+    fetch_download_url: bool,
+    tier_label: &str,
+) -> Result<()> {
+    let byte_count = requested_bytes.clamp(1, 4 * 1024 * 1024);
+    let mut bytes = vec![0_u8; byte_count];
+    OsRng.fill_bytes(&mut bytes);
+    let encoded_hash = blake3::hash(&bytes).to_hex().to_string();
+    let provider_id = provider.provider_id().to_owned();
+    let result = async {
+        provider.health_check().await?;
+        println!("check={tier_label}_health status=PASS provider={provider_id}");
+        provider.put_encoded(&encoded_hash, &bytes).await?;
+        println!(
+            "check={tier_label}_put status=PASS bytes={} hash={encoded_hash}",
+            bytes.len()
+        );
+        let head_size = provider
+            .head_encoded(&encoded_hash)
+            .await?
+            .context("smoke object was not found after upload")?;
+        if head_size != bytes.len() as u64 {
+            anyhow::bail!(
+                "smoke HEAD size mismatch: expected {}, got {head_size}",
+                bytes.len()
+            );
+        }
+        println!("check={tier_label}_head status=PASS size={head_size}");
+        let downloaded = provider.read_encoded(&encoded_hash).await?;
+        if downloaded != bytes {
+            anyhow::bail!("smoke GET bytes did not match uploaded bytes");
+        }
+        println!("check={tier_label}_get status=PASS blake3={encoded_hash}");
+        let location = provider.download_location(&encoded_hash).await?;
+        if fetch_download_url {
+            let response = reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()?
+                .get(&location.url)
+                .send()
+                .await?
+                .error_for_status()?;
+            let direct_bytes = response.bytes().await?;
+            if direct_bytes.as_ref() != bytes.as_slice() {
+                anyhow::bail!("download URL returned bytes different from the smoke object");
+            }
+            println!("check={tier_label}_direct_download status=PASS");
+        }
+        println!(
+            "check={tier_label}_download_url status=PASS expires_at={}",
+            location
+                .expires_at
+                .map(|value| value.to_rfc3339())
+                .unwrap_or_else(|| "none".to_owned())
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let cleanup = provider.delete_encoded(&encoded_hash).await;
+    match result {
+        Ok(()) => {
+            cleanup?;
+            if provider.head_encoded(&encoded_hash).await?.is_some() {
+                anyhow::bail!("smoke DELETE did not remove the temporary object");
+            }
+            println!("check={tier_label}_delete status=PASS");
+            println!(
+                "storage_smoke=PASS provider={provider_id} bytes={}",
+                bytes.len()
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let _ = cleanup;
+            Err(error)
+        }
+    }
+}
+
+fn mega_diagnostic(error: &anyhow::Error) -> &'static str {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("authentication")
+        || message.contains("not logged")
+        || message.contains("login")
+        || message.contains("session")
+    {
+        "MEGA_AUTH_FAILED"
+    } else if message.contains("network")
+        || message.contains("dns")
+        || message.contains("resolve")
+        || message.contains("timed out")
+        || message.contains("timeout")
+        || message.contains("connection")
+        || message.contains("unreachable")
+        || message.contains("refused")
+    {
+        "MEGA_NETWORK_UNAVAILABLE"
+    } else if message.contains("no such file")
+        || message.contains("not found")
+        || message.contains("mega-whoami")
+        || message.contains("megacmd")
+    {
+        "MEGA_RUNTIME_MISSING"
+    } else {
+        "MEGA_PROVIDER_UNAVAILABLE"
+    }
+}
+
+async fn run_cold_restore_smoke(
+    build_id: &str,
+    encoded_hash: &str,
+    target_provider: &str,
+    confirm: bool,
+    storage_root: &Path,
+) -> Result<()> {
+    if !confirm {
+        anyhow::bail!(
+            "cold restore smoke deletes one HOT object; pass --confirm after selecting a staging-only build"
+        );
+    }
+    if !build_id.starts_with("staging-") {
+        anyhow::bail!("cold restore smoke only accepts build IDs beginning with staging-");
+    }
+    let database = command_database().await?;
+    let manifest = database
+        .get_manifest(build_id)
+        .await?
+        .with_context(|| format!("published build {build_id:?} was not found"))?;
+    if !manifest
+        .files
+        .iter()
+        .flat_map(|file| file.chunks.iter())
+        .any(|chunk| chunk.encoded_hash == encoded_hash)
+    {
+        anyhow::bail!("encoded hash is not referenced by the selected staging build");
+    }
+    if database
+        .count_published_build_references(encoded_hash)
+        .await?
+        != 1
+    {
+        anyhow::bail!(
+            "encoded hash is shared by multiple published/ready builds; refusing destructive smoke"
+        );
+    }
+    let (storage, _) = storage_command_context(storage_root).await?;
+    let hot = select_provider(&storage, target_provider, StorageTier::Hot)?;
+    let cold = storage
+        .providers_for_tier(StorageTier::Cold)
+        .into_iter()
+        .next()
+        .context("no COLD provider is configured")?;
+    let hot_size = hot
+        .head_encoded(encoded_hash)
+        .await?
+        .context("selected HOT object is already missing")?;
+    let cold_size = cold
+        .head_encoded(encoded_hash)
+        .await?
+        .context("selected COLD object is missing")?;
+    println!(
+        "cold_restore=SELECTED build={build_id} hash={encoded_hash} hot_provider={} hot_size={hot_size} cold_provider={} cold_size={cold_size}",
+        hot.provider_id(),
+        cold.provider_id()
+    );
+    hot.delete_encoded(encoded_hash).await?;
+    database
+        .delete_storage_object(encoded_hash, hot.provider_id())
+        .await?;
+    let job = database
+        .enqueue_restore_job(encoded_hash, hot.provider_id())
+        .await?;
+    process_restore_job(&database, &storage, &job).await?;
+    let restored_size = hot
+        .head_encoded(encoded_hash)
+        .await?
+        .context("restore completed without a HOT object")?;
+    let restored = hot.read_encoded(encoded_hash).await?;
+    if restored_size != restored.len() as u64 {
+        anyhow::bail!("restored HOT object size changed during verification");
+    }
+    println!(
+        "cold_restore=PASS job={} restored_provider={} restored_size={} blake3={encoded_hash}",
+        job.id,
+        hot.provider_id(),
+        restored_size
+    );
+    Ok(())
+}
+
+async fn connect_database() -> Result<Database> {
     let url = env::var("DATABASE_URL")
         .context("DATABASE_URL is required for this storage admin command")?;
-    let database = Database::connect(&url).await?;
+    Ok(Database::connect(&url).await?)
+}
+
+async fn command_database() -> Result<Database> {
+    let database = connect_database().await?;
     database.migrate().await?;
     Ok(database)
 }
@@ -538,6 +1310,15 @@ async fn handle_storage_account_command(command: StorageAccountCommands) -> Resu
                 .err()
                 .map(ToString::to_string)
                 .or_else(|| capacity.as_ref().err().map(ToString::to_string));
+            if matches!(
+                &health,
+                Err(launcher_storage::StorageError::NetworkUnavailable(_))
+            ) || matches!(
+                &capacity,
+                Err(launcher_storage::StorageError::NetworkUnavailable(_))
+            ) {
+                println!("diagnostic=MEGA_NETWORK_UNAVAILABLE");
+            }
             database
                 .set_storage_account_status(
                     &persisted_config.account_id,

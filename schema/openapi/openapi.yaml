@@ -11,6 +11,17 @@ paths:
       operationId: health
       responses:
         '200': { description: API is alive }
+  /v1/health:
+    get:
+      operationId: liveness
+      responses:
+        '200': { description: Lightweight process liveness response }
+  /v1/ready:
+    get:
+      operationId: readiness
+      responses:
+        '200': { description: API and critical database readiness }
+        '503': { description: A critical dependency is not ready }
   /metrics:
     get:
       operationId: metrics

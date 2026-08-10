@@ -16,6 +16,8 @@ launcher-domain = { path = "../domain" }
 launcher-manifests = { path = "../manifests" }
 launcher-packager = { path = "../packager" }
 launcher-storage = { path = "../storage" }
+rand.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

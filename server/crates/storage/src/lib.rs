@@ -62,6 +62,8 @@ pub enum StorageError {
     },
     #[error("storage account authentication failed: {0}")]
     Authentication(String),
+    #[error("MEGA network unavailable: {0}")]
+    NetworkUnavailable(String),
     #[error("storage account unavailable: {0}")]
     Unavailable(String),
     #[error("storage pool is unavailable")]
@@ -87,6 +89,15 @@ pub trait StorageProvider: Send + Sync {
     fn provider_id(&self) -> &str;
     fn tier(&self) -> StorageTier;
     async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError>;
+    async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
+        match self.read_encoded(encoded_hash).await {
+            Ok(bytes) => Ok(Some(bytes.len() as u64)),
+            Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
     async fn read_encoded(&self, encoded_hash: &str) -> Result<Vec<u8>, StorageError>;
     async fn delete_encoded(&self, encoded_hash: &str) -> Result<(), StorageError>;
     async fn download_location(&self, encoded_hash: &str)
@@ -348,6 +359,16 @@ impl StorageProvider for LocalStorage {
         let bytes = tokio::fs::read(self.object_path(encoded_hash)?).await?;
         verify_encoded_bytes(encoded_hash, &bytes)?;
         Ok(bytes)
+    }
+
+    async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
+        let path = self.object_path(encoded_hash)?;
+        match tokio::fs::metadata(path).await {
+            Ok(metadata) if metadata.is_file() => Ok(Some(metadata.len())),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StorageError::Io(error)),
+        }
     }
 
     async fn delete_encoded(&self, encoded_hash: &str) -> Result<(), StorageError> {
@@ -894,6 +915,23 @@ impl StorageProvider for S3CompatibleStorage {
         let bytes = self.read_remote(&key).await?;
         verify_encoded_bytes(encoded_hash, &bytes)?;
         Ok(bytes)
+    }
+
+    async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
+        let _slot = self.acquire_request_slot().await?;
+        let key = self.object_key(encoded_hash)?;
+        match self
+            .client
+            .head_object()
+            .bucket(&self.config.bucket)
+            .key(key)
+            .send()
+            .await
+        {
+            Ok(head) => Ok(head.content_length().map(|length| length as u64)),
+            Err(error) if Self::is_missing(&error) => Ok(None),
+            Err(error) => Err(StorageError::Provider(error.to_string())),
+        }
     }
 
     async fn delete_encoded(&self, encoded_hash: &str) -> Result<(), StorageError> {

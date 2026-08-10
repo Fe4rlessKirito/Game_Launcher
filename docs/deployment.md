@@ -35,20 +35,82 @@ The repository does not contain a VPS hostname, DNS zone, bucket, or production 
 
 ## Railway API deployment
 
-The root `railway.toml` points Railway at `deploy/api.Dockerfile`, starts
-`/usr/local/bin/launcher-api`, and uses `/health` for health checks with an
-on-failure restart policy. Create a Railway PostgreSQL plugin and inject its
-`DATABASE_URL` into the API service. Set `LAUNCHER_AUTO_MIGRATE=1` for a
-controlled first boot or run the migration through an operator job before
-traffic is enabled.
+The root `railway.toml` uses the current Railway config-as-code keys:
+
+```toml
+[build]
+dockerfilePath = "deploy/api.Dockerfile"
+
+[deploy]
+startCommand = "/usr/local/bin/launcher-api"
+healthcheckPath = "/v1/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+```
+
+`/v1/health` is process-only and does not scan storage or require PostgreSQL.
+`/v1/ready` performs a cheap `SELECT 1` when `DATABASE_URL` is configured.
+The API binds to `LAUNCHER_BIND` when explicitly set, otherwise to Railway's
+`0.0.0.0:$PORT`; local development still defaults to
+`127.0.0.1:8080`.
+
+Create a Railway PostgreSQL service and set
+`DATABASE_URL=${{Postgres.DATABASE_URL}}` on the API and worker. Run
+`launcher-admin db status` against the service environment before enabling
+traffic; use `LAUNCHER_AUTO_MIGRATE=1` only for a controlled first boot, then
+return it to `0`. The status command is read-only and reports only connectivity
+and required table presence.
+
+The intended staging topology is:
+
+```text
+                         public HTTPS / Railway TLS
+ staging launcher ────────────────────────> API service
+                                               │
+                                               ├── private PostgreSQL
+                                               └── private Railway Bucket (S3 HOT)
+
+ private Restore Worker ── PostgreSQL + Railway Bucket HOT + MEGAcmd COLD
+ website service (optional) ── public API URL only
+```
+
+The API service uses `LAUNCHER_STORAGE_PROVIDERS=s3`; the worker uses
+`s3,mega` and owns the MEGAcmd session. The API never needs MEGA credentials to
+resolve hot locations. Cold account status is recorded in PostgreSQL by the
+operator/worker commands and is visible through the redacted storage status
+endpoint. The worker has no HTTP endpoint and must not receive a public domain.
+Use `railway.worker.toml` as the service's custom config-as-code file; Railway
+supports selecting a custom config path in service settings.
+
+Create a small persistent volume on the worker and mount it at
+`/var/lib/launcher/megacmd`. Store only MEGAcmd state and the operator-managed
+account configuration there, not game objects. The worker image sets
+`TMPDIR=/tmp/launcher-mega`; the restore path processes one bounded chunk at a
+time and removes temporary files after verification. Install the official
+MEGAcmd Linux package or a pinned operator-built image layer; the checked-in
+Rust image deliberately does not download an unpinned third-party binary.
+Pre-authenticate exactly one operator MEGA account for the first smoke test.
+
+Railway Bucket credentials are wired through generic S3 variables, for example:
+
+```text
+LAUNCHER_S3_ENDPOINT=${{HotBucket.ENDPOINT}}
+LAUNCHER_S3_REGION=${{HotBucket.REGION}}
+LAUNCHER_S3_BUCKET=${{HotBucket.BUCKET}}
+LAUNCHER_S3_ACCESS_KEY=${{HotBucket.ACCESS_KEY_ID}}
+LAUNCHER_S3_SECRET_KEY=${{HotBucket.SECRET_ACCESS_KEY}}
+LAUNCHER_S3_FORCE_PATH_STYLE=false
+```
+
+Use the bucket's actual service name in the references. Keep the bucket
+private and leave `LAUNCHER_S3_PUBLIC_BASE_URL` empty so the API returns
+short-lived presigned GET URLs. The storage implementation remains generic
+S3-compatible and does not branch on Railway.
 
 Run the Astro website as a separate Railway service rooted at `website/`; the
 API service does not serve the website bundle. Railway provides TLS and public
 service domains, so Caddy is not part of the Railway topology. Keep the
-existing Caddy Compose topology for a VPS deployment.
-
-For Railway staging, configure at least one independently operated hot
-provider and a cold MEGA pool, set the hot/cold policy variables, and provide
-`LAUNCHER_MEGA_ACCOUNTS_FILE` through a protected file/volume mechanism. The
-MEGAcmd sessions must be pre-authenticated by the operator; no Railway build or
-startup step creates accounts or handles passwords.
+existing Caddy Compose topology for a VPS deployment. See
+`docs/staging-railway.md` for the non-secret variable matrix and deployment
+sequence.

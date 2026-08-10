@@ -75,6 +75,23 @@ pub struct StorageObjectRecord {
     pub verified_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaTableStatus {
+    pub table: String,
+    pub present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaStatus {
+    pub tables: Vec<SchemaTableStatus>,
+}
+
+impl SchemaStatus {
+    pub fn ready(&self) -> bool {
+        self.tables.iter().all(|table| table.present)
+    }
+}
+
 fn parse_storage_tier(value: &str) -> Result<StorageTier, DatabaseError> {
     value
         .parse()
@@ -157,6 +174,70 @@ impl Database {
         let storage_tiering = include_str!("../../../../migrations/002_storage_tiering.sql");
         sqlx::raw_sql(storage_tiering).execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn ping(&self) -> Result<(), DatabaseError> {
+        sqlx::query("SELECT 1").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn schema_status(&self) -> Result<SchemaStatus, DatabaseError> {
+        let rows = sqlx::query(
+            "WITH required_tables AS (
+                 SELECT table_name
+                 FROM unnest(ARRAY[
+                     'games', 'builds', 'chunks', 'build_chunks', 'storage_locations',
+                     'storage_objects', 'ingestion_jobs', 'storage_providers', 'storage_accounts',
+                     'storage_reservations', 'storage_health_events', 'restore_jobs'
+                 ]::text[]) AS table_name
+             ),
+             checks AS (
+                 SELECT 'table:' || table_name AS check_name,
+                        to_regclass('public.' || table_name) IS NOT NULL AS present
+                 FROM required_tables
+                 UNION ALL
+                 SELECT 'column:storage_locations.tier',
+                        EXISTS(
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema='public'
+                              AND table_name='storage_locations'
+                              AND column_name='tier'
+                        )
+                 UNION ALL
+                 SELECT 'column:storage_objects.tier',
+                        EXISTS(
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema='public'
+                              AND table_name='storage_objects'
+                              AND column_name='tier'
+                        )
+                 UNION ALL
+                 SELECT 'primary_key:storage_objects(encoded_hash,provider)',
+                        EXISTS(
+                            SELECT 1
+                            FROM pg_constraint
+                            WHERE conrelid=to_regclass('public.storage_objects')
+                              AND contype='p'
+                              AND pg_get_constraintdef(oid) ILIKE '%provider%'
+                        )
+             )
+             SELECT check_name AS table_name, present
+             FROM checks
+             ORDER BY table_name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(SchemaStatus {
+            tables: rows
+                .iter()
+                .map(|row| {
+                    Ok(SchemaTableStatus {
+                        table: row.try_get("table_name")?,
+                        present: row.try_get("present")?,
+                    })
+                })
+                .collect::<Result<Vec<_>, sqlx::Error>>()?,
+        })
     }
 
     pub async fn list_published_games(
@@ -634,6 +715,23 @@ impl Database {
                 })
             })
             .collect()
+    }
+
+    pub async fn count_published_build_references(
+        &self,
+        encoded_hash: &str,
+    ) -> Result<i64, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT COUNT(DISTINCT b.id) AS references
+             FROM build_chunks bc
+             JOIN builds b ON b.id = bc.build_id
+             WHERE bc.encoded_hash = $1
+               AND b.state IN ('PUBLISHED','READY','VERIFIED')",
+        )
+        .bind(encoded_hash)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.try_get("references")?)
     }
 
     pub async fn list_unreachable_storage_objects(

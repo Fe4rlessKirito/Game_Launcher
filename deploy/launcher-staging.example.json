@@ -1,0 +1,6 @@
+{
+  "apiBaseUrl": "https://staging.example.invalid/",
+  "trustedManifestKeysPem": {
+    "staging-2026-01": "REPLACE_WITH_STAGING_PUBLIC_KEY_PEM"
+  }
+}

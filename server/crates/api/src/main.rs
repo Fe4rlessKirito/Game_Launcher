@@ -26,6 +26,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 struct AppState {
     database: Option<Database>,
+    database_required: bool,
     storage: StorageRegistry,
     local_storage: Option<LocalStorage>,
     mirrors: MirrorSet,
@@ -47,6 +48,20 @@ struct HealthResponse {
     database_configured: bool,
     storage_providers: Vec<String>,
     storage_health: Vec<StorageProviderHealth>,
+    utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct LivenessResponse {
+    status: &'static str,
+    utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReadinessResponse {
+    status: &'static str,
+    database_ready: bool,
+    storage_configured: bool,
     utc: chrono::DateTime<Utc>,
 }
 
@@ -76,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    let database_required = env::var("DATABASE_URL").is_ok();
     let database = match env::var("DATABASE_URL") {
         Ok(url) => match Database::connect(&url).await {
             Ok(database) => {
@@ -113,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
     let (games, manifests, manifest_bytes, signatures) = load_development_catalog();
     let state = AppState {
         database,
+        database_required,
         storage,
         local_storage,
         mirrors,
@@ -123,6 +140,8 @@ async fn main() -> anyhow::Result<()> {
     };
     let app = Router::new()
         .route("/health", get(health))
+        .route("/v1/health", get(liveness))
+        .route("/v1/ready", get(readiness))
         .route("/metrics", get(storage_metrics))
         .route("/api/v1/storage/status", get(storage_status))
         .route("/api/v1/storage/metrics", get(storage_metrics))
@@ -136,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     let address: SocketAddr = env::var("LAUNCHER_BIND")
+        .or_else(|_| env::var("PORT").map(|port| format!("0.0.0.0:{port}")))
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse()?;
     info!(%address, "launcher API listening");
@@ -162,6 +182,47 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         storage_health,
         utc: Utc::now(),
     })
+}
+
+async fn liveness() -> Json<LivenessResponse> {
+    Json(LivenessResponse {
+        status: "ok",
+        utc: Utc::now(),
+    })
+}
+
+async fn readiness(
+    State(state): State<AppState>,
+) -> Result<Json<ReadinessResponse>, ApiResponseError> {
+    let database_ready = if let Some(database) = &state.database {
+        match database.ping().await {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(%error, "database readiness check failed");
+                false
+            }
+        }
+    } else {
+        !state.database_required
+    };
+    let storage_configured = !state.storage.providers().is_empty();
+    if !database_ready || !storage_configured {
+        return Err(ApiResponseError::temporary(
+            "not_ready",
+            if !database_ready {
+                "database is not ready"
+            } else {
+                "storage is not configured"
+            },
+            5,
+        ));
+    }
+    Ok(Json(ReadinessResponse {
+        status: "ready",
+        database_ready,
+        storage_configured,
+        utc: Utc::now(),
+    }))
 }
 
 async fn storage_status(
@@ -710,6 +771,7 @@ impl From<launcher_storage::StorageError> for ApiResponseError {
             | launcher_storage::StorageError::RateLimiterClosed
             | launcher_storage::StorageError::NeedsCapacity { .. }
             | launcher_storage::StorageError::Authentication(_)
+            | launcher_storage::StorageError::NetworkUnavailable(_)
             | launcher_storage::StorageError::Unavailable(_)
             | launcher_storage::StorageError::PoolUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             launcher_storage::StorageError::Io(_)
@@ -789,6 +851,7 @@ mod tests {
         .unwrap();
         let state = AppState {
             database: None,
+            database_required: false,
             storage,
             local_storage: None,
             mirrors: MirrorSet::new(["https://mirror-b.example", "https://mirror-c.example"]),

@@ -7,7 +7,7 @@ use rsa::{
     RsaPrivateKey, RsaPublicKey,
     pkcs1::{DecodeRsaPrivateKey, Error as Pkcs1Error},
     pkcs1v15::Pkcs1v15Sign,
-    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePublicKey},
+    pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -49,6 +49,14 @@ pub fn load_private_key_pem(pem: &str) -> Result<RsaPrivateKey, SignatureError> 
         Ok(key) => Ok(key),
         Err(_) => Ok(RsaPrivateKey::from_pkcs1_pem(pem)?),
     }
+}
+
+pub fn private_key_pem(private_key: &RsaPrivateKey) -> Result<String, SignatureError> {
+    Ok(private_key.to_pkcs8_pem(LineEnding::LF)?.to_string())
+}
+
+pub fn public_key_pem(private_key: &RsaPrivateKey) -> Result<String, SignatureError> {
+    Ok(RsaPublicKey::from(private_key).to_public_key_pem(LineEnding::LF)?)
 }
 
 pub fn sign_bytes(

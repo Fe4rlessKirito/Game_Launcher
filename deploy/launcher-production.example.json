@@ -1,0 +1,4 @@
+{
+  "apiBaseUrl": "https://production.example.invalid/",
+  "trustedManifestKeysPem": {}
+}

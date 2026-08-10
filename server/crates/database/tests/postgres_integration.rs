@@ -57,6 +57,7 @@ async fn postgres_repository_migrates_publishes_and_recovers_leases()
 
     let database = Database::connect(&postgres.settings().url(&database_name)).await?;
     database.migrate().await?;
+    assert!(database.schema_status().await?.ready());
 
     let game = GameSummary {
         id: "game-1".to_owned(),

@@ -8,7 +8,12 @@ using Launcher.Security;
 using Launcher.Storage;
 
 var mode = Get("LAUNCHER_E2E_MODE", "install");
-var apiBase = new Uri(Get("LAUNCHER_E2E_API", "http://127.0.0.1:18081/"));
+var settingsPath = Environment.GetEnvironmentVariable("LAUNCHER_SETTINGS_PATH");
+var settingsLoaded = !string.IsNullOrWhiteSpace(settingsPath) && File.Exists(settingsPath);
+var settings = settingsLoaded
+    ? await new JsonSettingsStore(settingsPath!).LoadAsync()
+    : new LauncherSettings();
+var apiBase = new Uri(Get("LAUNCHER_E2E_API", settings.ApiBaseUrl));
 var stateRoot = Path.GetFullPath(Get("LAUNCHER_E2E_STATE_ROOT", Path.Combine(Path.GetTempPath(), "launcher-e2e-state")));
 var installRoot = Path.GetFullPath(Get("LAUNCHER_E2E_INSTALL_ROOT", Path.Combine(stateRoot, "game")));
 var sourceRoot = Path.GetFullPath(Get("LAUNCHER_E2E_SOURCE", Path.Combine(stateRoot, "source")));
@@ -27,7 +32,18 @@ var buildId = requestedBuild ?? games[0].LatestBuild?.Id ?? throw new InvalidOpe
 var signedManifest = await api.GetManifestWithBytesAsync(buildId);
 var manifest = signedManifest.Manifest;
 var signature = await api.GetManifestSignatureAsync(buildId);
-ManifestSignatureVerifier.Verify(signedManifest.RawBytes, signature, allowEmbeddedPublicKey: true);
+if (settingsLoaded)
+{
+    ManifestSignatureVerifier.Verify(
+        signedManifest.RawBytes,
+        signature,
+        settings.TrustedManifestKeysPem,
+        allowEmbeddedPublicKey: false);
+}
+else
+{
+    ManifestSignatureVerifier.Verify(signedManifest.RawBytes, signature, allowEmbeddedPublicKey: true);
+}
 using var downloader = new DownloadManager(httpClient, api, cache, 4, state);
 var download = await downloader.DownloadAsync(manifest, $"e2e-{mode}-{manifest.BuildId}");
 var installer = new Installer(cache, state);
