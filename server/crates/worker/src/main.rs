@@ -60,6 +60,9 @@ enum Commands {
     ManifestVerify {
         path: PathBuf,
     },
+    HashFile {
+        path: PathBuf,
+    },
     ManifestSign {
         path: PathBuf,
         #[arg(long)]
@@ -260,6 +263,15 @@ async fn main() -> Result<()> {
                 manifest.files.len()
             );
         }
+        Commands::HashFile { path } => {
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("could not read {}", path.display()))?;
+            println!(
+                "blake3={} bytes={}",
+                blake3::hash(&bytes).to_hex(),
+                bytes.len()
+            );
+        }
         Commands::ManifestSign {
             path,
             output,
@@ -269,13 +281,18 @@ async fn main() -> Result<()> {
             let bytes = std::fs::read(&path)
                 .with_context(|| format!("could not read {}", path.display()))?;
             validate_json(&bytes).map_err(|error| anyhow::anyhow!(error))?;
+            let private_key = private_key
+                .or_else(|| env::var_os("LAUNCHER_SIGNING_PRIVATE_KEY_PATH").map(PathBuf::from));
             let key = match private_key {
                 Some(path) => {
                     let pem = std::fs::read_to_string(&path)
                         .with_context(|| format!("could not read {}", path.display()))?;
                     load_private_key_pem(&pem)?
                 }
-                None => generate_signing_key()?,
+                None => match env::var("LAUNCHER_SIGNING_PRIVATE_KEY_PEM") {
+                    Ok(pem) => load_private_key_pem(&pem)?,
+                    Err(_) => generate_signing_key()?,
+                },
             };
             let signature = sign_bytes(&bytes, key_id, &key, true)?;
             if let Some(parent) = output.parent() {

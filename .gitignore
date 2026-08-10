@@ -26,4 +26,5 @@ cache/
 .env.*
 !.env.example
 secrets/
+*.private.pem
 coverage/
