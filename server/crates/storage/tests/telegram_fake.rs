@@ -66,6 +66,25 @@ async fn fake_telegram_upload_restore_delete_keeps_credentials_out_of_state() {
     let pack_hash = blake3::hash(&bytes).to_hex().to_string();
     provider.put_pack(&pack_hash, &bytes).await.unwrap();
     assert_eq!(provider.read_pack(&pack_hash).await.unwrap(), bytes);
+    for concurrency in [1_usize, 2, 4, 8, 16] {
+        let started = tokio::time::Instant::now();
+        let mut tasks = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            let provider = provider.clone();
+            let pack_hash = pack_hash.clone();
+            tasks.push(tokio::spawn(
+                async move { provider.read_pack(&pack_hash).await },
+            ));
+        }
+        for task in tasks {
+            assert_eq!(task.await.unwrap().unwrap(), bytes);
+        }
+        println!(
+            "telegram_fake_restore_concurrency={} elapsed_ms={}",
+            concurrency,
+            started.elapsed().as_millis()
+        );
+    }
     provider.delete_pack(&pack_hash).await.unwrap();
     let state = tokio::fs::read_to_string(&state_file).await.unwrap();
     assert!(!state.contains("do-not-persist-this-token"));

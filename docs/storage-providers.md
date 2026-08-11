@@ -78,8 +78,10 @@ operator-facing capability check.
 
 The `telegram` provider is COLD-only and server-side. It uses the official
 [Telegram Bot API](https://core.telegram.org/bots/api); its message/file state
-is private to the restore worker. Buzzheavier's documented HTTP API is at
+is private to the restore worker. The 512 MiB staging target additionally
+requires the official [Local Bot API Server](https://github.com/tdlib/telegram-bot-api)
+in private `--local` mode. Buzzheavier's documented HTTP API is at
 [Buzzheavier Developers](https://buzzheavier.com/developers), and GoFile's
-documented API is at [GoFile API](https://gofile.io/api). FileMirage remains
-disabled until its public API contract can be probed without browser
-automation.
+documented API is at [GoFile API](https://gofile.io/api). The current
+FileMirage/Buzzheavier/GoFile capability record is observational only; none of
+those providers is enabled in `LAUNCHER_STORAGE_PROVIDERS`.

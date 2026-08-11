@@ -17,6 +17,7 @@ public sealed class PackCache(string root, long maxBytes)
     public long CurrentBytes { get { lock (_gate) return _currentBytes; } }
     public string GetPath(string packHash) { ValidateHash(packHash); return Path.Combine(_root, $"{packHash}.pack"); }
     public string GetPartialPath(string packHash) { ValidateHash(packHash); return Path.Combine(_root, $"{packHash}.part"); }
+    public void DeletePartial(string packHash) { ValidateHash(packHash); try { if (File.Exists(GetPartialPath(packHash))) File.Delete(GetPartialPath(packHash)); } catch (IOException) { } }
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {

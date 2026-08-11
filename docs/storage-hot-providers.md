@@ -11,12 +11,12 @@ compatible provider exposes stable public URLs when configured, otherwise
 short-lived presigned URLs with resolver refresh. Runtime provider URLs are
 preferred over stored URLs so expired presigned locations are not reused.
 
-FileMirage is intentionally not hard-coded until its documented API contract
-and a controlled probe establish upload, delete, direct-link, range, and
-expiry semantics. Buzzheavier and GoFile have documented HTTP APIs and may be
-implemented as isolated adapters only after their configured plan and direct
-link capability are probed. A provider without a proven direct-download
-contract remains a server-side restore source, never a client URL.
+FileMirage, Buzzheavier, and GoFile remain intentionally unconfigured. The
+staging capability record in [provider-capability-records.md](provider-capability-records.md)
+lists only behavior observed in controlled small-object probes; an upload
+success alone never enables direct HOT traffic. A provider without a proven
+direct-download, range, URL-refresh, and cleanup contract remains a
+server-side restore source, never a client URL.
 
 Normal bytes are served by providers, not by the API's local proxy. The proxy
 routes exist only for local development fixtures and explicitly bounded

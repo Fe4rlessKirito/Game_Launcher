@@ -1299,8 +1299,8 @@ async fn run_storage_smoke(
             anyhow::bail!("smoke GET bytes did not match uploaded bytes");
         }
         println!("check={tier_label}_get status=PASS blake3={encoded_hash}");
-        let location = provider.download_location(&encoded_hash).await?;
         if fetch_download_url {
+            let location = provider.download_location(&encoded_hash).await?;
             let response = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()?
@@ -1313,14 +1313,18 @@ async fn run_storage_smoke(
                 anyhow::bail!("download URL returned bytes different from the smoke object");
             }
             println!("check={tier_label}_direct_download status=PASS");
+            println!(
+                "check={tier_label}_download_url status=PASS expires_at={}",
+                location
+                    .expires_at
+                    .map(|value| value.to_rfc3339())
+                    .unwrap_or_else(|| "none".to_owned())
+            );
+        } else {
+            println!(
+                "check={tier_label}_download_url status=SKIP reason=server_side_only_or_disabled"
+            );
         }
-        println!(
-            "check={tier_label}_download_url status=PASS expires_at={}",
-            location
-                .expires_at
-                .map(|value| value.to_rfc3339())
-                .unwrap_or_else(|| "none".to_owned())
-        );
         Ok::<(), anyhow::Error>(())
     }
     .await;

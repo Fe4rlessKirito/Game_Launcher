@@ -20,11 +20,13 @@ state file. It uses `sendDocument`, `getFile`, and `deleteMessage`; download
 URLs are resolved and consumed by the private restore worker only. Telegram
 Bot API file links are never sent to a launcher.
 
-The default Bot API limit is intentionally conservative (50 MiB upload). A
-self-hosted Local Bot API Server can be selected with
-`TELEGRAM_BOT_API_BASE_URL` when larger packs are required. The configured
-limit must be compatible with the selected server. Restore concurrency is
-bounded by the worker and rate-limit responses are retried with the provider's
-retry delay.
+The public Bot API accepts bot uploads up to 50 MB and its `getFile` download
+path is limited to 20 MB. That makes the public endpoint unsuitable for a
+512 MiB physical pack. Use the official
+[Local Bot API Server](https://github.com/tdlib/telegram-bot-api) in `--local`
+mode, point `TELEGRAM_BOT_API_BASE_URL` at that private endpoint, and raise
+`TELEGRAM_COLD_MAX_UPLOAD_BYTES` only to the pack size the worker has actually
+validated. Restore concurrency is bounded by the worker and rate-limit
+responses are retried with the provider's retry delay.
 
 Official reference: [Telegram Bot API](https://core.telegram.org/bots/api).

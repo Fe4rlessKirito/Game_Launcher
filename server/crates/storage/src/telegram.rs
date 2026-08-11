@@ -400,6 +400,17 @@ impl StorageProvider for TelegramColdStorageProvider {
         super::verify_encoded_bytes(encoded_hash, &bytes)?;
         Ok(bytes)
     }
+    async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
+        self.ensure_state_loaded().await?;
+        super::validate_hash(encoded_hash)?;
+        Ok(self
+            .state
+            .lock()
+            .await
+            .objects
+            .get(encoded_hash)
+            .map(|reference| reference.size))
+    }
     async fn delete_encoded(&self, encoded_hash: &str) -> Result<(), StorageError> {
         self.delete(encoded_hash).await
     }
