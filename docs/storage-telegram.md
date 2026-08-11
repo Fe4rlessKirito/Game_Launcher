@@ -29,4 +29,10 @@ mode, point `TELEGRAM_BOT_API_BASE_URL` at that private endpoint, and raise
 validated. Restore concurrency is bounded by the worker and rate-limit
 responses are retried with the provider's retry delay.
 
+For Railway deployment, use the separate private-service setup in
+[telegram-local-api-railway.md](runbooks/telegram-local-api-railway.md). The
+Local Bot API service owns its own persistent state volume; the restore worker
+only owns launcher state, MEGAcmd session state, and bounded temporary restore
+space.
+
 Official reference: [Telegram Bot API](https://core.telegram.org/bots/api).

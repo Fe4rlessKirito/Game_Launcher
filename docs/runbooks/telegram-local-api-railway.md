@@ -1,0 +1,67 @@
+# Private Telegram Local Bot API on Railway
+
+The 512 MiB COLD smoke uses a separate private Railway service running the
+official [Telegram Bot API server](https://github.com/tdlib/telegram-bot-api)
+in `--local` mode. It is not part of the restore-worker image and it receives
+no public domain.
+
+## Service
+
+Create a second service from the same repository and select
+`railway.telegram-bot-api.toml` as its config-as-code file. The config builds
+`deploy/telegram-bot-api.Dockerfile`, listens on Railway's injected `PORT`
+(default `8081`), and has no HTTP healthcheck because authenticated `getMe` is
+the useful readiness check.
+
+Attach a persistent volume at `/var/lib/telegram-bot-api`. This is Bot API
+state and its local file working directory, not the launcher chunk store. The
+`/tmp/telegram-bot-api` directory is ephemeral and should be sized for the
+largest in-flight file plus operating headroom.
+
+Set these secrets only on the Local Bot API service:
+
+```text
+TELEGRAM_API_ID=<operator-provided api_id>
+TELEGRAM_API_HASH=<operator-provided api_hash>
+```
+
+The official server accepts HTTP and defaults to port 8081. Local mode allows
+unlimited downloads and uploads up to 2000 MB; the service should therefore
+remain private to Railway networking.
+
+## Restore-worker wiring
+
+Set these only on the private restore worker:
+
+```text
+TELEGRAM_BOT_API_BASE_URL=http://<local-api-private-host>:8081
+TELEGRAM_BOT_TOKEN=<Railway secret>
+TELEGRAM_COLD_CHAT_IDS=<operator-selected numeric chat id>
+TELEGRAM_COLD_ENABLED=true
+TELEGRAM_COLD_MAX_UPLOAD_BYTES=536870912
+TELEGRAM_COLD_STATE_FILE=/var/lib/launcher/telegram/telegram-cold-state.json
+LAUNCHER_STORAGE_PROVIDERS=s3,telegram
+```
+
+Create the worker volume directory used by `TELEGRAM_COLD_STATE_FILE` and
+keep its existing MEGAcmd session directory separate. The API service remains
+`LAUNCHER_STORAGE_PROVIDERS=s3`; Telegram is never returned to launcher
+clients.
+
+The exact private hostname is the Railway internal hostname assigned to the
+Local Bot API service. Do not use a public domain or commit the resolved
+hostname if Railway changes it.
+
+## First checks
+
+From the worker environment, run:
+
+```text
+launcher-admin storage health
+launcher-admin storage smoke --provider telegram --skip-download-url --bytes 32768
+```
+
+Then run the real 512 MiB pack smoke, verify BLAKE3, delete the Telegram
+message, and record the 1/2/4/8/16 restore timings before enabling the COLD
+publication gate. Never paste `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_HASH`, or
+the state file into chat or Git.
