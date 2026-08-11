@@ -8,4 +8,4 @@ DEBUG_FORWARD_ENABLED = "false"
 DEBUG_FORWARD_ADDRESS = ""
 
 # Store the real value with:
-# wrangler secret put PROVISIONING_INGEST_HMAC_SECRET
+# wrangler secret put INGEST_HMAC_SECRET

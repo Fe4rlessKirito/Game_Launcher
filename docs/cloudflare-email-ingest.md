@@ -2,7 +2,7 @@
 
 `infra/cloudflare/email-worker` is a generic TypeScript Email Worker. Configure
 `PROVISIONING_INGEST_URL` to the API's private/internal endpoint and store
-`PROVISIONING_INGEST_HMAC_SECRET` with `wrangler secret put`. Route only the
+`INGEST_HMAC_SECRET` with `wrangler secret put`. Route only the
 `vaultnode.pp.ua` provisioning aliases to this worker. No public API domain is
 created for the worker.
 

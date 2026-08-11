@@ -7,4 +7,4 @@ DEBUG_FORWARD_ENABLED = "false"
 DEBUG_FORWARD_ADDRESS = ""
 
 # Configure PROVISIONING_INGEST_URL as a non-secret deployment variable and
-# PROVISIONING_INGEST_HMAC_SECRET with `wrangler secret put`.
+# INGEST_HMAC_SECRET with `wrangler secret put`.

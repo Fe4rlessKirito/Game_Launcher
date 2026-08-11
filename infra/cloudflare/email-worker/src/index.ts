@@ -2,7 +2,7 @@ import { randomNonce, signEmailEvent } from "./signing";
 
 export interface Env {
   PROVISIONING_INGEST_URL: string;
-  PROVISIONING_INGEST_HMAC_SECRET: string;
+  INGEST_HMAC_SECRET: string;
   DEBUG_FORWARD_ENABLED?: string;
   DEBUG_FORWARD_ADDRESS?: string;
 }
@@ -25,7 +25,7 @@ function enabled(value: string | undefined): boolean {
 
 export default {
   async email(message: EmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
-    if (!env.PROVISIONING_INGEST_URL || !env.PROVISIONING_INGEST_HMAC_SECRET) {
+    if (!env.PROVISIONING_INGEST_URL || !env.INGEST_HMAC_SECRET) {
       message.setReject("provisioning email ingest is not configured");
       return;
     }
@@ -35,7 +35,7 @@ export default {
     const envelopeFrom = message.from.trim() || undefined;
     const envelopeTo = message.to.trim().toLowerCase();
     const signature = await signEmailEvent(
-      env.PROVISIONING_INGEST_HMAC_SECRET,
+      env.INGEST_HMAC_SECRET,
       timestamp,
       nonce,
       envelopeFrom,
