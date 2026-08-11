@@ -900,6 +900,9 @@ async fn storage_command_context(
         .unwrap_or_else(|| Arc::new(InMemoryCapacityReservationStore::default()));
     let (storage, _) =
         storage_from_env_with_reservation_store(storage_root, base_url, reservation_store).await?;
+    if let Some(database) = database.as_ref() {
+        database.ensure_storage_pools(storage.pools()).await?;
+    }
     Ok((storage, database))
 }
 
@@ -1409,6 +1412,15 @@ async fn connect_database() -> Result<Database> {
 async fn command_database() -> Result<Database> {
     let database = connect_database().await?;
     database.migrate().await?;
+    let storage_root = env::var_os("LAUNCHER_STORAGE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("storage"));
+    let base_url =
+        env::var("LAUNCHER_PUBLIC_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
+    let reservation_store: Arc<dyn CapacityReservationStore> = Arc::new(database.clone());
+    let (storage, _) =
+        storage_from_env_with_reservation_store(&storage_root, base_url, reservation_store).await?;
+    database.ensure_storage_pools(storage.pools()).await?;
     Ok(database)
 }
 

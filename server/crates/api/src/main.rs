@@ -181,6 +181,9 @@ async fn main() -> anyhow::Result<()> {
     let (storage, local_storage) =
         storage_from_env_with_reservation_store(&storage_root, &base_url, reservation_store)
             .await?;
+    if let Some(database) = database.as_ref() {
+        database.ensure_storage_pools(storage.pools()).await?;
+    }
     let configured_mirrors = env::var("LAUNCHER_MIRROR_BASE_URLS").unwrap_or_default();
     let mirror_urls = configured_mirrors
         .split(',')

@@ -9,8 +9,8 @@ use launcher_provisioning::{
     ProvisioningStore,
 };
 use launcher_storage::{
-    CapacityReservationStore, MegaAccountConfig, StorageAccountStatus, StorageError, StoragePolicy,
-    StorageTier,
+    CapacityReservationStore, MegaAccountConfig, StorageAccountStatus, StorageClass, StorageError,
+    StoragePolicy, StorageTier,
 };
 use postgresql_embedded::{PostgreSQL, SettingsBuilder};
 use std::time::Duration;
@@ -98,6 +98,23 @@ async fn postgres_repository_migrates_publishes_and_recovers_leases()
     .await?;
     database.migrate().await?;
     assert!(database.schema_status().await?.ready());
+    database
+        .ensure_storage_pools(&[launcher_storage::StoragePool::for_provider(
+            "runtime-s3",
+            StorageClass::Hot,
+            "s3",
+            "runtime-s3",
+        )])
+        .await?;
+    let runtime_pool: (String, String, String) = sqlx::query_as(
+        "SELECT id, storage_class, provider_type FROM storage_pools WHERE id='runtime-s3'",
+    )
+    .fetch_one(database.pool())
+    .await?;
+    assert_eq!(
+        runtime_pool,
+        ("runtime-s3".to_owned(), "HOT".to_owned(), "s3".to_owned())
+    );
     let provisioning_job = database
         .create_or_get_job(ProvisionRequest {
             provider_type: "mega".to_owned(),

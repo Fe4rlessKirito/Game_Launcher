@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 use launcher_common::{BuildSummary, CatalogPage, GameSummary, Manifest, ManifestSignature};
 use launcher_storage::{
     CapacityReservationStore, CapacitySnapshot, MegaAccountConfig, StorageAccountSnapshot,
-    StorageAccountStatus, StorageClass, StorageError, StoragePolicy, StorageReservation,
-    StorageTier,
+    StorageAccountStatus, StorageClass, StorageError, StoragePolicy, StoragePool,
+    StorageReservation, StorageTier,
 };
 use sqlx::{
     PgPool, Row,
@@ -562,6 +562,19 @@ impl Database {
         .bind(failure_domain)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn ensure_storage_pools(&self, pools: &[StoragePool]) -> Result<(), DatabaseError> {
+        for pool in pools {
+            self.ensure_storage_pool_compatibility(
+                &pool.id,
+                pool.storage_class,
+                &pool.provider_type,
+                &pool.failure_domain,
+            )
+            .await?;
+        }
         Ok(())
     }
 
