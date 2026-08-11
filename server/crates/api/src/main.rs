@@ -8,8 +8,8 @@ use axum::{
 };
 use chrono::Utc;
 use launcher_common::{
-    ApiErrorBody, BuildSummary, CatalogPage, ChunkResolutionRequest, GameSummary, Manifest,
-    ManifestSignature, ResolvedChunk,
+    ApiErrorBody, BuildSummary, CatalogPage, ChunkResolutionRequest, GameSummary, HotPackSource,
+    Manifest, ManifestSignature, PackResolutionRequest, ResolvedChunk, ResolvedPack,
 };
 use launcher_database::Database;
 use launcher_provisioning::{
@@ -47,6 +47,7 @@ struct AppState {
     provisioning_email_hmac_secret: Option<Arc<Vec<u8>>>,
     provisioning_email_max_bytes: usize,
     provisioning_email_clock_skew_seconds: i64,
+    packs_enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +112,16 @@ struct StorageAccountStatusResponse {
     last_capacity_check: Option<chrono::DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize)]
+struct StorageProviderCapabilityResponse {
+    provider: String,
+    pool_id: String,
+    storage_class: StorageTier,
+    provider_type: String,
+    failure_domain: String,
+    capabilities: launcher_storage::StorageProviderCapabilities,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -150,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|value| value.parse::<i64>().ok())
             .unwrap_or(300)
             .clamp(1, 3600);
+    let packs_enabled = env_bool("PACK_STORAGE_ENABLED", false);
     let provisioning_alias_ttl = env::var("PROVISIONING_MAIL_ALIAS_TTL_SECONDS")
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
@@ -208,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
         provisioning_email_hmac_secret,
         provisioning_email_max_bytes,
         provisioning_email_clock_skew_seconds,
+        packs_enabled,
     };
     let app = Router::new()
         .route("/health", get(health))
@@ -216,13 +229,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/internal/v1/email-events", post(email_events))
         .route("/metrics", get(storage_metrics))
         .route("/api/v1/storage/status", get(storage_status))
+        .route("/api/v1/storage/providers", get(storage_providers))
         .route("/api/v1/storage/metrics", get(storage_metrics))
         .route("/api/v1/games", get(list_games))
         .route("/api/v1/games/{id}", get(get_game))
         .route("/api/v1/builds/{id}/manifest", get(get_manifest))
         .route("/api/v1/builds/{id}/signature", get(get_signature))
         .route("/api/v1/builds/{id}/resolve", post(resolve_chunks))
+        .route("/api/v1/builds/{id}/packs/resolve", post(resolve_packs))
         .route("/objects/{encoded_hash}", get(get_object))
+        .route("/packs/{pack_hash}", get(get_pack))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -515,6 +531,29 @@ async fn storage_status(
         accounts,
         pending_restores,
     }))
+}
+
+async fn storage_providers(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<StorageProviderCapabilityResponse>>, ApiResponseError> {
+    let mut providers = state
+        .storage
+        .providers()
+        .iter()
+        .filter_map(|provider| {
+            let pool = state.storage.pool_for_provider(provider.provider_id())?;
+            Some(StorageProviderCapabilityResponse {
+                provider: provider.provider_id().to_owned(),
+                pool_id: pool.id.clone(),
+                storage_class: pool.storage_class,
+                provider_type: pool.provider_type.clone(),
+                failure_domain: pool.failure_domain.clone(),
+                capabilities: provider.capabilities(),
+            })
+        })
+        .collect::<Vec<_>>();
+    providers.sort_by(|left, right| left.provider.cmp(&right.provider));
+    Ok(Json(providers))
 }
 
 async fn storage_metrics(State(state): State<AppState>) -> Result<Response, ApiResponseError> {
@@ -905,6 +944,166 @@ async fn resolve_chunks(
     Ok(Json(response))
 }
 
+async fn resolve_packs(
+    State(state): State<AppState>,
+    Path(build_id): Path<String>,
+    Json(request): Json<PackResolutionRequest>,
+) -> Result<Json<Vec<ResolvedPack>>, ApiResponseError> {
+    if !state.packs_enabled {
+        return Err(ApiResponseError::temporary(
+            "pack_storage_disabled",
+            "physical pack resolution is disabled",
+            60,
+        ));
+    }
+    if request.encoded_hashes.is_empty() || request.encoded_hashes.len() > 512 {
+        return Err(ApiResponseError::bad_request(
+            "pack resolution requires between 1 and 512 chunks",
+        ));
+    }
+    let Some(database) = &state.database else {
+        return Err(ApiResponseError::temporary(
+            "database_unavailable",
+            "pack resolution requires the metadata database",
+            15,
+        ));
+    };
+    let allowed = database
+        .get_manifest(&build_id)
+        .await
+        .map_err(ApiResponseError::from)?
+        .map(|manifest| {
+            manifest
+                .files
+                .into_iter()
+                .flat_map(|file| file.chunks.into_iter().map(|chunk| chunk.encoded_hash))
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .ok_or_else(|| ApiResponseError::not_found("build"))?;
+    if request
+        .encoded_hashes
+        .iter()
+        .any(|encoded_hash| !allowed.contains(encoded_hash))
+    {
+        return Err(ApiResponseError::bad_request(
+            "chunk is not referenced by the requested build",
+        ));
+    }
+
+    let records = database
+        .get_hot_pack_sources_for_chunks(&request.encoded_hashes)
+        .await
+        .map_err(ApiResponseError::from)?;
+    let requested = request
+        .encoded_hashes
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let mut grouped = HashMap::<String, ResolvedPack>::new();
+    for source in records.values().flatten() {
+        let Some(provider) = state.storage.provider(&source.location.provider) else {
+            continue;
+        };
+        let pool = state.storage.pool_for_provider(provider.provider_id());
+        if pool.is_none_or(|pool| pool.storage_class != StorageTier::Hot || !pool.enabled)
+            || !provider.capabilities().direct_download
+        {
+            continue;
+        }
+        let entry = grouped
+            .entry(source.pack_hash.clone())
+            .or_insert_with(|| ResolvedPack {
+                pack_hash: source.pack_hash.clone(),
+                encoded_size: source.encoded_size.max(0) as u64,
+                chunk_hashes: source
+                    .chunk_hashes
+                    .iter()
+                    .filter(|hash| requested.contains(*hash))
+                    .cloned()
+                    .collect(),
+                sources: Vec::new(),
+            });
+        let runtime_location = provider
+            .download_pack_location(&source.pack_hash)
+            .await
+            .ok();
+        let url = runtime_location
+            .as_ref()
+            .map(|location| location.url.clone())
+            .or_else(|| {
+                (!source.location.direct_url.is_empty()).then(|| source.location.direct_url.clone())
+            });
+        let Some(url) = url else {
+            continue;
+        };
+        let expires_at = runtime_location
+            .as_ref()
+            .and_then(|location| location.expires_at)
+            .or(source.location.expires_at);
+        if !entry
+            .sources
+            .iter()
+            .any(|existing: &HotPackSource| existing.url == url)
+        {
+            let capabilities = provider.capabilities();
+            entry.sources.push(HotPackSource {
+                provider: provider.provider_id().to_owned(),
+                pool_id: pool
+                    .map(|pool| pool.id.clone())
+                    .unwrap_or_else(|| source.location.pool_id.clone()),
+                provider_type: provider.provider_type().to_owned(),
+                failure_domain: pool
+                    .map(|pool| pool.failure_domain.clone())
+                    .unwrap_or_else(|| source.location.failure_domain.clone()),
+                url,
+                expires_at,
+                range_supported: capabilities.range_requests,
+                stable_url: capabilities.stable_urls,
+                priority: source.location.priority,
+            });
+        }
+    }
+    let cold_pack_hashes = database
+        .get_cold_pack_hashes_for_chunks(&requested.iter().cloned().collect::<Vec<_>>())
+        .await
+        .map_err(ApiResponseError::from)?;
+    let mut queued_restore = false;
+    let restore_target =
+        env::var("LAUNCHER_RESTORE_TARGET_PROVIDER").unwrap_or_else(|_| "hot".to_owned());
+    for pack_hashes in cold_pack_hashes.values() {
+        for pack_hash in pack_hashes {
+            if !grouped.contains_key(pack_hash) {
+                database
+                    .enqueue_pack_restore_job(pack_hash, &restore_target)
+                    .await
+                    .map_err(ApiResponseError::from)?;
+                queued_restore = true;
+            }
+        }
+    }
+    if queued_restore {
+        return Err(ApiResponseError::temporary(
+            "restore_pending",
+            "the requested pack is in COLD storage and a HOT restore has been queued",
+            30,
+        ));
+    }
+    let mut response = grouped
+        .into_values()
+        .filter(|pack| !pack.chunk_hashes.is_empty() && !pack.sources.is_empty())
+        .collect::<Vec<_>>();
+    response.sort_by(|left, right| left.pack_hash.cmp(&right.pack_hash));
+    for pack in &mut response {
+        pack.chunk_hashes.sort();
+        pack.sources.sort_by(|left, right| {
+            left.priority
+                .cmp(&right.priority)
+                .then_with(|| left.provider.cmp(&right.provider))
+                .then_with(|| left.url.cmp(&right.url))
+        });
+    }
+    Ok(Json(response))
+}
+
 async fn get_object(
     State(state): State<AppState>,
     Path(encoded_hash): Path<String>,
@@ -923,6 +1122,32 @@ async fn get_object(
     Ok((
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    )
+        .into_response())
+}
+
+async fn get_pack(
+    State(state): State<AppState>,
+    Path(pack_hash): Path<String>,
+) -> Result<Response, ApiResponseError> {
+    let local_storage = state
+        .local_storage
+        .as_ref()
+        .ok_or_else(|| ApiResponseError::not_found("local pack proxy"))?;
+    if local_storage.tier() != StorageTier::Hot {
+        return Err(ApiResponseError::not_found("hot pack proxy"));
+    }
+    let bytes = local_storage
+        .read_pack(&pack_hash)
+        .await
+        .map_err(|error| ApiResponseError::not_found(&error.to_string()))?;
+    Ok((
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+            (axum::http::header::ACCEPT_RANGES, "bytes"),
+        ],
         bytes,
     )
         .into_response())
@@ -1238,6 +1463,7 @@ mod tests {
             provisioning_email_hmac_secret: None,
             provisioning_email_max_bytes: 5 * 1024 * 1024,
             provisioning_email_clock_skew_seconds: 300,
+            packs_enabled: false,
         };
         let resolved = resolve_chunks(
             State(state),

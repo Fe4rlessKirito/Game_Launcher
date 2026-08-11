@@ -16,6 +16,7 @@ launcher-database = { path = "../database" }
 launcher-domain = { path = "../domain" }
 launcher-manifests = { path = "../manifests" }
 launcher-packager = { path = "../packager" }
+launcher-packs = { path = "../packs" }
 launcher-provisioning = { path = "../provisioning" }
 launcher-storage = { path = "../storage" }
 rand.workspace = true

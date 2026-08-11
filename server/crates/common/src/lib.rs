@@ -240,6 +240,35 @@ pub struct ResolvedChunk {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+/// A source that the launcher may use for a physical HOT pack.  COLD
+/// providers are deliberately not represented by this type and must never be
+/// returned to an end user.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HotPackSource {
+    pub provider: String,
+    pub pool_id: String,
+    pub provider_type: String,
+    pub failure_domain: String,
+    pub url: String,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub range_supported: bool,
+    pub stable_url: bool,
+    pub priority: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PackResolutionRequest {
+    pub encoded_hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolvedPack {
+    pub pack_hash: String,
+    pub encoded_size: u64,
+    pub chunk_hashes: Vec<String>,
+    pub sources: Vec<HotPackSource>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApiErrorBody {
     pub code: String,

@@ -20,8 +20,18 @@ use std::{collections::HashMap, env};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 
+mod mantle;
+mod reconcile;
+mod telegram;
 mod tiering;
 
+pub use mantle::{
+    MantleCache, MantleCacheConfig, MantleCacheEntry, MantleEviction, MantleReservation,
+};
+pub use reconcile::{
+    PackReplicaObservation, PhysicalPackHealth, PhysicalPackReconciler, PhysicalPackReconciliation,
+};
+pub use telegram::{TelegramColdStorageConfig, TelegramColdStorageProvider};
 pub use tiering::{
     CapacityReservationStore, CapacitySnapshot, ExistingStorageReplica, FakeMegaAccount,
     FakeMegaFailure, InMemoryCapacityReservationStore, ManualStorageCapacityProvisioner,
@@ -35,6 +45,7 @@ pub use tiering::{
 };
 
 const OBJECT_PREFIX: &str = "chunks/encoded/";
+const PACK_PREFIX: &str = "packs/";
 const MIN_MULTIPART_PART_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PRESIGN_SECONDS: u64 = 7 * 24 * 60 * 60;
 
@@ -80,6 +91,55 @@ pub struct DownloadLocation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageProviderCapabilities {
+    pub upload: bool,
+    pub delete: bool,
+    pub direct_download: bool,
+    pub range_requests: bool,
+    pub stable_urls: bool,
+    pub expiring_urls: bool,
+    pub url_refresh: bool,
+    pub requires_authentication: bool,
+    pub max_object_size_bytes: Option<u64>,
+    pub preferred_pack_size_bytes: Option<u64>,
+    pub recommended_concurrency: u32,
+}
+
+impl StorageProviderCapabilities {
+    pub fn legacy_hot() -> Self {
+        Self {
+            upload: true,
+            delete: true,
+            direct_download: true,
+            range_requests: true,
+            stable_urls: true,
+            expiring_urls: false,
+            url_refresh: false,
+            requires_authentication: false,
+            max_object_size_bytes: None,
+            preferred_pack_size_bytes: Some(512 * 1024 * 1024),
+            recommended_concurrency: 8,
+        }
+    }
+
+    pub fn cold_server_only() -> Self {
+        Self {
+            upload: true,
+            delete: true,
+            direct_download: false,
+            range_requests: false,
+            stable_urls: false,
+            expiring_urls: false,
+            url_refresh: false,
+            requires_authentication: true,
+            max_object_size_bytes: None,
+            preferred_pack_size_bytes: Some(512 * 1024 * 1024),
+            recommended_concurrency: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageProviderHealth {
     pub provider: String,
     pub pool_id: String,
@@ -88,6 +148,22 @@ pub struct StorageProviderHealth {
     pub tier: StorageTier,
     pub healthy: bool,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageProbeStep {
+    pub name: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageProbeReport {
+    pub provider: String,
+    pub pool_id: String,
+    pub storage_class: StorageClass,
+    pub capabilities: StorageProviderCapabilities,
+    pub steps: Vec<StorageProbeStep>,
 }
 
 #[async_trait]
@@ -106,6 +182,13 @@ pub trait StorageProvider: Send + Sync {
     fn failure_domain(&self) -> &str {
         self.provider_id()
     }
+    fn capabilities(&self) -> StorageProviderCapabilities {
+        if self.storage_class() == StorageClass::Hot {
+            StorageProviderCapabilities::legacy_hot()
+        } else {
+            StorageProviderCapabilities::cold_server_only()
+        }
+    }
     async fn put_encoded(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError>;
     async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
         match self.read_encoded(encoded_hash).await {
@@ -120,6 +203,33 @@ pub trait StorageProvider: Send + Sync {
     async fn delete_encoded(&self, encoded_hash: &str) -> Result<(), StorageError>;
     async fn download_location(&self, encoded_hash: &str)
     -> Result<DownloadLocation, StorageError>;
+    async fn put_pack(&self, pack_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        let _ = (pack_hash, bytes);
+        Err(StorageError::Provider(
+            "physical pack uploads are not supported by this provider".to_owned(),
+        ))
+    }
+    async fn read_pack(&self, pack_hash: &str) -> Result<Vec<u8>, StorageError> {
+        let _ = pack_hash;
+        Err(StorageError::Provider(
+            "physical pack reads are not supported by this provider".to_owned(),
+        ))
+    }
+    async fn delete_pack(&self, pack_hash: &str) -> Result<(), StorageError> {
+        let _ = pack_hash;
+        Err(StorageError::Provider(
+            "physical pack deletion is not supported by this provider".to_owned(),
+        ))
+    }
+    async fn download_pack_location(
+        &self,
+        pack_hash: &str,
+    ) -> Result<DownloadLocation, StorageError> {
+        let _ = pack_hash;
+        Err(StorageError::Provider(
+            "physical packs are not client-facing on this provider".to_owned(),
+        ))
+    }
     async fn health_check(&self) -> Result<(), StorageError> {
         Ok(())
     }
@@ -399,6 +509,34 @@ impl StorageRegistry {
         Ok(locations)
     }
 
+    pub async fn download_pack_locations_for_tier(
+        &self,
+        pack_hash: &str,
+        tier: StorageTier,
+    ) -> Result<Vec<(Arc<dyn StorageProvider>, DownloadLocation)>, StorageError> {
+        validate_pack_hash(pack_hash)?;
+        let mut locations = Vec::new();
+        for provider in self.providers.iter() {
+            if self
+                .pool_for_provider(provider.provider_id())
+                .is_none_or(|pool| pool.storage_class != tier)
+                || !provider.capabilities().direct_download
+            {
+                continue;
+            }
+            if let Ok(location) = provider.download_pack_location(pack_hash).await
+                && !locations.iter().any(
+                    |(_, existing): &(Arc<dyn StorageProvider>, DownloadLocation)| {
+                        existing.url == location.url
+                    },
+                )
+            {
+                locations.push((provider.clone(), location));
+            }
+        }
+        Ok(locations)
+    }
+
     pub async fn health(&self) -> Vec<StorageProviderHealth> {
         let mut health = Vec::with_capacity(self.providers.len());
         for provider in self.providers.iter() {
@@ -434,6 +572,53 @@ impl StorageRegistry {
             });
         }
         health
+    }
+
+    pub async fn probe_provider(
+        &self,
+        provider_id: &str,
+        live: bool,
+    ) -> Result<StorageProbeReport, StorageError> {
+        let provider = self.provider(provider_id).ok_or_else(|| {
+            StorageError::Configuration(format!("unknown storage provider {provider_id}"))
+        })?;
+        let pool = self.pool_for_provider(provider_id);
+        let mut steps = vec![StorageProbeStep {
+            name: "capabilities".to_owned(),
+            passed: true,
+            detail: serde_json::to_string(&provider.capabilities())?,
+        }];
+        if live {
+            match provider.health_check().await {
+                Ok(()) => steps.push(StorageProbeStep {
+                    name: "health".to_owned(),
+                    passed: true,
+                    detail: "provider health check passed".to_owned(),
+                }),
+                Err(error) => steps.push(StorageProbeStep {
+                    name: "health".to_owned(),
+                    passed: false,
+                    detail: error.to_string(),
+                }),
+            }
+        } else {
+            steps.push(StorageProbeStep {
+                name: "health".to_owned(),
+                passed: true,
+                detail: "offline probe; no network or credential check performed".to_owned(),
+            });
+        }
+        Ok(StorageProbeReport {
+            provider: provider_id.to_owned(),
+            pool_id: pool
+                .map(|pool| pool.id.clone())
+                .unwrap_or_else(|| provider.pool_id().to_owned()),
+            storage_class: pool
+                .map(|pool| pool.storage_class)
+                .unwrap_or_else(|| provider.storage_class()),
+            capabilities: provider.capabilities(),
+            steps,
+        })
     }
 
     pub async fn cleanup_orphaned_multipart_uploads(&self) -> Result<u64, StorageError> {
@@ -501,6 +686,14 @@ impl LocalStorage {
             .root
             .join(OBJECT_PREFIX)
             .join(format!("{encoded_hash}.bin")))
+    }
+
+    pub fn pack_path(&self, pack_hash: &str) -> Result<PathBuf, StorageError> {
+        validate_pack_hash(pack_hash)?;
+        Ok(self
+            .root
+            .join(PACK_PREFIX)
+            .join(format!("{pack_hash}.pack")))
     }
 
     pub async fn exists(&self, encoded_hash: &str) -> Result<bool, StorageError> {
@@ -595,9 +788,45 @@ impl StorageProvider for LocalStorage {
         Ok(())
     }
 
+    async fn put_pack(&self, pack_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        validate_pack_hash(pack_hash)?;
+        verify_pack_bytes(pack_hash, bytes)?;
+        let path = self.pack_path(pack_hash)?;
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        if tokio::fs::try_exists(&path).await? {
+            let existing = tokio::fs::read(&path).await?;
+            if verify_pack_bytes(pack_hash, &existing).is_ok() {
+                return Ok(());
+            }
+            tokio::fs::remove_file(&path).await?;
+        }
+        let temp = path.with_extension(format!("{}.{}.part", std::process::id(), unique_suffix()));
+        tokio::fs::write(&temp, bytes).await?;
+        match tokio::fs::rename(&temp, &path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = tokio::fs::remove_file(&temp).await;
+                let existing = tokio::fs::read(&path).await?;
+                verify_pack_bytes(pack_hash, &existing)
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temp).await;
+                Err(StorageError::Io(error))
+            }
+        }
+    }
+
     async fn read_encoded(&self, encoded_hash: &str) -> Result<Vec<u8>, StorageError> {
         let bytes = tokio::fs::read(self.object_path(encoded_hash)?).await?;
         verify_encoded_bytes(encoded_hash, &bytes)?;
+        Ok(bytes)
+    }
+
+    async fn read_pack(&self, pack_hash: &str) -> Result<Vec<u8>, StorageError> {
+        let bytes = tokio::fs::read(self.pack_path(pack_hash)?).await?;
+        verify_pack_bytes(pack_hash, &bytes)?;
         Ok(bytes)
     }
 
@@ -620,6 +849,14 @@ impl StorageProvider for LocalStorage {
         }
     }
 
+    async fn delete_pack(&self, pack_hash: &str) -> Result<(), StorageError> {
+        match tokio::fs::remove_file(self.pack_path(pack_hash)?).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(StorageError::Io(error)),
+        }
+    }
+
     async fn download_location(
         &self,
         encoded_hash: &str,
@@ -630,6 +867,17 @@ impl StorageProvider for LocalStorage {
                 "{}/objects/{encoded_hash}",
                 self.base_url.trim_end_matches('/')
             ),
+            expires_at: None,
+        })
+    }
+
+    async fn download_pack_location(
+        &self,
+        pack_hash: &str,
+    ) -> Result<DownloadLocation, StorageError> {
+        validate_pack_hash(pack_hash)?;
+        Ok(DownloadLocation {
+            url: format!("{}/packs/{pack_hash}", self.base_url.trim_end_matches('/')),
             expires_at: None,
         })
     }
@@ -646,8 +894,17 @@ impl StorageProvider for LocalStorage {
         "local"
     }
 
+    fn capabilities(&self) -> StorageProviderCapabilities {
+        if self.tier == StorageTier::Hot {
+            StorageProviderCapabilities::legacy_hot()
+        } else {
+            StorageProviderCapabilities::cold_server_only()
+        }
+    }
+
     async fn health_check(&self) -> Result<(), StorageError> {
         tokio::fs::create_dir_all(self.root.join(OBJECT_PREFIX)).await?;
+        tokio::fs::create_dir_all(self.root.join(PACK_PREFIX)).await?;
         Ok(())
     }
 }
@@ -870,6 +1127,11 @@ impl S3CompatibleStorage {
     fn object_key(&self, encoded_hash: &str) -> Result<String, StorageError> {
         validate_hash(encoded_hash)?;
         Ok(format!("{OBJECT_PREFIX}{encoded_hash}.bin"))
+    }
+
+    fn pack_key(&self, pack_hash: &str) -> Result<String, StorageError> {
+        validate_pack_hash(pack_hash)?;
+        Ok(format!("{PACK_PREFIX}{pack_hash}.pack"))
     }
 
     async fn acquire_request_slot(
@@ -1161,11 +1423,48 @@ impl StorageProvider for S3CompatibleStorage {
         verify_encoded_bytes(encoded_hash, &remote)
     }
 
+    async fn put_pack(&self, pack_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        validate_pack_hash(pack_hash)?;
+        verify_pack_bytes(pack_hash, bytes)?;
+        let _slot = self.acquire_request_slot().await?;
+        let key = self.pack_key(pack_hash)?;
+        let remote_matches = match self
+            .client
+            .head_object()
+            .bucket(&self.config.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            Ok(head) => head.content_length().unwrap_or(-1) == bytes.len() as i64,
+            Err(error) if Self::is_missing(&error) => false,
+            Err(error) => return Err(StorageError::Provider(error.to_string())),
+        };
+        if remote_matches {
+            let remote = self.read_remote(&key).await?;
+            return verify_pack_bytes(pack_hash, &remote);
+        }
+        if bytes.len() >= self.config.multipart_threshold_bytes {
+            self.put_multipart(pack_hash, &key, bytes).await?;
+        } else {
+            self.put_single(pack_hash, &key, bytes).await?;
+        }
+        let remote = self.read_remote(&key).await?;
+        verify_pack_bytes(pack_hash, &remote)
+    }
+
     async fn read_encoded(&self, encoded_hash: &str) -> Result<Vec<u8>, StorageError> {
         let _slot = self.acquire_request_slot().await?;
         let key = self.object_key(encoded_hash)?;
         let bytes = self.read_remote(&key).await?;
         verify_encoded_bytes(encoded_hash, &bytes)?;
+        Ok(bytes)
+    }
+
+    async fn read_pack(&self, pack_hash: &str) -> Result<Vec<u8>, StorageError> {
+        let _slot = self.acquire_request_slot().await?;
+        let bytes = self.read_remote(&self.pack_key(pack_hash)?).await?;
+        verify_pack_bytes(pack_hash, &bytes)?;
         Ok(bytes)
     }
 
@@ -1193,6 +1492,18 @@ impl StorageProvider for S3CompatibleStorage {
             .delete_object()
             .bucket(&self.config.bucket)
             .key(key)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|error| StorageError::Provider(error.to_string()))
+    }
+
+    async fn delete_pack(&self, pack_hash: &str) -> Result<(), StorageError> {
+        let _slot = self.acquire_request_slot().await?;
+        self.client
+            .delete_object()
+            .bucket(&self.config.bucket)
+            .key(self.pack_key(pack_hash)?)
             .send()
             .await
             .map(|_| ())
@@ -1227,6 +1538,51 @@ impl StorageProvider for S3CompatibleStorage {
             url: request.uri().to_owned(),
             expires_at: Some(expires_at),
         })
+    }
+
+    async fn download_pack_location(
+        &self,
+        pack_hash: &str,
+    ) -> Result<DownloadLocation, StorageError> {
+        let key = self.pack_key(pack_hash)?;
+        if let Some(public_base_url) = &self.config.public_base_url {
+            return Ok(DownloadLocation {
+                url: format!("{}/{}", public_base_url.trim_end_matches('/'), key),
+                expires_at: None,
+            });
+        }
+        let presigning = PresigningConfig::expires_in(self.config.presign_ttl)
+            .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        let request = self
+            .client
+            .get_object()
+            .bucket(&self.config.bucket)
+            .key(key)
+            .presigned(presigning)
+            .await
+            .map_err(|error| StorageError::Provider(error.to_string()))?;
+        let expires_at = Utc::now()
+            + chrono::Duration::from_std(self.config.presign_ttl)
+                .map_err(|error| StorageError::Configuration(error.to_string()))?;
+        Ok(DownloadLocation {
+            url: request.uri().to_owned(),
+            expires_at: Some(expires_at),
+        })
+    }
+
+    fn capabilities(&self) -> StorageProviderCapabilities {
+        let mut capabilities = if self.config.tier == StorageTier::Hot {
+            StorageProviderCapabilities::legacy_hot()
+        } else {
+            StorageProviderCapabilities::cold_server_only()
+        };
+        capabilities.stable_urls = self.config.public_base_url.is_some();
+        capabilities.expiring_urls = self.config.public_base_url.is_none();
+        capabilities.url_refresh = self.config.public_base_url.is_none();
+        capabilities.requires_authentication = self.config.public_base_url.is_none();
+        capabilities.max_object_size_bytes = Some(5 * 1024 * 1024 * 1024 * 1024);
+        capabilities.recommended_concurrency = self.config.max_concurrent_requests as u32;
+        capabilities
     }
 
     async fn health_check(&self) -> Result<(), StorageError> {
@@ -1287,9 +1643,18 @@ pub fn storage_from_env(
                     S3CompatibleStorageConfig::from_env()?,
                 )?));
             }
+            "telegram" => {
+                if !env_bool("TELEGRAM_COLD_ENABLED", false) {
+                    return Err(StorageError::Configuration(
+                        "telegram provider is disabled; set TELEGRAM_COLD_ENABLED=true explicitly"
+                            .to_owned(),
+                    ));
+                }
+                providers.push(Arc::new(TelegramColdStorageProvider::from_env()?));
+            }
             unknown => {
                 return Err(StorageError::Configuration(format!(
-                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, or mega (use the async factory for mega)"
+                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, telegram, or mega (use the async factory for mega)"
                 )));
             }
         }
@@ -1339,9 +1704,18 @@ pub async fn storage_from_env_with_reservation_store(
                     MegaColdStoragePool::from_config_and_register(config, ledger.clone()).await?;
                 providers.push(Arc::new(pool));
             }
+            "telegram" => {
+                if !env_bool("TELEGRAM_COLD_ENABLED", false) {
+                    return Err(StorageError::Configuration(
+                        "telegram provider is disabled; set TELEGRAM_COLD_ENABLED=true explicitly"
+                            .to_owned(),
+                    ));
+                }
+                providers.push(Arc::new(TelegramColdStorageProvider::from_env()?));
+            }
             unknown => {
                 return Err(StorageError::Configuration(format!(
-                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, or mega"
+                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, telegram, or mega"
                 )));
             }
         }
@@ -1398,6 +1772,21 @@ fn verify_encoded_bytes(encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageE
     Ok(())
 }
 
+fn validate_pack_hash(pack_hash: &str) -> Result<(), StorageError> {
+    validate_hash(pack_hash)
+}
+
+fn verify_pack_bytes(pack_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
+    let actual = blake3::hash(bytes).to_hex().to_string();
+    if actual != pack_hash {
+        return Err(StorageError::HashMismatch {
+            expected: pack_hash.to_owned(),
+            actual,
+        });
+    }
+    Ok(())
+}
+
 fn validate_hash(value: &str) -> Result<(), StorageError> {
     if value.len() != 64
         || !value
@@ -1417,6 +1806,18 @@ fn unique_suffix() -> String {
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     )
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
 }
 
 #[cfg(test)]

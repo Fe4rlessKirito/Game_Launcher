@@ -11,6 +11,7 @@ use launcher_manifests::{
     validate_json, verify_bytes,
 };
 use launcher_packager::{PackageOptions, package_directory};
+use launcher_packs::PackConfig;
 use launcher_provisioning::{
     CapacityCandidate, CapacityCandidateEnroller, CapacityCandidateValidator, FileSecretStore,
     ProvisionRequest, ProvisionerRegistry, ProvisioningError, ProvisioningManager,
@@ -182,6 +183,14 @@ enum StorageCommands {
         bytes: usize,
     },
     Health {
+        #[arg(long, default_value = "storage")]
+        storage_root: PathBuf,
+    },
+    Probe {
+        #[arg(long, default_value = "hot")]
+        provider: String,
+        #[arg(long)]
+        live: bool,
         #[arg(long, default_value = "storage")]
         storage_root: PathBuf,
     },
@@ -490,6 +499,11 @@ async fn main() -> Result<()> {
                         average_bytes,
                         maximum_bytes,
                         ..launcher_common::ChunkingConfig::default()
+                    },
+                    pack_config: if env_bool("PACK_STORAGE_ENABLED", false) {
+                        Some(PackConfig::from_env().map_err(|error| anyhow::anyhow!(error))?)
+                    } else {
+                        None
                     },
                     ..PackageOptions::default()
                 },
@@ -1000,6 +1014,35 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                 }
             }
         }
+        StorageCommands::Probe {
+            provider,
+            live,
+            storage_root,
+        } => {
+            let (storage, _) = storage_command_context(&storage_root).await?;
+            let provider_id = if provider == "hot" {
+                storage
+                    .providers_for_tier(StorageTier::Hot)
+                    .into_iter()
+                    .next()
+                    .map(|provider| provider.provider_id().to_owned())
+                    .context("no HOT provider is configured")?
+            } else if provider == "cold" {
+                storage
+                    .providers_for_tier(StorageTier::Cold)
+                    .into_iter()
+                    .next()
+                    .map(|provider| provider.provider_id().to_owned())
+                    .context("no COLD provider is configured")?
+            } else {
+                provider
+            };
+            let report = storage.probe_provider(&provider_id, live).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if live && report.steps.iter().any(|step| !step.passed) {
+                anyhow::bail!("provider probe failed for {provider_id}");
+            }
+        }
         StorageCommands::Readiness { storage_root } => {
             let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
             let (storage, database) = storage_command_context(&storage_root).await?;
@@ -1129,7 +1172,17 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             );
             loop {
                 database.recover_expired_restore_jobs().await?;
-                if let Some(job) = database.claim_restore_job(&worker_id, 600).await? {
+                database.recover_expired_pack_restore_jobs().await?;
+                if let Some(job) = database.claim_pack_restore_job(&worker_id, 600).await? {
+                    if let Err(error) = process_pack_restore_job(&database, &storage, &job).await {
+                        eprintln!("pack_restore_job={} status=RETRY error={error}", job.id);
+                    } else {
+                        println!(
+                            "pack_restore_job={} status=DONE pack_hash={}",
+                            job.id, job.pack_hash
+                        );
+                    }
+                } else if let Some(job) = database.claim_restore_job(&worker_id, 600).await? {
                     if let Err(error) = process_restore_job(&database, &storage, &job).await {
                         eprintln!("restore_job={} status=RETRY error={error}", job.id);
                     } else {
@@ -2152,6 +2205,108 @@ async fn process_restore_job(
     Ok(())
 }
 
+async fn process_pack_restore_job(
+    database: &Database,
+    storage: &StorageRegistry,
+    job: &launcher_database::PackRestoreJob,
+) -> Result<()> {
+    let mut source_provider_id = None;
+    let mut bytes = None;
+    for provider in storage.restore_sources(StorageClass::Cold) {
+        match provider.read_pack(&job.pack_hash).await {
+            Ok(value) => {
+                source_provider_id = Some(provider.provider_id().to_owned());
+                bytes = Some(value);
+                break;
+            }
+            Err(_) => continue,
+        }
+    }
+    let Some(source_provider_id) = source_provider_id else {
+        let error = format!("no COLD source contains pack {}", job.pack_hash);
+        database
+            .fail_pack_restore_job(job.id, &error, job.attempts < job.max_attempts)
+            .await?;
+        anyhow::bail!(error);
+    };
+    let bytes = bytes.expect("source bytes exist when source provider exists");
+    if blake3::hash(&bytes).to_hex().as_str() != job.pack_hash {
+        let error = format!(
+            "pack restore integrity verification failed for {}",
+            job.pack_hash
+        );
+        database
+            .fail_pack_restore_job(job.id, &error, job.attempts < job.max_attempts)
+            .await?;
+        anyhow::bail!(error);
+    }
+    launcher_packs::PackReader::parse(&bytes)
+        .and_then(|reader| reader.verify_pack_hash(&job.pack_hash).map(|_| reader))
+        .map_err(|error| anyhow::anyhow!("restored pack is structurally invalid: {error}"))?;
+    let Some(hot_provider) = storage
+        .provider(&job.target_provider)
+        .filter(|provider| {
+            storage
+                .pool_for_provider(provider.provider_id())
+                .is_some_and(|pool| pool.storage_class == StorageClass::Hot)
+        })
+        .or_else(|| {
+            storage
+                .providers_for_tier(StorageTier::Hot)
+                .into_iter()
+                .next()
+        })
+    else {
+        let error = "no hot provider is configured for pack restore";
+        database
+            .fail_pack_restore_job(job.id, error, job.attempts < job.max_attempts)
+            .await?;
+        anyhow::bail!(error);
+    };
+    let hot_pool = storage
+        .pool_for_provider(hot_provider.provider_id())
+        .cloned()
+        .context("hot provider has no storage pool")?;
+    if let Err(error) = hot_provider.put_pack(&job.pack_hash, &bytes).await {
+        let message = error.to_string();
+        database
+            .fail_pack_restore_job(job.id, &message, job.attempts < job.max_attempts)
+            .await?;
+        return Err(error.into());
+    }
+    let object_key = format!("packs/{}.pack", job.pack_hash);
+    let location = hot_provider
+        .download_pack_location(&job.pack_hash)
+        .await
+        .ok();
+    let direct_url = location
+        .as_ref()
+        .map(|value| value.url.clone())
+        .unwrap_or_default();
+    let expires_at = location.and_then(|value| value.expires_at);
+    database
+        .add_pack_location(
+            &job.pack_hash,
+            hot_provider.provider_id(),
+            &hot_pool.id,
+            &hot_pool.failure_domain,
+            StorageTier::Hot,
+            &object_key,
+            &direct_url,
+            hot_pool.priority,
+            expires_at,
+        )
+        .await?;
+    println!(
+        "pack_restore_source pack_hash={} source_provider={} target_provider={}",
+        job.pack_hash,
+        source_provider_id,
+        hot_provider.provider_id()
+    );
+    database.complete_pack_restore_job(job.id).await?;
+    Ok(())
+}
+
 async fn publish_verified_build(
     manifest: &Manifest,
     signature: &ManifestSignature,
@@ -2341,9 +2496,145 @@ async fn publish_verified_build(
             }
         }
     }
+    if env_bool("PACK_STORAGE_ENABLED", false)
+        && let Some(database) = database
+    {
+        publish_physical_packs(package, storage, database, &policy).await?;
+    }
     if let Some(database) = database {
         database
             .publish_build_with_storage_policy(&manifest.build_id, &policy)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn publish_physical_packs(
+    package: &Path,
+    storage: &StorageRegistry,
+    database: &Database,
+    policy: &StoragePolicy,
+) -> Result<()> {
+    let packs_dir = package.join("packs");
+    if !packs_dir.is_dir() {
+        anyhow::bail!(
+            "PACK_STORAGE_ENABLED is true but package has no packs directory: {}",
+            packs_dir.display()
+        );
+    }
+    let pack_config = PackConfig::from_env().map_err(|error| anyhow::anyhow!(error))?;
+    let placement_engine =
+        StoragePlacementEngine::new(policy.clone()).map_err(|error| anyhow::anyhow!(error))?;
+    let placement_pools = storage.placement_pools().await;
+    let mut paths = walkdir::WalkDir::new(&packs_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry.file_type().is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "pack")
+        })
+        .map(|entry| entry.path().to_owned())
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let pack_hash = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .context("pack filename is not valid UTF-8")?;
+        let bytes = std::fs::read(&path)?;
+        let actual_hash = blake3::hash(&bytes).to_hex().to_string();
+        if actual_hash != pack_hash {
+            anyhow::bail!(
+                "pack filename hash mismatch for {}: expected {}, got {}",
+                path.display(),
+                pack_hash,
+                actual_hash
+            );
+        }
+        let reader = launcher_packs::PackReader::parse(&bytes)
+            .map_err(|error| anyhow::anyhow!("invalid pack {}: {error}", path.display()))?;
+        reader
+            .verify_pack_hash(pack_hash)
+            .map_err(|error| anyhow::anyhow!("pack identity verification failed: {error}"))?;
+        database
+            .upsert_physical_pack(
+                pack_hash,
+                1,
+                i64::try_from(bytes.len())?,
+                i64::try_from(reader.entries().len())?,
+                i64::try_from(pack_config.target_bytes)?,
+                "UPLOADING",
+            )
+            .await?;
+        for entry in reader.entries() {
+            database
+                .add_pack_chunk(
+                    pack_hash,
+                    &entry.encoded_hash,
+                    &entry.raw_hash,
+                    i64::try_from(entry.raw_length)?,
+                    i64::try_from(entry.offset)?,
+                    i64::try_from(entry.encoded_length)?,
+                    "zstd-v1",
+                    i32::try_from(entry.flags)?,
+                )
+                .await?;
+        }
+        let plan = placement_engine.plan_with_pools(bytes.len() as u64, &[], &placement_pools);
+        if !plan.policy_satisfied {
+            anyhow::bail!(
+                "storage policy cannot be satisfied for pack {}: {}",
+                pack_hash,
+                plan.explanation
+            );
+        }
+        let object_key = format!("packs/{pack_hash}.pack");
+        for action in plan.actions {
+            let provider = storage.provider(&action.provider_id).ok_or_else(|| {
+                anyhow::anyhow!("storage provider {} is not configured", action.provider_id)
+            })?;
+            provider
+                .put_pack(pack_hash, &bytes)
+                .await
+                .with_context(|| {
+                    format!(
+                        "could not upload pack {pack_hash} to {}",
+                        provider.provider_id()
+                    )
+                })?;
+            let location = provider.download_pack_location(pack_hash).await.ok();
+            let direct_url = location
+                .as_ref()
+                .map(|value| value.url.clone())
+                .unwrap_or_default();
+            let expires_at = location.and_then(|value| value.expires_at);
+            database
+                .add_pack_location(
+                    pack_hash,
+                    provider.provider_id(),
+                    &action.pool_id,
+                    &action.failure_domain,
+                    action.tier,
+                    &object_key,
+                    &direct_url,
+                    action.priority,
+                    expires_at,
+                )
+                .await?;
+        }
+        database
+            .upsert_physical_pack(
+                pack_hash,
+                1,
+                i64::try_from(bytes.len())?,
+                i64::try_from(reader.entries().len())?,
+                i64::try_from(pack_config.target_bytes)?,
+                "VERIFIED",
+            )
             .await?;
     }
     Ok(())

@@ -1762,6 +1762,8 @@ pub struct MegaColdStorageOptions {
     pub safety_margin_bytes: u64,
     pub reservation_ttl: Duration,
     pub verify_existing: bool,
+    pub temp_dir: PathBuf,
+    pub temp_space_bytes: u64,
 }
 
 impl Default for MegaColdStorageOptions {
@@ -1770,7 +1772,20 @@ impl Default for MegaColdStorageOptions {
             safety_margin_bytes: 0,
             reservation_ttl: Duration::from_secs(3600),
             verify_existing: true,
+            temp_dir: PathBuf::from("mega-temp"),
+            temp_space_bytes: 2 * 1024 * 1024 * 1024,
         }
+    }
+}
+
+struct TempReservation {
+    reserved: Arc<AtomicU64>,
+    bytes: u64,
+}
+
+impl Drop for TempReservation {
+    fn drop(&mut self) {
+        self.reserved.fetch_sub(self.bytes, Ordering::AcqRel);
     }
 }
 
@@ -1783,6 +1798,7 @@ pub struct MegaColdStoragePool {
     options: Arc<MegaColdStorageOptions>,
     provisioner: Arc<dyn StorageCapacityProvisioner>,
     temp_counter: Arc<AtomicU64>,
+    temp_reserved: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for MegaColdStoragePool {
@@ -1825,6 +1841,11 @@ impl MegaColdStoragePool {
                 "MEGA cold pool requires a provider ID and at least one account".to_owned(),
             ));
         }
+        if options.temp_dir.as_os_str().is_empty() || options.temp_space_bytes == 0 {
+            return Err(StorageError::Configuration(
+                "MEGA cold pool requires a temp directory and positive temp space limit".to_owned(),
+            ));
+        }
         accounts.sort_by(|left, right| left.account_id().cmp(right.account_id()));
         let provisioner = provisioner.unwrap_or_else(|| {
             Arc::new(ManualStorageCapacityProvisioner::new(provider_id.clone()))
@@ -1848,6 +1869,7 @@ impl MegaColdStoragePool {
             options: Arc::new(options),
             provisioner,
             temp_counter: Arc::new(AtomicU64::new(0)),
+            temp_reserved: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -1865,6 +1887,17 @@ impl MegaColdStoragePool {
             .into_iter()
             .map(|account| Arc::new(account) as Arc<dyn MegaAccountBackend>)
             .collect();
+        let temp_space_bytes = match std::env::var("LAUNCHER_COLD_TEMP_BYTES") {
+            Ok(value) => value.parse::<u64>().map_err(|error| {
+                StorageError::Configuration(format!("invalid LAUNCHER_COLD_TEMP_BYTES: {error}"))
+            })?,
+            Err(std::env::VarError::NotPresent) => 2 * 1024 * 1024 * 1024,
+            Err(error) => {
+                return Err(StorageError::Configuration(format!(
+                    "invalid LAUNCHER_COLD_TEMP_BYTES: {error}"
+                )));
+            }
+        };
         Self::new(
             config.provider_id,
             accounts,
@@ -1878,6 +1911,10 @@ impl MegaColdStoragePool {
                     .unwrap_or_default(),
                 reservation_ttl: Duration::from_secs(config.reservation_ttl_seconds),
                 verify_existing: config.verify_existing,
+                temp_dir: std::env::var_os("LAUNCHER_COLD_TEMP_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("mega-temp")),
+                temp_space_bytes,
             },
         )
     }
@@ -1956,11 +1993,56 @@ impl MegaColdStoragePool {
         )
     }
 
-    fn temp_path(&self, encoded_hash: &str, suffix: &str) -> PathBuf {
+    fn pack_object_path(account: &dyn MegaAccountBackend, pack_hash: &str) -> String {
+        let root = account.remote_root().trim_end_matches('/');
+        format!(
+            "{root}/packs/{}/{}/{}.pack",
+            &pack_hash[0..2],
+            &pack_hash[2..4],
+            pack_hash
+        )
+    }
+
+    async fn reserve_temp(
+        &self,
+        encoded_hash: &str,
+        suffix: &str,
+        bytes: u64,
+    ) -> Result<(PathBuf, TempReservation), StorageError> {
+        let limit = self.options.temp_space_bytes;
+        let mut reserved = self.temp_reserved.load(Ordering::Acquire);
+        loop {
+            let available = limit.saturating_sub(reserved);
+            if bytes > available {
+                return Err(StorageError::NeedsCapacity {
+                    required_bytes: bytes,
+                    available_bytes: available,
+                });
+            }
+            match self.temp_reserved.compare_exchange(
+                reserved,
+                reserved + bytes,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => reserved = current,
+            }
+        }
+
+        let reservation = TempReservation {
+            reserved: self.temp_reserved.clone(),
+            bytes,
+        };
+        if let Err(error) = tokio::fs::create_dir_all(&self.options.temp_dir).await {
+            drop(reservation);
+            return Err(error.into());
+        }
         let sequence = self.temp_counter.fetch_add(1, Ordering::AcqRel);
-        std::env::temp_dir().join(format!(
+        let temporary = self.options.temp_dir.join(format!(
             "launcher-mega-{encoded_hash}-{sequence}-{suffix}.part"
-        ))
+        ));
+        Ok((temporary, reservation))
     }
 
     async fn verify_existing(
@@ -1969,6 +2051,7 @@ impl MegaColdStoragePool {
         remote_path: &str,
         encoded_hash: &str,
         expected_size: usize,
+        pack: bool,
     ) -> Result<bool, StorageError> {
         let Some(size) = account.object_size(remote_path).await? else {
             return Ok(false);
@@ -1976,11 +2059,17 @@ impl MegaColdStoragePool {
         if size != expected_size as u64 || !self.options.verify_existing {
             return Ok(size == expected_size as u64 && !self.options.verify_existing);
         }
-        let temporary = self.temp_path(encoded_hash, "verify");
+        let (temporary, _temp_reservation) = self
+            .reserve_temp(encoded_hash, "verify", expected_size as u64)
+            .await?;
         let result = async {
             account.download_file(remote_path, &temporary).await?;
             let bytes = tokio::fs::read(&temporary).await?;
-            Ok::<bool, StorageError>(verify_encoded_bytes(encoded_hash, &bytes).is_ok())
+            Ok::<bool, StorageError>(if pack {
+                super::verify_pack_bytes(encoded_hash, &bytes).is_ok()
+            } else {
+                verify_encoded_bytes(encoded_hash, &bytes).is_ok()
+            })
         }
         .await;
         let _ = tokio::fs::remove_file(&temporary).await;
@@ -2103,16 +2192,33 @@ impl MegaColdStoragePool {
         }
     }
 
-    async fn put_inner(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
-        let temporary = self.temp_path(encoded_hash, "upload");
+    async fn put_inner_with_paths(
+        &self,
+        encoded_hash: &str,
+        bytes: &[u8],
+        pack: bool,
+    ) -> Result<(), StorageError> {
+        let (temporary, _temp_reservation) = self
+            .reserve_temp(encoded_hash, "upload", bytes.len() as u64)
+            .await?;
         tokio::fs::write(&temporary, bytes).await?;
         let mut capacity_available: u64 = 0;
         let mut capacity_checked = false;
         let mut last_error = None;
         for account in self.accounts.iter() {
-            let remote_path = Self::object_path(account.as_ref(), encoded_hash);
+            let remote_path = if pack {
+                Self::pack_object_path(account.as_ref(), encoded_hash)
+            } else {
+                Self::object_path(account.as_ref(), encoded_hash)
+            };
             match self
-                .verify_existing(account.as_ref(), &remote_path, encoded_hash, bytes.len())
+                .verify_existing(
+                    account.as_ref(),
+                    &remote_path,
+                    encoded_hash,
+                    bytes.len(),
+                    pack,
+                )
                 .await
             {
                 Ok(true) => {
@@ -2212,6 +2318,70 @@ impl MegaColdStoragePool {
             available_bytes: capacity_available,
         })
     }
+
+    async fn put_inner(&self, encoded_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        self.put_inner_with_paths(encoded_hash, bytes, false).await
+    }
+
+    async fn read_inner(&self, encoded_hash: &str, pack: bool) -> Result<Vec<u8>, StorageError> {
+        let mut last_error = None;
+        for account in self.accounts.iter() {
+            let remote_path = if pack {
+                Self::pack_object_path(account.as_ref(), encoded_hash)
+            } else {
+                Self::object_path(account.as_ref(), encoded_hash)
+            };
+            let size = match account.object_size(&remote_path).await {
+                Ok(Some(size)) => size,
+                Ok(None) => continue,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            let (temporary, _temp_reservation) = match self
+                .reserve_temp(
+                    encoded_hash,
+                    if pack { "pack-download" } else { "download" },
+                    size,
+                )
+                .await
+            {
+                Ok(reservation) => reservation,
+                Err(error) => {
+                    last_error = Some(error);
+                    continue;
+                }
+            };
+            let result = async {
+                account.download_file(&remote_path, &temporary).await?;
+                let bytes = tokio::fs::read(&temporary).await?;
+                if size != bytes.len() as u64 {
+                    return Err(StorageError::Provider(
+                        "MEGA download size verification failed".to_owned(),
+                    ));
+                }
+                if pack {
+                    super::verify_pack_bytes(encoded_hash, &bytes)?;
+                } else {
+                    verify_encoded_bytes(encoded_hash, &bytes)?;
+                }
+                Ok(bytes)
+            }
+            .await;
+            let _ = tokio::fs::remove_file(&temporary).await;
+            match result {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if let Some(error) = last_error {
+            return Err(error);
+        }
+        Err(StorageError::Unavailable(format!(
+            "cold object {encoded_hash} is unavailable"
+        )))
+    }
 }
 
 #[async_trait]
@@ -2242,47 +2412,24 @@ impl StorageProvider for MegaColdStoragePool {
         self.put_inner(encoded_hash, bytes).await
     }
 
+    fn capabilities(&self) -> super::StorageProviderCapabilities {
+        super::StorageProviderCapabilities::cold_server_only()
+    }
+
+    async fn put_pack(&self, pack_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        super::validate_pack_hash(pack_hash)?;
+        super::verify_pack_bytes(pack_hash, bytes)?;
+        self.put_inner_with_paths(pack_hash, bytes, true).await
+    }
+
     async fn read_encoded(&self, encoded_hash: &str) -> Result<Vec<u8>, StorageError> {
         super::validate_hash(encoded_hash)?;
-        let mut last_error = None;
-        for account in self.accounts.iter() {
-            let remote_path = Self::object_path(account.as_ref(), encoded_hash);
-            let size = match account.object_size(&remote_path).await {
-                Ok(Some(size)) => size,
-                Ok(None) => continue,
-                Err(error) => {
-                    last_error = Some(error);
-                    continue;
-                }
-            };
-            let temporary = self.temp_path(encoded_hash, "download");
-            let result = async {
-                account.download_file(&remote_path, &temporary).await?;
-                let bytes = tokio::fs::read(&temporary).await?;
-                if size != bytes.len() as u64 {
-                    return Err(StorageError::Provider(
-                        "MEGA download size verification failed".to_owned(),
-                    ));
-                }
-                verify_encoded_bytes(encoded_hash, &bytes)?;
-                Ok(bytes)
-            }
-            .await;
-            let _ = tokio::fs::remove_file(&temporary).await;
-            match result {
-                Ok(bytes) => return Ok(bytes),
-                Err(error) => {
-                    last_error = Some(error);
-                    continue;
-                }
-            }
-        }
-        if let Some(error) = last_error {
-            return Err(error);
-        }
-        Err(StorageError::Unavailable(format!(
-            "cold object {encoded_hash} is unavailable"
-        )))
+        self.read_inner(encoded_hash, false).await
+    }
+
+    async fn read_pack(&self, pack_hash: &str) -> Result<Vec<u8>, StorageError> {
+        super::validate_pack_hash(pack_hash)?;
+        self.read_inner(pack_hash, true).await
     }
 
     async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {
@@ -2307,6 +2454,27 @@ impl StorageProvider for MegaColdStoragePool {
         let mut last_error = None;
         for account in self.accounts.iter() {
             let remote_path = Self::object_path(account.as_ref(), encoded_hash);
+            match account.object_size(&remote_path).await {
+                Ok(Some(_)) => {
+                    if let Err(error) = account.delete_object(&remote_path).await {
+                        last_error = Some(error);
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if let Some(error) = last_error {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    async fn delete_pack(&self, pack_hash: &str) -> Result<(), StorageError> {
+        super::validate_pack_hash(pack_hash)?;
+        let mut last_error = None;
+        for account in self.accounts.iter() {
+            let remote_path = Self::pack_object_path(account.as_ref(), pack_hash);
             match account.object_size(&remote_path).await {
                 Ok(Some(_)) => {
                     if let Err(error) = account.delete_object(&remote_path).await {
@@ -2772,5 +2940,46 @@ mod tests {
             pool.read_encoded(&"f".repeat(64)).await,
             Err(StorageError::Authentication(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn mega_temp_space_is_bounded_and_reservations_are_released() {
+        let ledger = InMemoryCapacityReservationStore::default();
+        ledger.register_account("a", "mega", 100, 0).await;
+        let temp_dir = std::env::temp_dir().join(format!(
+            "launcher-mega-temp-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let options = MegaColdStorageOptions {
+            temp_dir: temp_dir.clone(),
+            temp_space_bytes: 8,
+            ..MegaColdStorageOptions::default()
+        };
+        let pool = MegaColdStoragePool::new(
+            "mega",
+            vec![Arc::new(FakeMegaAccount::new("a", 100))],
+            Arc::new(ledger),
+            options,
+        )
+        .unwrap();
+
+        let first = pool.reserve_temp(&"a".repeat(64), "test", 5).await.unwrap();
+        assert!(matches!(
+            pool.reserve_temp(&"b".repeat(64), "test", 4).await,
+            Err(StorageError::NeedsCapacity {
+                required_bytes: 4,
+                available_bytes: 3
+            })
+        ));
+        drop(first);
+        let _second = pool.reserve_temp(&"c".repeat(64), "test", 8).await.unwrap();
+        assert_eq!(pool.temp_reserved.load(Ordering::Acquire), 8);
+        drop(_second);
+        assert_eq!(pool.temp_reserved.load(Ordering::Acquire), 0);
+        let _ = tokio::fs::remove_dir_all(temp_dir).await;
     }
 }

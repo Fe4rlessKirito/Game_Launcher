@@ -1,0 +1,30 @@
+# Telegram COLD provider
+
+Telegram COLD is an operator-configured, server-side provider. Set
+`TELEGRAM_COLD_ENABLED=true`, `TELEGRAM_BOT_TOKEN`, and
+`TELEGRAM_COLD_CHAT_IDS`, and optionally
+`TELEGRAM_BOT_API_BASE_URL`, `TELEGRAM_COLD_STATE_FILE`, and
+`TELEGRAM_COLD_MAX_UPLOAD_BYTES`. Chat IDs are supplied by the operator; the
+worker does not discover chats, create groups, or expose the bot token.
+
+MEGA restores use `LAUNCHER_COLD_TEMP_DIR` and
+`LAUNCHER_COLD_TEMP_BYTES` to select a worker-local temporary directory and a
+process-wide byte reservation limit. The directory is for in-flight transfer
+files only; it is not the persistent MEGAcmd session volume and it is never
+used as a chunk store. Each restore or upload releases its reservation after
+cleanup.
+
+The provider uploads each physical pack as a document with a deterministic
+hash caption and persists only Telegram message/file references in its worker
+state file. It uses `sendDocument`, `getFile`, and `deleteMessage`; download
+URLs are resolved and consumed by the private restore worker only. Telegram
+Bot API file links are never sent to a launcher.
+
+The default Bot API limit is intentionally conservative (50 MiB upload). A
+self-hosted Local Bot API Server can be selected with
+`TELEGRAM_BOT_API_BASE_URL` when larger packs are required. The configured
+limit must be compatible with the selected server. Restore concurrency is
+bounded by the worker and rate-limit responses are retried with the provider's
+retry delay.
+
+Official reference: [Telegram Bot API](https://core.telegram.org/bots/api).

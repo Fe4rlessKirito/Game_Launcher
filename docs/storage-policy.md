@@ -1,28 +1,22 @@
-# Storage policy operations
+# Storage policy
 
-`StoragePolicy` is class-based. It can require minimum and preferred verified
-replicas for `HOT`, `COLD`, and future `ARCHIVE`, plus optional minimum failure
-domains per class. A failure domain is an outage boundary, not an account:
-two MEGA accounts in the same MEGA pool count as two capacity members but one
-provider failure domain.
+Storage classes are HOT, COLD, and ARCHIVE. A policy counts verified replicas
+and verified failure domains independently. Two providers in one failure
+domain do not satisfy a multi-domain requirement.
 
-Placement consumes the object size, existing verified locations, available
-pools, pool health/status, priority, capacity, and failure domains. It returns
-explicit actions containing the provider, pool, class, priority, and failure
-domain. Disabled, unavailable, unhealthy, and full pools are skipped. If the
-required class coverage cannot be projected, the explanation identifies the
-missing replica/domain counts and publication stays gated.
+`StoragePlacementEngine` selects enabled, healthy pools by priority and
+capacity. Publication still gates on the existing logical chunk policy for
+backward compatibility; when physical packs are enabled, pack placement uses
+the same policy and records independent pack locations.
 
-The database publication check repeats the same invariant from persisted
-verified object/location records. It counts distinct verified provider copies
-for replicas and distinct failure domains for the domain requirement, so a restart cannot turn
-an in-memory placement decision into an unsafe publish.
+Safe eviction rules are conservative:
 
-Useful operator commands:
+- never evict a pinned or leased pack;
+- never evict the last verified copy in a failure-domain policy;
+- verify another HOT or COLD location before deleting a HOT cache copy;
+- treat HOT expiry as cache pressure, not loss of the canonical COLD copy;
+- mark a pack under-replicated or degraded when reconciliation finds a policy
+  violation.
 
-```powershell
-launcher-admin storage policy
-launcher-admin storage pools list
-launcher-admin storage pools inspect <pool-id>
-launcher-admin storage readiness
-```
+Relevant environment variables are `LAUNCHER_STORAGE_MIN_*_REPLICAS`,
+`LAUNCHER_STORAGE_MIN_*_FAILURE_DOMAINS`, and the preferred replica settings.

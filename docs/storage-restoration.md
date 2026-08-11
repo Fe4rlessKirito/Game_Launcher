@@ -34,3 +34,12 @@ launcher-admin storage restore-pending --limit 100
 Restoration is server-side and does not use API request threads for byte
 transfers. A missing cold object or corrupt download produces a failed and
 retryable job rather than publishing or serving unverified bytes.
+
+## Pack restoration
+
+Physical packs use the additive `pack_restore_jobs` queue. If a pack resolver
+request finds only verified COLD pack locations, the API queues the pack,
+returns `restore_pending`, and the private worker downloads the entire pack,
+validates its BLAKE3 identity and index, uploads it to HOT, and records a
+verified `pack_locations` row. The launcher then receives the direct HOT pack
+URL and never contacts MEGA, Telegram, or another COLD provider.

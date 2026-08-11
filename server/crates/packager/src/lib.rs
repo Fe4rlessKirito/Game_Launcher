@@ -5,6 +5,7 @@ use launcher_common::{
     ChunkRef, ChunkingConfig, EncodingConfig, FileRecipe, LaunchProfile, MANIFEST_SCHEMA_VERSION,
     Manifest,
 };
+use launcher_packs::{PackConfig, PackInput, build_packs};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -22,6 +23,10 @@ pub struct PackageOptions {
     pub chunking: ChunkingConfig,
     pub encoding: EncodingConfig,
     pub failure_injection: Option<PackagingFailureInjection>,
+    /// When set, emit immutable physical packs in addition to legacy logical
+    /// chunk objects.  Keeping this optional makes the current Railway
+    /// staging publication path backwards compatible.
+    pub pack_config: Option<PackConfig>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -40,6 +45,7 @@ impl Default for PackageOptions {
             chunking: ChunkingConfig::default(),
             encoding: EncodingConfig::default(),
             failure_injection: None,
+            pack_config: None,
         }
     }
 }
@@ -53,6 +59,8 @@ pub struct PackageReport {
     pub chunks: u64,
     pub unique_chunks: u64,
     pub reused_chunks: u64,
+    pub packs: u64,
+    pub packed_bytes: u64,
     pub warnings: Vec<String>,
 }
 
@@ -250,6 +258,55 @@ pub fn package_directory(
         .validate()
         .map_err(|error| anyhow::anyhow!("manifest validation failed: {error}"))?;
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+
+    let (packs, packed_bytes) = if let Some(pack_config) = &options.pack_config {
+        let mut unique_inputs = BTreeMap::<String, PackInput>::new();
+        for file in &manifest.files {
+            for chunk in &file.chunks {
+                if unique_inputs.contains_key(&chunk.encoded_hash) {
+                    continue;
+                }
+                let chunk_path = output.join(&chunk.object_key);
+                let encoded_bytes = fs::read(&chunk_path).with_context(|| {
+                    format!("could not read {} for pack output", chunk_path.display())
+                })?;
+                unique_inputs.insert(
+                    chunk.encoded_hash.clone(),
+                    PackInput::new(
+                        chunk.encoded_hash.clone(),
+                        chunk.raw_hash.clone(),
+                        chunk.raw_size,
+                        encoded_bytes,
+                    ),
+                );
+            }
+        }
+        let artifacts = build_packs(unique_inputs.into_values(), pack_config.clone())?;
+        fs::create_dir_all(output.join("packs"))?;
+        let mut index = Vec::with_capacity(artifacts.len());
+        let mut total_bytes = 0_u64;
+        for artifact in artifacts {
+            let path = output
+                .join("packs")
+                .join(format!("{}.pack", artifact.pack_hash));
+            let temporary = path.with_extension("pack.part");
+            fs::write(&temporary, &artifact.bytes)?;
+            fs::rename(temporary, path)?;
+            total_bytes = total_bytes.saturating_add(artifact.bytes.len() as u64);
+            index.push(serde_json::json!({
+                "pack_hash": artifact.pack_hash,
+                "encoded_size": artifact.bytes.len(),
+                "chunk_hashes": artifact.entries.iter().map(|entry| entry.encoded_hash.clone()).collect::<Vec<_>>(),
+            }));
+        }
+        fs::write(
+            output.join("pack-index.json"),
+            serde_json::to_vec_pretty(&index)?,
+        )?;
+        (index.len() as u64, total_bytes)
+    } else {
+        (0, 0)
+    };
     fs::write(output.join("manifest.json"), &manifest_bytes)?;
     if options
         .failure_injection
@@ -265,6 +322,8 @@ pub fn package_directory(
         chunks,
         unique_chunks,
         reused_chunks,
+        packs,
+        packed_bytes,
         warnings,
     };
     fs::write(
@@ -418,6 +477,48 @@ mod tests {
                 );
             }
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn physical_pack_output_is_opt_in_and_indexed_by_pack_hash() {
+        let root =
+            std::env::temp_dir().join(format!("launcher-package-packs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let input = root.join("input");
+        let output = root.join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(input.join("game.exe"), seeded_bytes(128 * 1024)).unwrap();
+        let report = package_directory(
+            &input,
+            &output,
+            &PackageOptions {
+                game_id: "game".into(),
+                build_id: "build".into(),
+                display_version: "A".into(),
+                executable: Some("game.exe".into()),
+                chunking: test_config(),
+                pack_config: Some(launcher_packs::PackConfig {
+                    target_bytes: 1024 * 1024,
+                    min_bytes: 1,
+                    max_bytes: 2 * 1024 * 1024,
+                }),
+                ..PackageOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(report.packs, 1);
+        let pack_files = fs::read_dir(output.join("packs"))
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(pack_files.len(), 1);
+        let pack = pack_files[0].as_ref().unwrap().path();
+        let hash = pack.file_stem().unwrap().to_string_lossy().to_string();
+        let bytes = fs::read(&pack).unwrap();
+        assert_eq!(blake3::hash(&bytes).to_hex().to_string(), hash);
+        let reader = launcher_packs::PackReader::parse(&bytes).unwrap();
+        reader.verify_pack_hash(&hash).unwrap();
+        assert_eq!(reader.entries().len(), report.unique_chunks as usize);
         let _ = fs::remove_dir_all(root);
     }
 

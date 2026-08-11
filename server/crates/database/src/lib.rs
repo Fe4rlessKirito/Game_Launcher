@@ -73,6 +73,20 @@ pub struct RestoreJob {
 }
 
 #[derive(Debug, Clone)]
+pub struct PackRestoreJob {
+    pub id: i64,
+    pub pack_hash: String,
+    pub target_provider: String,
+    pub state: String,
+    pub attempts: i32,
+    pub max_attempts: i32,
+    pub next_attempt_at: DateTime<Utc>,
+    pub lease_until: Option<DateTime<Utc>>,
+    pub worker_id: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct StorageObjectRecord {
     pub encoded_hash: String,
     pub encoded_size: i64,
@@ -82,6 +96,51 @@ pub struct StorageObjectRecord {
     pub tier: StorageTier,
     pub object_key: String,
     pub verified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalPackRecord {
+    pub pack_hash: String,
+    pub format_version: i32,
+    pub encoded_size: i64,
+    pub chunk_count: i64,
+    pub target_size: i64,
+    pub state: String,
+    pub verified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackLocationRecord {
+    pub pack_hash: String,
+    pub provider: String,
+    pub pool_id: String,
+    pub failure_domain: String,
+    pub storage_class: StorageClass,
+    pub object_key: String,
+    pub direct_url: String,
+    pub priority: i32,
+    pub verified_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackChunkRecord {
+    pub pack_hash: String,
+    pub encoded_hash: String,
+    pub raw_hash: String,
+    pub raw_size: i64,
+    pub encoded_offset: i64,
+    pub encoded_size: i64,
+    pub compression_id: String,
+    pub flags: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotPackSourceRecord {
+    pub pack_hash: String,
+    pub encoded_size: i64,
+    pub chunk_hashes: Vec<String>,
+    pub location: PackLocationRecord,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +231,21 @@ fn restore_job_from_row(row: &PgRow) -> Result<RestoreJob, DatabaseError> {
     })
 }
 
+fn pack_restore_job_from_row(row: &PgRow) -> Result<PackRestoreJob, DatabaseError> {
+    Ok(PackRestoreJob {
+        id: row.try_get("id")?,
+        pack_hash: row.try_get("pack_hash")?,
+        target_provider: row.try_get("target_provider")?,
+        state: row.try_get("state")?,
+        attempts: row.try_get("attempts")?,
+        max_attempts: row.try_get("max_attempts")?,
+        next_attempt_at: row.try_get("next_attempt_at")?,
+        lease_until: row.try_get("lease_until")?,
+        worker_id: row.try_get("worker_id")?,
+        last_error: row.try_get("last_error")?,
+    })
+}
+
 #[derive(Clone)]
 pub struct Database {
     pool: PgPool,
@@ -195,6 +269,8 @@ impl Database {
         sqlx::raw_sql(storage_pools).execute(&self.pool).await?;
         let provisioning = include_str!("../../../../migrations/004_provisioning.sql");
         sqlx::raw_sql(provisioning).execute(&self.pool).await?;
+        let physical_packs = include_str!("../../../../migrations/005_physical_packs.sql");
+        sqlx::raw_sql(physical_packs).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -213,6 +289,8 @@ impl Database {
                      'storage_reservations', 'storage_health_events', 'restore_jobs',
                      'provisioning_jobs', 'provisioning_job_events',
                      'provisioning_mail_messages', 'provisioning_mail_nonces'
+                     , 'physical_packs', 'pack_chunks', 'pack_locations',
+                     'pack_restore_jobs', 'pack_leases'
                  ]::text[]) AS table_name
              ),
              checks AS (
@@ -576,6 +654,215 @@ impl Database {
             .await?;
         }
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_physical_pack(
+        &self,
+        pack_hash: &str,
+        format_version: i32,
+        encoded_size: i64,
+        chunk_count: i64,
+        target_size: i64,
+        state: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "INSERT INTO physical_packs(
+                pack_hash, format_version, encoded_size, chunk_count, target_size, state, verified_at
+             ) VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $6='VERIFIED' THEN now() ELSE NULL END)
+             ON CONFLICT(pack_hash) DO UPDATE SET format_version=excluded.format_version,
+                encoded_size=excluded.encoded_size, chunk_count=excluded.chunk_count,
+                target_size=excluded.target_size, state=excluded.state,
+                verified_at=CASE WHEN excluded.state='VERIFIED' THEN now() ELSE physical_packs.verified_at END",
+        )
+        .bind(pack_hash)
+        .bind(format_version)
+        .bind(encoded_size)
+        .bind(chunk_count)
+        .bind(target_size)
+        .bind(state)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_pack_chunk(
+        &self,
+        pack_hash: &str,
+        encoded_hash: &str,
+        raw_hash: &str,
+        raw_size: i64,
+        encoded_offset: i64,
+        encoded_size: i64,
+        compression_id: &str,
+        flags: i32,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "INSERT INTO pack_chunks(
+                pack_hash, encoded_hash, raw_hash, raw_size, encoded_offset,
+                encoded_size, compression_id, flags
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+             ON CONFLICT(pack_hash, encoded_hash) DO UPDATE SET raw_hash=excluded.raw_hash,
+                raw_size=excluded.raw_size, encoded_offset=excluded.encoded_offset,
+                encoded_size=excluded.encoded_size, compression_id=excluded.compression_id,
+                flags=excluded.flags",
+        )
+        .bind(pack_hash)
+        .bind(encoded_hash)
+        .bind(raw_hash)
+        .bind(raw_size)
+        .bind(encoded_offset)
+        .bind(encoded_size)
+        .bind(compression_id)
+        .bind(flags)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_pack_location(
+        &self,
+        pack_hash: &str,
+        provider: &str,
+        pool_id: &str,
+        failure_domain: &str,
+        storage_class: StorageClass,
+        object_key: &str,
+        direct_url: &str,
+        priority: i32,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "INSERT INTO pack_locations(
+                pack_hash, provider, pool_id, failure_domain, storage_class,
+                object_key, direct_url, priority, verified_at, expires_at
+             ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,now(),$9)
+             ON CONFLICT(pack_hash, provider, direct_url) DO UPDATE SET
+                pool_id=excluded.pool_id, failure_domain=excluded.failure_domain,
+                storage_class=excluded.storage_class, object_key=excluded.object_key,
+                priority=excluded.priority, verified_at=now(), expires_at=excluded.expires_at",
+        )
+        .bind(pack_hash)
+        .bind(provider)
+        .bind(pool_id)
+        .bind(failure_domain)
+        .bind(storage_class.as_str())
+        .bind(object_key)
+        .bind(direct_url)
+        .bind(priority)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_hot_pack_sources_for_chunks(
+        &self,
+        encoded_hashes: &[String],
+    ) -> Result<HashMap<String, Vec<HotPackSourceRecord>>, DatabaseError> {
+        if encoded_hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            "SELECT pc.encoded_hash, pp.pack_hash, pp.encoded_size,
+                    pl.provider, pl.pool_id, pl.failure_domain, pl.storage_class,
+                    pl.object_key, pl.direct_url, pl.priority, pl.verified_at, pl.expires_at
+             FROM pack_chunks pc
+             JOIN physical_packs pp ON pp.pack_hash=pc.pack_hash
+             JOIN pack_locations pl ON pl.pack_hash=pp.pack_hash
+             WHERE pc.encoded_hash=ANY($1)
+               AND pp.state='VERIFIED'
+               AND pp.verified_at IS NOT NULL
+               AND pl.storage_class='HOT'
+               AND pl.verified_at IS NOT NULL
+             ORDER BY pp.pack_hash, pl.priority, pl.provider, pl.direct_url, pc.encoded_hash",
+        )
+        .bind(encoded_hashes)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut sources = Vec::<HotPackSourceRecord>::new();
+        let mut indexes = HashMap::<(String, String, String), usize>::new();
+        for row in rows {
+            let pack_hash: String = row.try_get("pack_hash")?;
+            let provider: String = row.try_get("provider")?;
+            let direct_url: String = row.try_get("direct_url")?;
+            let key = (pack_hash.clone(), provider.clone(), direct_url.clone());
+            let index = if let Some(index) = indexes.get(&key) {
+                *index
+            } else {
+                let storage_class =
+                    parse_storage_tier(row.try_get::<String, _>("storage_class")?.as_str())?;
+                let location = PackLocationRecord {
+                    pack_hash: pack_hash.clone(),
+                    provider,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
+                    storage_class,
+                    object_key: row.try_get("object_key")?,
+                    direct_url,
+                    priority: row.try_get("priority")?,
+                    verified_at: row.try_get("verified_at")?,
+                    expires_at: row.try_get("expires_at")?,
+                };
+                let index = sources.len();
+                sources.push(HotPackSourceRecord {
+                    pack_hash: pack_hash.clone(),
+                    encoded_size: row.try_get("encoded_size")?,
+                    chunk_hashes: Vec::new(),
+                    location,
+                });
+                indexes.insert(key, index);
+                index
+            };
+            let encoded_hash: String = row.try_get("encoded_hash")?;
+            if !sources[index].chunk_hashes.contains(&encoded_hash) {
+                sources[index].chunk_hashes.push(encoded_hash);
+            }
+        }
+        let mut by_chunk = HashMap::<String, Vec<HotPackSourceRecord>>::new();
+        for source in sources {
+            for chunk_hash in &source.chunk_hashes {
+                by_chunk
+                    .entry(chunk_hash.clone())
+                    .or_default()
+                    .push(source.clone());
+            }
+        }
+        Ok(by_chunk)
+    }
+
+    pub async fn get_cold_pack_hashes_for_chunks(
+        &self,
+        encoded_hashes: &[String],
+    ) -> Result<HashMap<String, Vec<String>>, DatabaseError> {
+        if encoded_hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            "SELECT pc.encoded_hash, pp.pack_hash
+             FROM pack_chunks pc
+             JOIN physical_packs pp ON pp.pack_hash=pc.pack_hash
+             JOIN pack_locations pl ON pl.pack_hash=pp.pack_hash
+             WHERE pc.encoded_hash=ANY($1)
+               AND pp.state='VERIFIED' AND pp.verified_at IS NOT NULL
+               AND pl.storage_class='COLD' AND pl.verified_at IS NOT NULL
+             ORDER BY pc.encoded_hash, pp.pack_hash",
+        )
+        .bind(encoded_hashes)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut result = HashMap::<String, Vec<String>>::new();
+        for row in rows {
+            let encoded_hash: String = row.try_get("encoded_hash")?;
+            let pack_hash: String = row.try_get("pack_hash")?;
+            let packs = result.entry(encoded_hash).or_default();
+            if !packs.contains(&pack_hash) {
+                packs.push(pack_hash);
+            }
+        }
+        Ok(result)
     }
 
     pub async fn get_storage_locations(
@@ -1202,6 +1489,184 @@ impl Database {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.try_get("pending")?)
+    }
+
+    pub async fn enqueue_pack_restore_job(
+        &self,
+        pack_hash: &str,
+        target_provider: &str,
+    ) -> Result<PackRestoreJob, DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        if let Some(row) = sqlx::query(
+            "SELECT id, pack_hash, target_provider, state, attempts, max_attempts,
+                    next_attempt_at, lease_until, worker_id, last_error
+             FROM pack_restore_jobs
+             WHERE pack_hash=$1 AND target_provider=$2
+               AND state IN ('QUEUED','RUNNING','RETRY')
+             ORDER BY id LIMIT 1",
+        )
+        .bind(pack_hash)
+        .bind(target_provider)
+        .fetch_optional(&mut *transaction)
+        .await?
+        {
+            let job = pack_restore_job_from_row(&row)?;
+            transaction.commit().await?;
+            return Ok(job);
+        }
+        let row = sqlx::query(
+            "INSERT INTO pack_restore_jobs(pack_hash, target_provider)
+             VALUES($1,$2)
+             RETURNING id, pack_hash, target_provider, state, attempts, max_attempts,
+                       next_attempt_at, lease_until, worker_id, last_error",
+        )
+        .bind(pack_hash)
+        .bind(target_provider)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let job = pack_restore_job_from_row(&row)?;
+        transaction.commit().await?;
+        Ok(job)
+    }
+
+    pub async fn claim_pack_restore_job(
+        &self,
+        worker_id: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<PackRestoreJob>, DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(
+            "SELECT id, pack_hash, target_provider, state, attempts, max_attempts,
+                    next_attempt_at, lease_until, worker_id, last_error
+             FROM pack_restore_jobs
+             WHERE attempts < max_attempts
+               AND next_attempt_at <= now()
+               AND (state IN ('QUEUED','RETRY')
+                    OR (state='RUNNING' AND (lease_until IS NULL OR lease_until < now())))
+             ORDER BY updated_at, id
+             FOR UPDATE SKIP LOCKED LIMIT 1",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        let id: i64 = row.try_get("id")?;
+        let attempts: i32 = row.try_get("attempts")?;
+        let lease_until = Utc::now() + chrono::Duration::seconds(lease_seconds.max(1));
+        sqlx::query(
+            "UPDATE pack_restore_jobs
+             SET state='RUNNING', worker_id=$1, lease_until=$2,
+                 attempts=attempts+1, updated_at=now()
+             WHERE id=$3",
+        )
+        .bind(worker_id)
+        .bind(lease_until)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        let mut job = pack_restore_job_from_row(&row)?;
+        job.state = "RUNNING".to_owned();
+        job.worker_id = Some(worker_id.to_owned());
+        job.lease_until = Some(lease_until);
+        job.attempts = attempts + 1;
+        transaction.commit().await?;
+        Ok(Some(job))
+    }
+
+    pub async fn complete_pack_restore_job(&self, job_id: i64) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE pack_restore_jobs SET state='DONE', lease_until=NULL, worker_id=NULL,
+                 last_error=NULL, updated_at=now() WHERE id=$1",
+        )
+        .bind(job_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn fail_pack_restore_job(
+        &self,
+        job_id: i64,
+        error: &str,
+        retry: bool,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE pack_restore_jobs
+             SET state=CASE WHEN $3 THEN 'RETRY' ELSE 'FAILED' END,
+                 lease_until=NULL, worker_id=NULL, last_error=$2,
+                 next_attempt_at=now() + CASE WHEN $3 THEN interval '30 seconds' ELSE interval '0 seconds' END,
+                 updated_at=now() WHERE id=$1",
+        )
+        .bind(job_id)
+        .bind(error)
+        .bind(retry)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn recover_expired_pack_restore_jobs(&self) -> Result<u64, DatabaseError> {
+        let result = sqlx::query(
+            "UPDATE pack_restore_jobs
+             SET state=CASE WHEN attempts < max_attempts THEN 'RETRY' ELSE 'FAILED' END,
+                 lease_until=NULL, worker_id=NULL, updated_at=now()
+             WHERE state='RUNNING' AND lease_until IS NOT NULL AND lease_until < now()",
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn acquire_pack_lease(
+        &self,
+        pack_hash: &str,
+        owner: &str,
+        lease_seconds: i64,
+    ) -> Result<Option<Uuid>, DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM pack_leases WHERE expires_at <= now()")
+            .execute(&mut *transaction)
+            .await?;
+        let active = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM pack_leases WHERE pack_hash=$1 AND expires_at > now())",
+        )
+        .bind(pack_hash)
+        .fetch_one(&mut *transaction)
+        .await?;
+        if active {
+            transaction.commit().await?;
+            return Ok(None);
+        }
+        let lease_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO pack_leases(pack_hash, lease_id, owner, expires_at)
+             VALUES($1,$2,$3,now() + ($4 * interval '1 second'))",
+        )
+        .bind(pack_hash)
+        .bind(lease_id)
+        .bind(owner)
+        .bind(lease_seconds.max(1))
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(Some(lease_id))
+    }
+
+    pub async fn release_pack_lease(&self, lease_id: Uuid) -> Result<(), DatabaseError> {
+        sqlx::query("DELETE FROM pack_leases WHERE lease_id=$1")
+            .bind(lease_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn expire_pack_leases(&self) -> Result<u64, DatabaseError> {
+        let result = sqlx::query("DELETE FROM pack_leases WHERE expires_at <= now()")
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn claim_job(

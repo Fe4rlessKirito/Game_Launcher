@@ -25,11 +25,14 @@ public sealed class DownloadManager(
     ChunkCache cache,
     int maxConcurrency = 4,
     LocalStateStore? stateStore = null,
-    DownloadFailureInjection? failureInjection = null) : IDisposable
+    DownloadFailureInjection? failureInjection = null,
+    PackCache? packCache = null) : IDisposable
 {
     private readonly SemaphoreSlim _pauseGate = new(1, 1);
     private readonly SemaphoreSlim _concurrency = new(Math.Clamp(maxConcurrency, 1, 32));
     private readonly SemaphoreSlim _resolverGate = new(1, 1);
+    private readonly HotSourceScheduler _sourceScheduler = new();
+    private readonly HashSet<string> _packPreparedChunks = new(StringComparer.Ordinal);
 
     public void Pause() { _pauseGate.Wait(0); }
     public void Resume() { if (_pauseGate.CurrentCount == 0) _pauseGate.Release(); }
@@ -55,6 +58,20 @@ public sealed class DownloadManager(
         await SaveJobAsync(new PersistedDownloadJob(jobId, manifest.BuildId, DownloadJobState.Resolving, 0, totalBytes, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         progress?.Report(new DownloadProgress(jobId, DownloadJobState.Resolving, 0, totalBytes, 0, null));
         var resolved = await apiClient.ResolveChunksAsync(manifest.BuildId, uniqueChunks.Select(chunk => chunk.EncodedHash).ToArray(), cancellationToken).ConfigureAwait(false);
+        if (packCache is not null && IsPackDownloadEnabled())
+        {
+            try
+            {
+                await packCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                var packBytes = await DownloadPacksAsync(manifest.BuildId, uniqueChunks, packCache, cancellationToken).ConfigureAwait(false);
+                Interlocked.Add(ref networkBytes, packBytes);
+            }
+            catch (Exception error) when (error is HttpRequestException or InvalidDataException or IOException)
+            {
+                // Pack resolution is an acceleration path. A client can still
+                // complete through the signed logical chunk resolver.
+            }
+        }
 
         var tasks = uniqueChunks.Select(async chunk =>
         {
@@ -64,8 +81,15 @@ public sealed class DownloadManager(
             if (cached is not null)
             {
                 Interlocked.Add(ref preparedBytes, chunk.EncodedSize);
-                Interlocked.Add(ref reusedBytes, chunk.EncodedSize);
-                Interlocked.Increment(ref reusedChunks);
+                if (_packPreparedChunks.Contains(chunk.EncodedHash))
+                {
+                    Interlocked.Increment(ref downloadedChunks);
+                }
+                else
+                {
+                    Interlocked.Add(ref reusedBytes, chunk.EncodedSize);
+                    Interlocked.Increment(ref reusedChunks);
+                }
                 Report(DownloadJobState.Ready, chunk.EncodedHash);
                 return;
             }
@@ -220,4 +244,76 @@ public sealed class DownloadManager(
     }
 
     private Task SaveJobAsync(PersistedDownloadJob job, CancellationToken cancellationToken) => stateStore is null ? Task.CompletedTask : stateStore.SaveDownloadJobAsync(job, cancellationToken);
+
+    private async Task<long> DownloadPacksAsync(string buildId, IReadOnlyList<ChunkReference> chunks, PackCache physicalCache, CancellationToken cancellationToken)
+    {
+        var missing = chunks.Where(chunk => !File.Exists(physicalCache.GetPath(chunk.EncodedHash))).Select(chunk => chunk.EncodedHash).ToArray();
+        if (missing.Length == 0) return 0;
+        IReadOnlyList<ResolvedPack> packs;
+        try { packs = await apiClient.ResolvePacksAsync(buildId, missing, cancellationToken).ConfigureAwait(false); }
+        catch (HttpRequestException) { return 0; }
+        var requested = missing.ToHashSet(StringComparer.Ordinal);
+        long networkBytes = 0;
+        foreach (var pack in packs.OrderBy(pack => pack.EncodedSize).ThenBy(pack => pack.PackHash, StringComparer.Ordinal))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var covered = pack.ChunkHashes.Where(requested.Contains).ToArray();
+            if (covered.Length == 0 || pack.Sources.Count == 0) continue;
+            var cached = await physicalCache.ReadAsync(pack.PackHash, cancellationToken).ConfigureAwait(false);
+            var bytes = cached;
+            if (bytes is null)
+            {
+                bytes = await DownloadPackWithRetryAsync(pack, physicalCache, cancellationToken).ConfigureAwait(false);
+                networkBytes += bytes.Length;
+            }
+            var reader = PhysicalPackReader.Parse(bytes, pack.PackHash);
+            foreach (var hash in covered)
+            {
+                if (!_packPreparedChunks.Add(hash)) continue;
+                var encoded = reader.ReadEncoded(hash);
+                var chunk = chunks.First(item => item.EncodedHash == hash);
+                if (encoded.Length != chunk.EncodedSize) throw new InvalidDataException($"Pack chunk size mismatch for {hash}.");
+                await cache.PutAsync(chunk.EncodedHash, encoded, cancellationToken).ConfigureAwait(false);
+                requested.Remove(hash);
+            }
+            if (requested.Count == 0) break;
+        }
+        return networkBytes;
+    }
+
+    private async Task<byte[]> DownloadPackWithRetryAsync(ResolvedPack pack, PackCache cache, CancellationToken cancellationToken)
+    {
+        Exception? lastError = null;
+        foreach (var source in _sourceScheduler.Rank(pack.Sources))
+        {
+            var started = Stopwatch.StartNew();
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, source.Url);
+                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound || response.StatusCode == System.Net.HttpStatusCode.Gone) throw new HttpRequestException($"Pack URL returned {(int)response.StatusCode}.");
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    var retryAfter = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromMilliseconds(250);
+                    await Task.Delay(retryAfter, cancellationToken).ConfigureAwait(false);
+                    throw new HttpRequestException("Pack URL rate limited.");
+                }
+                if ((int)response.StatusCode >= 500 || response.StatusCode == System.Net.HttpStatusCode.RequestTimeout) throw new HttpRequestException($"Pack URL returned {(int)response.StatusCode}.");
+                response.EnsureSuccessStatusCode();
+                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                if (bytes.LongLength != pack.EncodedSize) throw new InvalidDataException($"Pack size mismatch for {pack.PackHash}.");
+                await cache.PutAsync(pack.PackHash, bytes, cancellationToken).ConfigureAwait(false);
+                _sourceScheduler.Report(source, true, started.Elapsed, bytes.Length);
+                return bytes;
+            }
+            catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException)
+            {
+                lastError = error;
+                _sourceScheduler.Report(source, false, started.Elapsed, 0);
+            }
+        }
+        throw new HttpRequestException($"Physical pack download failed after source failover: {pack.PackHash}", lastError);
+    }
+
+    private static bool IsPackDownloadEnabled() => Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED")?.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
 }

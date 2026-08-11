@@ -11,6 +11,23 @@ public sealed record ResolvedChunk(
     [property: JsonPropertyName("urls")] IReadOnlyList<string> Urls,
     [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt);
 
+public sealed record ResolvedPackSource(
+    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("pool_id")] string PoolId,
+    [property: JsonPropertyName("provider_type")] string ProviderType,
+    [property: JsonPropertyName("failure_domain")] string FailureDomain,
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("expires_at")] DateTimeOffset? ExpiresAt,
+    [property: JsonPropertyName("range_supported")] bool RangeSupported,
+    [property: JsonPropertyName("stable_url")] bool StableUrl,
+    [property: JsonPropertyName("priority")] int Priority);
+
+public sealed record ResolvedPack(
+    [property: JsonPropertyName("pack_hash")] string PackHash,
+    [property: JsonPropertyName("encoded_size")] long EncodedSize,
+    [property: JsonPropertyName("chunk_hashes")] IReadOnlyList<string> ChunkHashes,
+    [property: JsonPropertyName("sources")] IReadOnlyList<ResolvedPackSource> Sources);
+
 public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
@@ -52,6 +69,14 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
         return resolved.ToDictionary(item => item.EncodedHash, StringComparer.Ordinal);
     }
 
+    public async Task<IReadOnlyList<ResolvedPack>> ResolvePacksAsync(string buildId, IReadOnlyCollection<string> encodedHashes, CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/packs/resolve"), new PackResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+    }
+
     private sealed record CatalogResponse([property: JsonPropertyName("items")] IReadOnlyList<GameCatalogItem> Items, [property: JsonPropertyName("next_cursor")] string? NextCursor);
     private sealed record ChunkResolutionRequest([property: JsonPropertyName("encoded_hashes")] IReadOnlyCollection<string> EncodedHashes);
+    private sealed record PackResolutionRequest([property: JsonPropertyName("encoded_hashes")] IReadOnlyCollection<string> EncodedHashes);
 }

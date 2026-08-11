@@ -66,3 +66,20 @@ locations.
 Use `launcher-admin storage health`, `launcher-admin storage pools list`, and
 `/api/v1/storage/status` to inspect provider, pool, account, and reservation
 status. These surfaces omit passwords and session material.
+
+## Physical packs and capabilities
+
+When `PACK_STORAGE_ENABLED=true`, providers also store immutable objects under
+`packs/{pack-blake3}.pack`. Pack locations are tracked separately from logical
+chunk locations. `/api/v1/storage/providers` reports whether a provider can
+serve direct HOT pack downloads, accept ranges, refresh URLs, and the
+recommended object size/concurrency. `launcher-admin storage probe` is the
+operator-facing capability check.
+
+The `telegram` provider is COLD-only and server-side. It uses the official
+[Telegram Bot API](https://core.telegram.org/bots/api); its message/file state
+is private to the restore worker. Buzzheavier's documented HTTP API is at
+[Buzzheavier Developers](https://buzzheavier.com/developers), and GoFile's
+documented API is at [GoFile API](https://gofile.io/api). FileMirage remains
+disabled until its public API contract can be probed without browser
+automation.
