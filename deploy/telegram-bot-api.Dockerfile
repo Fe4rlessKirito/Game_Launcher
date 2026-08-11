@@ -1,6 +1,7 @@
 FROM debian:bookworm AS build
 
 ARG TELEGRAM_BOT_API_REF=adfd7f6a8e990272851777eeb3ae0def4216f161
+ARG TELEGRAM_BOT_API_BUILD_PARALLELISM=2
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -25,7 +26,7 @@ WORKDIR /src/telegram-bot-api
 RUN cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/opt/telegram-bot-api \
-    && cmake --build build --target install --parallel
+    && cmake --build build --target install --parallel "$TELEGRAM_BOT_API_BUILD_PARALLELISM"
 
 FROM debian:bookworm-slim
 

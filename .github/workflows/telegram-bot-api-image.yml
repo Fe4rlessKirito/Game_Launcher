@@ -54,6 +54,7 @@ jobs:
           push: true
           build-args: |
             TELEGRAM_BOT_API_REF=${{ env.TELEGRAM_BOT_API_REF }}
+            TELEGRAM_BOT_API_BUILD_PARALLELISM=2
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}
           cache-from: type=gha
