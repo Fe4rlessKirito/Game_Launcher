@@ -13,10 +13,15 @@ Cloudflare, or MEGA is currently connected.
    repository. Do not give the worker a public domain. Mount a small persistent
    volume only at the MEGAcmd session/state directory; keep chunk transfers in
    bounded temporary space.
-4. Run `launcher-admin provisioning readiness` and
-   `launcher-admin provisioning test-email-address <alias>` only after a job
-   has created an alias. `readiness` treats manual mode as valid; an absent
-   automatic provider is not itself a failure.
+4. Run `launcher-admin provisioning readiness`. For the controlled email-route
+   smoke only, set `PROVISIONING_ENABLE_FAKE=true` temporarily and run
+   `launcher-admin provisioning test-email-address` without an address; it
+   creates a short-lived fake-provider job and prints a random alias without
+   allocating real provider capacity. Pass an existing alias to
+   `launcher-admin provisioning test-email-address <alias>` to validate it
+   without creating a job. Disable the fake provider after the smoke.
+   `readiness` treats manual mode as valid; an absent automatic provider is
+   not itself a failure.
 5. For MEGA, use one operator-enrolled account with the existing
    `launcher-admin storage accounts add` command. Do not automate signup or
    send credentials to the API. Complete the corresponding job with

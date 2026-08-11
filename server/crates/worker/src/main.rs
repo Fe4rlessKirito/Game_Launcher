@@ -301,7 +301,7 @@ enum ProvisioningCommands {
     },
     Readiness,
     TestEmailAddress {
-        address: String,
+        address: Option<String>,
     },
     EnsureCapacity {
         #[arg(long)]
@@ -1563,6 +1563,47 @@ async fn handle_provisioning_command(command: ProvisioningCommands) -> Result<()
         ProvisioningCommands::TestEmailAddress { address } => {
             let domain = env::var("PROVISIONING_EMAIL_DOMAIN")
                 .unwrap_or_else(|_| "vaultnode.pp.ua".to_owned());
+            let Some(address) = address else {
+                anyhow::ensure!(
+                    env_bool("PROVISIONING_ENABLE_FAKE", false),
+                    "generating a test alias requires PROVISIONING_ENABLE_FAKE=true; this creates no real provider capacity"
+                );
+                let pool_id = env::var("PROVISIONING_EMAIL_TEST_POOL_ID")
+                    .unwrap_or_else(|_| "railway-hot".to_owned());
+                let ttl_seconds = env::var("PROVISIONING_EMAIL_TEST_TTL_SECONDS")
+                    .ok()
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(900)
+                    .clamp(60, 3600);
+                let job = provisioning_manager(&database)
+                    .ensure_capacity(ProvisionRequest {
+                        provider_type: "fake".to_owned(),
+                        pool_id,
+                        requested_capacity_bytes: 1024,
+                        expires_at: Utc::now() + chrono::Duration::seconds(ttl_seconds),
+                        idempotency_key: format!("email-smoke-{}", uuid::Uuid::new_v4()),
+                    })
+                    .await
+                    .map_err(provisioning_anyhow)?;
+                let address = job
+                    .inbound_email_address
+                    .clone()
+                    .context("test provisioning job did not receive an email alias")?;
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "test_job_created": true,
+                        "job_id": job.id,
+                        "address": address,
+                        "status": job.status,
+                        "expires_at": job.inbound_email_expires_at,
+                        "active_job": true,
+                        "provider_type": "fake",
+                        "real_capacity_allocated": false,
+                    }))?
+                );
+                return Ok(());
+            };
             let normalized = address.trim().to_ascii_lowercase();
             let syntactically_valid = normalized.split_once('@').is_some_and(|(local, host)| {
                 !local.is_empty() && host == domain.trim().to_ascii_lowercase()

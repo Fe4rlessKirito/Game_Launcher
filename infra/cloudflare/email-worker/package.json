@@ -1,5 +1,5 @@
 {
-  "name": "vaultnode-provisioning-email-worker",
+  "name": "vaultnode-mail-ingest-worker",
   "private": true,
   "version": "0.1.0",
   "type": "module",
