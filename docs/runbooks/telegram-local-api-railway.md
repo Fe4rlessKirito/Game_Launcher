@@ -5,13 +5,27 @@ official [Telegram Bot API server](https://github.com/tdlib/telegram-bot-api)
 in `--local` mode. It is not part of the restore-worker image and it receives
 no public domain.
 
-## Service
+## Image build and service
 
-Create a second service from the same repository and select
-`railway.telegram-bot-api.toml` as its config-as-code file. The config builds
-`deploy/telegram-bot-api.Dockerfile`, listens on Railway's injected `PORT`
-(default `8081`), and has no HTTP healthcheck because authenticated `getMe` is
-the useful readiness check.
+The repository contains a pinned-source Dockerfile for the official
+[Telegram Bot API server](https://github.com/tdlib/telegram-bot-api), but the
+native C++ build should not run on a small Railway builder. The
+`telegram-bot-api-image.yml` GitHub Action builds the pinned source on a
+GitHub-hosted runner and publishes a `linux/amd64` image to GHCR:
+
+```text
+ghcr.io/fe4rlesskirito/game-launcher-telegram-bot-api:sha-<main-commit>
+```
+
+Connect the private Railway service to that immutable image after the Action
+finishes. Keep `railway.telegram-bot-api.toml` as the source-build fallback;
+do not use it for the normal Railway staging deployment. The image listens on
+Railway's injected `PORT` (default `8081`) and has no HTTP healthcheck because
+authenticated `getMe` is the useful readiness check.
+
+The image is linked to this public repository by its OCI source label. If GHCR
+does not make the package public automatically, change only that package's
+visibility to public; the image contains no Telegram credentials.
 
 Attach a persistent volume at `/var/lib/telegram-bot-api`. This is Bot API
 state and its local file working directory, not the launcher chunk store. The

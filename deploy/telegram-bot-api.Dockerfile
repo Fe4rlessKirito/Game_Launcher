@@ -29,6 +29,8 @@ RUN cmake -S . -B build \
 
 FROM debian:bookworm-slim
 
+LABEL org.opencontainers.image.source="https://github.com/Fe4rlessKirito/Game_Launcher"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 zlib1g \
     && rm -rf /var/lib/apt/lists/* \
