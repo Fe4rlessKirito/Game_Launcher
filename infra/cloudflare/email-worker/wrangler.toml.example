@@ -1,0 +1,11 @@
+name = "vaultnode-provisioning-email"
+main = "src/index.ts"
+compatibility_date = "2026-08-11"
+
+[vars]
+PROVISIONING_INGEST_URL = "https://api.example.invalid/internal/v1/email-events"
+DEBUG_FORWARD_ENABLED = "false"
+DEBUG_FORWARD_ADDRESS = ""
+
+# Store the real value with:
+# wrangler secret put PROVISIONING_INGEST_HMAC_SECRET

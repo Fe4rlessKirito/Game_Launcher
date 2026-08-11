@@ -12,6 +12,7 @@ this runbook does not claim that staging is deployed.
 | api | One public HTTPS domain | Catalog, hot resolution, presigned URLs, restore-pending responses |
 | Postgres | Private only | Catalog, storage locations, account ledger, reservations, restore jobs |
 | Restore Worker | Private only; no domain | Cold health/capacity, restore queue, MEGAcmd transfers |
+| Provisioning Worker | Private only; no domain | Durable capacity-job retries/expiry and operator wake-up |
 | HotBucket | Private S3 API | HOT object bytes through the generic S3 interface |
 | website | Optional public HTTPS | Static shell; calls the public API |
 
@@ -66,6 +67,29 @@ Set the same PostgreSQL and HOT references on the worker, then add:
 
     LAUNCHER_STORAGE_PROVIDERS=s3,mega
     LAUNCHER_MEGA_ACCOUNTS_FILE=/var/lib/launcher/megacmd/mega-accounts.json
+
+Set these on the API and the private provisioning worker. Put the HMAC value in
+Railway's secret variable UI and Cloudflare's Worker secret UI; the blank line
+below is intentional:
+
+    PROVISIONING_ENABLED=true
+    PROVISIONING_EMAIL_DOMAIN=vaultnode.pp.ua
+    PROVISIONING_EMAIL_INGEST_HMAC_SECRET=
+    PROVISIONING_EMAIL_MAX_BYTES=5242880
+    PROVISIONING_EMAIL_ALLOWED_CLOCK_SKEW_SECONDS=300
+    PROVISIONING_MAIL_ALIAS_TTL_SECONDS=3600
+    PROVISIONING_DEFAULT_MODE=MANUAL
+    PROVISIONING_CAPACITY_HEADROOM_BYTES=0
+    PROVISIONING_SECRET_STORE_DIR=/var/lib/launcher/provisioning-secrets
+    PROVISIONING_TEMP_DIR=/tmp/launcher-mega
+
+For a second service from the same repository, select the existing
+`railway.worker.toml` and `deploy/worker.Dockerfile`, keep it private, and set
+the service start command to
+`/usr/local/bin/worker-entrypoint provisioning worker`. Give it only a tiny
+volume mounted at `/var/lib/launcher/megacmd` plus a separate secret-store
+directory if the chosen secret-store implementation needs one. Do not mount
+the HOT bucket or chunks as a worker volume.
 
 Railway Bucket exposes ENDPOINT, REGION, BUCKET, ACCESS_KEY_ID, and
 SECRET_ACCESS_KEY reference variables. Those names are translated into the

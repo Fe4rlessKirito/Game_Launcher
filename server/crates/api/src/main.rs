@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    body::to_bytes,
+    extract::{Path, Query, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -11,6 +12,12 @@ use launcher_common::{
     ManifestSignature, ResolvedChunk,
 };
 use launcher_database::Database;
+use launcher_provisioning::{
+    EmailIngestHeaders, FakeProvisioningEmailParser, FileSecretStore, MegaProvisioningEmailParser,
+    ProvisioningEmailParserRegistry, ProvisioningError, ProvisioningMailRecord,
+    ProvisioningManager, ProvisioningStatus, ProvisioningStore, manual_mega_provisioner,
+    parse_mime, sha256_hex, verify_email_ingest,
+};
 use launcher_storage::{
     CapacityReservationStore, InMemoryCapacityReservationStore, LocalStorage, MirrorSet,
     StoragePolicy, StoragePool, StorageProvider, StorageProviderHealth, StorageRegistry,
@@ -34,6 +41,12 @@ struct AppState {
     manifests: Arc<RwLock<HashMap<String, Manifest>>>,
     manifest_bytes: Arc<RwLock<HashMap<String, Vec<u8>>>>,
     signatures: Arc<RwLock<HashMap<String, ManifestSignature>>>,
+    provisioning: Option<ProvisioningManager>,
+    provisioning_enabled: bool,
+    provisioning_email_domain: String,
+    provisioning_email_hmac_secret: Option<Arc<Vec<u8>>>,
+    provisioning_email_max_bytes: usize,
+    provisioning_email_clock_skew_seconds: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,7 +75,16 @@ struct ReadinessResponse {
     status: &'static str,
     database_ready: bool,
     storage_configured: bool,
+    provisioning_email_configured: bool,
+    provisioning_enabled: bool,
     utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct EmailEventResponse {
+    accepted: bool,
+    duplicate: bool,
+    job_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -110,6 +132,43 @@ async fn main() -> anyhow::Result<()> {
         },
         Err(_) => None,
     };
+    let provisioning_enabled = env_bool("PROVISIONING_ENABLED", false);
+    let provisioning_email_domain =
+        env::var("PROVISIONING_EMAIL_DOMAIN").unwrap_or_else(|_| "vaultnode.pp.ua".to_owned());
+    let provisioning_email_hmac_secret = env::var("PROVISIONING_EMAIL_INGEST_HMAC_SECRET")
+        .ok()
+        .filter(|secret| !secret.is_empty())
+        .map(|secret| Arc::new(secret.into_bytes()));
+    let provisioning_email_max_bytes = env::var("PROVISIONING_EMAIL_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(5 * 1024 * 1024)
+        .clamp(1024, 50 * 1024 * 1024);
+    let provisioning_email_clock_skew_seconds =
+        env::var("PROVISIONING_EMAIL_ALLOWED_CLOCK_SKEW_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(300)
+            .clamp(1, 3600);
+    let provisioning_alias_ttl = env::var("PROVISIONING_MAIL_ALIAS_TTL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(3600)
+        .clamp(60, 86_400);
+    let provisioning = database.as_ref().map(|database| {
+        let secret_root = env::var("PROVISIONING_SECRET_STORE_DIR")
+            .unwrap_or_else(|_| "provisioning-secrets".to_owned());
+        let secret_store = Arc::new(FileSecretStore::new(secret_root));
+        let mut registry = launcher_provisioning::ProvisionerRegistry::default();
+        registry.register("mega", manual_mega_provisioner());
+        if env_bool("PROVISIONING_ENABLE_FAKE", false) {
+            registry.register_fake("fake", secret_store);
+        }
+        ProvisioningManager::new(Arc::new(database.clone()), registry).with_email_config(
+            provisioning_email_domain.clone(),
+            chrono::Duration::seconds(provisioning_alias_ttl),
+        )
+    });
     let storage_root = env::var_os("LAUNCHER_STORAGE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("storage"));
@@ -140,11 +199,18 @@ async fn main() -> anyhow::Result<()> {
         manifests: Arc::new(RwLock::new(manifests)),
         manifest_bytes: Arc::new(RwLock::new(manifest_bytes)),
         signatures: Arc::new(RwLock::new(signatures)),
+        provisioning,
+        provisioning_enabled,
+        provisioning_email_domain,
+        provisioning_email_hmac_secret,
+        provisioning_email_max_bytes,
+        provisioning_email_clock_skew_seconds,
     };
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/health", get(liveness))
         .route("/v1/ready", get(readiness))
+        .route("/internal/v1/email-events", post(email_events))
         .route("/metrics", get(storage_metrics))
         .route("/api/v1/storage/status", get(storage_status))
         .route("/api/v1/storage/metrics", get(storage_metrics))
@@ -165,6 +231,170 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(address).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
+async fn email_events(
+    State(state): State<AppState>,
+    request: Request,
+) -> Result<Json<EmailEventResponse>, ApiResponseError> {
+    if !state.provisioning_enabled {
+        return Err(ApiResponseError::temporary(
+            "provisioning_disabled",
+            "provisioning email ingest is disabled",
+            60,
+        ));
+    }
+    let Some(database) = &state.database else {
+        return Err(ApiResponseError::temporary(
+            "database_unavailable",
+            "provisioning database is unavailable",
+            15,
+        ));
+    };
+    let Some(secret) = &state.provisioning_email_hmac_secret else {
+        return Err(ApiResponseError::temporary(
+            "email_ingest_unconfigured",
+            "provisioning email ingest is not configured",
+            60,
+        ));
+    };
+    let (parts, body) = request.into_parts();
+    if let Some(content_type) = parts
+        .headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        && !content_type
+            .split(';')
+            .next()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("message/rfc822"))
+    {
+        return Err(ApiResponseError::bad_request(
+            "content type must be message/rfc822",
+        ));
+    }
+    let body = to_bytes(body, state.provisioning_email_max_bytes.saturating_add(1))
+        .await
+        .map_err(|_| ApiResponseError::payload_too_large())?;
+    if body.len() > state.provisioning_email_max_bytes {
+        return Err(ApiResponseError::payload_too_large());
+    }
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let timestamp = header("x-mail-timestamp")
+        .and_then(|value| value.parse::<i64>().ok())
+        .ok_or_else(ApiResponseError::mail_authentication_failed)?;
+    let nonce = header("x-mail-nonce").ok_or_else(ApiResponseError::mail_authentication_failed)?;
+    let signature =
+        header("x-mail-signature").ok_or_else(ApiResponseError::mail_authentication_failed)?;
+    let envelope_to =
+        header("x-envelope-to").ok_or_else(ApiResponseError::mail_authentication_failed)?;
+    let envelope_from = header("x-envelope-from").filter(|value| !value.trim().is_empty());
+    let ingest_headers = EmailIngestHeaders {
+        timestamp,
+        nonce,
+        signature,
+        envelope_from: envelope_from.clone(),
+        envelope_to: envelope_to.trim().to_ascii_lowercase(),
+    };
+    let verification = verify_email_ingest(
+        &ingest_headers,
+        secret.as_slice(),
+        &body,
+        Utc::now(),
+        chrono::Duration::seconds(state.provisioning_email_clock_skew_seconds),
+    )
+    .map_err(|_| ApiResponseError::mail_authentication_failed())?;
+    let signed_at = chrono::DateTime::<Utc>::from_timestamp(verification.timestamp, 0)
+        .ok_or_else(ApiResponseError::mail_authentication_failed)?;
+    let nonce_expires_at =
+        signed_at + chrono::Duration::seconds(state.provisioning_email_clock_skew_seconds);
+    if !database
+        .claim_mail_nonce(&verification.nonce, nonce_expires_at)
+        .await
+        .map_err(|_| ApiResponseError::internal("could not record mail nonce"))?
+    {
+        return Ok(Json(EmailEventResponse {
+            accepted: false,
+            duplicate: true,
+            job_id: None,
+        }));
+    }
+    let parsed = parse_mime(&body, state.provisioning_email_max_bytes)
+        .map_err(|_| ApiResponseError::bad_request("invalid MIME message"))?;
+    let Some(job) = database
+        .find_active_job_by_email(&ingest_headers.envelope_to)
+        .await
+        .map_err(|_| ApiResponseError::internal("could not find provisioning email alias"))?
+    else {
+        // Deliberately do not disclose whether an alias was unknown, expired, or already closed.
+        return Ok(Json(EmailEventResponse {
+            accepted: false,
+            duplicate: false,
+            job_id: None,
+        }));
+    };
+    let message_id = parsed
+        .message_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("<{}@internal>", sha256_hex(&body)));
+    let mut parsers = ProvisioningEmailParserRegistry::default();
+    parsers.register(Box::new(FakeProvisioningEmailParser));
+    parsers.register(Box::new(MegaProvisioningEmailParser));
+    let event = match parsers.parse(&job.provider_type, &parsed) {
+        Ok(event) => event,
+        Err(_) => {
+            return Ok(Json(EmailEventResponse {
+                accepted: false,
+                duplicate: false,
+                job_id: None,
+            }));
+        }
+    };
+    let Some(provisioning) = &state.provisioning else {
+        return Err(ApiResponseError::temporary(
+            "provisioning_unavailable",
+            "provisioning is not available",
+            15,
+        ));
+    };
+    let (updated, duplicate) = provisioning
+        .handle_email_with_record_status(
+            ProvisioningMailRecord {
+                message_id,
+                body_sha256: verification.body_sha256,
+                envelope_from,
+                envelope_to: ingest_headers.envelope_to,
+                from_header: parsed.from,
+                subject: parsed.subject,
+                job_id: job.id,
+            },
+            event,
+        )
+        .await
+        .map_err(|error| map_provisioning_error(error, "could not process provisioning email"))?;
+    Ok(Json(EmailEventResponse {
+        accepted: true,
+        duplicate,
+        job_id: Some(updated.id),
+    }))
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
@@ -209,13 +439,18 @@ async fn readiness(
         !state.database_required
     };
     let storage_configured = !state.storage.providers().is_empty();
-    if !database_ready || !storage_configured {
+    let provisioning_email_configured = !state.provisioning_enabled
+        || (!state.provisioning_email_domain.trim().is_empty()
+            && state.provisioning_email_hmac_secret.is_some());
+    if !database_ready || !storage_configured || !provisioning_email_configured {
         return Err(ApiResponseError::temporary(
             "not_ready",
             if !database_ready {
                 "database is not ready"
-            } else {
+            } else if !storage_configured {
                 "storage is not configured"
+            } else {
+                "provisioning email ingest is not configured"
             },
             5,
         ));
@@ -224,6 +459,8 @@ async fn readiness(
         status: "ready",
         database_ready,
         storage_configured,
+        provisioning_email_configured,
+        provisioning_enabled: state.provisioning_enabled,
         utc: Utc::now(),
     }))
 }
@@ -297,6 +534,14 @@ async fn storage_metrics(State(state): State<AppState>) -> Result<Response, ApiR
     } else {
         0
     };
+    let provisioning_jobs = if let Some(database) = &state.database {
+        database
+            .list_jobs(None, 500)
+            .await
+            .map_err(|_| ApiResponseError::internal("could not read provisioning metrics"))?
+    } else {
+        Vec::new()
+    };
     let mut body = String::new();
     body.push_str(&format!(
         "launcher_storage_policy_min_hot_replicas {}\nlauncher_storage_policy_min_cold_replicas {}\nlauncher_storage_policy_min_archive_replicas {}\nlauncher_storage_policy_min_hot_failure_domains {}\nlauncher_storage_policy_min_cold_failure_domains {}\nlauncher_storage_policy_min_archive_failure_domains {}\nlauncher_storage_restore_pending {}\n",
@@ -308,6 +553,41 @@ async fn storage_metrics(State(state): State<AppState>) -> Result<Response, ApiR
         policy.min_archive_failure_domains,
         pending_restores,
     ));
+    body.push_str(&format!(
+        "launcher_provisioning_enabled {}\nlauncher_provisioning_email_configured {}\n",
+        if state.provisioning_enabled { 1 } else { 0 },
+        if !state.provisioning_enabled || state.provisioning_email_hmac_secret.is_some() {
+            1
+        } else {
+            0
+        },
+    ));
+    for status in [
+        ProvisioningStatus::Created,
+        ProvisioningStatus::Starting,
+        ProvisioningStatus::RegistrationStarted,
+        ProvisioningStatus::WaitingForEmail,
+        ProvisioningStatus::EmailReceived,
+        ProvisioningStatus::WaitingForProvider,
+        ProvisioningStatus::CandidateReady,
+        ProvisioningStatus::Validating,
+        ProvisioningStatus::Enrolling,
+        ProvisioningStatus::Enrolled,
+        ProvisioningStatus::FailedRetryable,
+        ProvisioningStatus::FailedPermanent,
+        ProvisioningStatus::NeedsOperator,
+        ProvisioningStatus::Cancelled,
+    ] {
+        let count = provisioning_jobs
+            .iter()
+            .filter(|job| job.status == status)
+            .count();
+        body.push_str(&format!(
+            "launcher_provisioning_jobs{{status=\"{}\"}} {}\n",
+            status.as_str(),
+            count
+        ));
+    }
     for provider in &health {
         let label = metric_label(&provider.provider);
         let pool = metric_label(&provider.pool_id);
@@ -794,6 +1074,48 @@ impl ApiResponseError {
             retry_after_seconds: Some(retry_after_seconds),
         }
     }
+
+    fn payload_too_large() -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            code: "payload_too_large",
+            message: "request body exceeds the configured limit".to_owned(),
+            retry_after_seconds: None,
+        }
+    }
+
+    fn mail_authentication_failed() -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "mail_authentication_failed",
+            message: "mail event authentication failed".to_owned(),
+            retry_after_seconds: None,
+        }
+    }
+
+    fn internal(message: &str) -> Self {
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal_error",
+            message: message.to_owned(),
+            retry_after_seconds: None,
+        }
+    }
+}
+
+fn map_provisioning_error(error: ProvisioningError, fallback: &str) -> ApiResponseError {
+    match error {
+        ProvisioningError::Configuration(_) | ProvisioningError::Conflict(_) => {
+            ApiResponseError::bad_request(fallback)
+        }
+        ProvisioningError::Security(_) => ApiResponseError::mail_authentication_failed(),
+        ProvisioningError::NotFound => ApiResponseError::not_found("provisioning job"),
+        ProvisioningError::Mail(_) => ApiResponseError::bad_request("invalid provisioning email"),
+        ProvisioningError::Provider(_) | ProvisioningError::Secret(_) => {
+            ApiResponseError::temporary("provisioning_unavailable", fallback, 15)
+        }
+        ProvisioningError::InvalidTransition { .. } => ApiResponseError::internal(fallback),
+    }
 }
 
 impl From<launcher_database::DatabaseError> for ApiResponseError {
@@ -907,6 +1229,12 @@ mod tests {
             )]))),
             manifest_bytes: Arc::new(RwLock::new(HashMap::new())),
             signatures: Arc::new(RwLock::new(HashMap::new())),
+            provisioning: None,
+            provisioning_enabled: false,
+            provisioning_email_domain: "vaultnode.pp.ua".to_owned(),
+            provisioning_email_hmac_secret: None,
+            provisioning_email_max_bytes: 5 * 1024 * 1024,
+            provisioning_email_clock_skew_seconds: 300,
         };
         let resolved = resolve_chunks(
             State(state),

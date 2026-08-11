@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use launcher_common::{GameSummary, Manifest, ManifestSignature};
 use launcher_database::Database;
@@ -9,6 +11,11 @@ use launcher_manifests::{
     validate_json, verify_bytes,
 };
 use launcher_packager::{PackageOptions, package_directory};
+use launcher_provisioning::{
+    CapacityCandidate, CapacityCandidateEnroller, CapacityCandidateValidator, FileSecretStore,
+    ProvisionRequest, ProvisionerRegistry, ProvisioningError, ProvisioningManager,
+    ProvisioningStatus, ProvisioningStore, SecretRef, ValidatedCapacity, manual_mega_provisioner,
+};
 use launcher_storage::{
     CapacityReservationStore, ExistingStorageReplica, InMemoryCapacityReservationStore,
     MegaAccountBackend, MegaAccountConfig, MegaCliAccount, MegaColdStorageConfig,
@@ -108,6 +115,10 @@ enum Commands {
     Storage {
         #[command(subcommand)]
         command: StorageCommands,
+    },
+    Provisioning {
+        #[command(subcommand)]
+        command: ProvisioningCommands,
     },
 }
 
@@ -258,6 +269,58 @@ enum StorageAccountCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum ProvisioningCommands {
+    List {
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+    },
+    Inspect {
+        job_id: String,
+    },
+    Retry {
+        job_id: String,
+    },
+    Cancel {
+        job_id: String,
+        #[arg(long, default_value = "cancelled by operator")]
+        reason: String,
+    },
+    CompleteManual {
+        job_id: String,
+        #[arg(long)]
+        candidate_reference: String,
+        #[arg(long)]
+        credential_reference: String,
+        #[arg(long)]
+        expected_capacity_bytes: u64,
+        #[arg(long, default_value = "mega")]
+        provider_type: String,
+    },
+    Readiness,
+    TestEmailAddress {
+        address: String,
+    },
+    EnsureCapacity {
+        #[arg(long)]
+        provider_type: String,
+        #[arg(long)]
+        pool_id: String,
+        #[arg(long)]
+        requested_capacity_bytes: u64,
+        #[arg(long)]
+        idempotency_key: String,
+        #[arg(long, default_value_t = 3600)]
+        expires_seconds: i64,
+    },
+    Worker {
+        #[arg(long, default_value_t = 15)]
+        poll_seconds: u64,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
@@ -382,6 +445,7 @@ async fn main() -> Result<()> {
         } => configure_staging(&api_url, &public_key, &key_id, &output, allow_http, force)?,
         Commands::Staging { command } => handle_staging_command(command).await?,
         Commands::Storage { command } => handle_storage_command(command).await?,
+        Commands::Provisioning { command } => handle_provisioning_command(command).await?,
         Commands::Ingest {
             input,
             output,
@@ -1348,6 +1412,384 @@ async fn command_database() -> Result<Database> {
     Ok(database)
 }
 
+fn provisioning_manager(database: &Database) -> ProvisioningManager {
+    let secret_root = env::var("PROVISIONING_SECRET_STORE_DIR")
+        .unwrap_or_else(|_| "provisioning-secrets".to_owned());
+    let secret_store = Arc::new(FileSecretStore::new(secret_root));
+    let mut registry = ProvisionerRegistry::default();
+    registry.register("mega", manual_mega_provisioner());
+    if env_bool("PROVISIONING_ENABLE_FAKE", false) {
+        registry.register_fake("fake", secret_store);
+    }
+    let alias_domain =
+        env::var("PROVISIONING_EMAIL_DOMAIN").unwrap_or_else(|_| "vaultnode.pp.ua".to_owned());
+    let alias_ttl = env::var("PROVISIONING_MAIL_ALIAS_TTL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(3600)
+        .clamp(60, 86_400);
+    ProvisioningManager::new(Arc::new(database.clone()), registry)
+        .with_email_config(alias_domain, chrono::Duration::seconds(alias_ttl))
+        .with_validator(
+            "mega",
+            Arc::new(MegaCandidateValidator {
+                database: database.clone(),
+            }),
+            Arc::new(MegaCandidateEnroller {
+                database: database.clone(),
+            }),
+        )
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
+}
+
+async fn handle_provisioning_command(command: ProvisioningCommands) -> Result<()> {
+    let database = command_database().await?;
+    match command {
+        ProvisioningCommands::List { status, limit } => {
+            let status = status
+                .as_deref()
+                .map(str::parse::<ProvisioningStatus>)
+                .transpose()
+                .context("status must be one of the provisioning state names")?;
+            let jobs = database
+                .list_jobs(status, limit)
+                .await
+                .map_err(provisioning_anyhow)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &jobs.iter().map(provisioning_job_view).collect::<Vec<_>>()
+                )?
+            );
+        }
+        ProvisioningCommands::Inspect { job_id } => {
+            let id = parse_provisioning_job_id(&job_id)?;
+            let job = database
+                .get_job(id)
+                .await
+                .map_err(provisioning_anyhow)?
+                .with_context(|| format!("provisioning job {job_id} was not found"))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&provisioning_job_view(&job))?
+            );
+        }
+        ProvisioningCommands::Retry { job_id } => {
+            let manager = provisioning_manager(&database);
+            let job = manager
+                .retry_job(parse_provisioning_job_id(&job_id)?)
+                .await
+                .map_err(provisioning_anyhow)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&provisioning_job_view(&job))?
+            );
+        }
+        ProvisioningCommands::Cancel { job_id, reason } => {
+            let manager = provisioning_manager(&database);
+            let job = manager
+                .cancel_job(parse_provisioning_job_id(&job_id)?, reason)
+                .await
+                .map_err(provisioning_anyhow)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&provisioning_job_view(&job))?
+            );
+        }
+        ProvisioningCommands::CompleteManual {
+            job_id,
+            candidate_reference,
+            credential_reference,
+            expected_capacity_bytes,
+            provider_type,
+        } => {
+            let credential_reference = SecretRef::parse(credential_reference)
+                .context("credential-reference must be a SecretRef using secret://")?;
+            let candidate = CapacityCandidate {
+                provider_type,
+                external_account_id: candidate_reference,
+                credential_reference,
+                expected_capacity_bytes,
+                metadata: Default::default(),
+            };
+            let manager = provisioning_manager(&database);
+            let job = manager
+                .complete_manual(parse_provisioning_job_id(&job_id)?, candidate)
+                .await
+                .map_err(provisioning_anyhow)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&provisioning_job_view(&job))?
+            );
+        }
+        ProvisioningCommands::Readiness => {
+            let domain = env::var("PROVISIONING_EMAIL_DOMAIN")
+                .unwrap_or_else(|_| "vaultnode.pp.ua".to_owned());
+            let hmac_configured = env::var("PROVISIONING_EMAIL_INGEST_HMAC_SECRET")
+                .ok()
+                .is_some_and(|secret| !secret.is_empty());
+            let manager = provisioning_manager(&database);
+            let active_jobs = database
+                .list_jobs(None, 500)
+                .await
+                .map_err(provisioning_anyhow)?
+                .into_iter()
+                .filter(|job| job.status.is_active())
+                .count();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "database": "READY",
+                    "email_domain": domain,
+                    "email_hmac_configured": hmac_configured,
+                    "secret_store_configured": env::var("PROVISIONING_SECRET_STORE_DIR").is_ok(),
+                    "active_jobs": active_jobs,
+                    "capabilities": manager.capabilities(),
+                    "manual_mode_is_valid": true,
+                }))?
+            );
+        }
+        ProvisioningCommands::TestEmailAddress { address } => {
+            let domain = env::var("PROVISIONING_EMAIL_DOMAIN")
+                .unwrap_or_else(|_| "vaultnode.pp.ua".to_owned());
+            let normalized = address.trim().to_ascii_lowercase();
+            let syntactically_valid = normalized.split_once('@').is_some_and(|(local, host)| {
+                !local.is_empty() && host == domain.trim().to_ascii_lowercase()
+            });
+            let active = if syntactically_valid {
+                database
+                    .find_active_job_by_email(&normalized)
+                    .await
+                    .map_err(provisioning_anyhow)?
+                    .is_some()
+            } else {
+                false
+            };
+            println!(
+                "{}",
+                serde_json::json!({
+                    "address_valid": syntactically_valid,
+                    "active_job": active,
+                })
+            );
+        }
+        ProvisioningCommands::EnsureCapacity {
+            provider_type,
+            pool_id,
+            requested_capacity_bytes,
+            idempotency_key,
+            expires_seconds,
+        } => {
+            let manager = provisioning_manager(&database);
+            let job = manager
+                .ensure_capacity(ProvisionRequest {
+                    provider_type,
+                    pool_id,
+                    requested_capacity_bytes,
+                    expires_at: Utc::now() + chrono::Duration::seconds(expires_seconds.max(60)),
+                    idempotency_key,
+                })
+                .await
+                .map_err(provisioning_anyhow)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&provisioning_job_view(&job))?
+            );
+        }
+        ProvisioningCommands::Worker { poll_seconds } => {
+            let manager = provisioning_manager(&database);
+            loop {
+                let jobs = database
+                    .list_jobs(None, 500)
+                    .await
+                    .map_err(provisioning_anyhow)?;
+                let now = Utc::now();
+                for job in jobs {
+                    if job.status.is_active() && job.expires_at <= now {
+                        let _ = manager.expire_job(job.id).await;
+                    } else if job.status == ProvisioningStatus::FailedRetryable
+                        && job.retry_after.is_none_or(|retry_after| retry_after <= now)
+                    {
+                        let _ = manager.retry_job(job.id).await;
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(poll_seconds.max(1))).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn parse_provisioning_job_id(value: &str) -> Result<uuid::Uuid> {
+    uuid::Uuid::parse_str(value).with_context(|| format!("invalid provisioning job UUID {value}"))
+}
+
+fn provisioning_anyhow(error: ProvisioningError) -> anyhow::Error {
+    anyhow::anyhow!(error.to_string())
+}
+
+fn provisioning_job_view(job: &launcher_provisioning::ProvisioningJob) -> serde_json::Value {
+    serde_json::json!({
+        "id": job.id,
+        "provider_type": job.provider_type,
+        "pool_id": job.pool_id,
+        "requested_capacity_bytes": job.requested_capacity_bytes,
+        "status": job.status,
+        "attempt_count": job.attempt_count,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+        "last_error_code": job.last_error_code,
+        "last_error_summary": job.last_error_summary,
+        "inbound_email_address": job.inbound_email_address,
+        "inbound_email_expires_at": job.inbound_email_expires_at,
+        "candidate_configured": job.candidate_reference.is_some(),
+        "credential_configured": job.credential_reference.is_some(),
+        "operator_action": job.operator_action,
+        "retry_after": job.retry_after,
+        "expires_at": job.expires_at,
+        "idempotency_key": job.idempotency_key,
+    })
+}
+
+struct MegaCandidateValidator {
+    database: Database,
+}
+
+#[async_trait]
+impl CapacityCandidateValidator for MegaCandidateValidator {
+    async fn validate(
+        &self,
+        candidate: &CapacityCandidate,
+        requested_capacity_bytes: u64,
+    ) -> Result<ValidatedCapacity, ProvisioningError> {
+        let account = self
+            .database
+            .list_storage_accounts(None)
+            .await
+            .map_err(|_| {
+                ProvisioningError::Provider("could not read MEGA account ledger".to_owned())
+            })?
+            .into_iter()
+            .find(|record| record.snapshot.account_id == candidate.external_account_id)
+            .ok_or_else(|| {
+                ProvisioningError::Provider("MEGA account is not enrolled in the ledger".to_owned())
+            })?;
+        let config: MegaAccountConfig = serde_json::from_value(account.configuration_json)
+            .map_err(|_| {
+                ProvisioningError::Provider("MEGA account configuration is invalid".to_owned())
+            })?;
+        let mega = MegaCliAccount::new(config).map_err(|_| {
+            ProvisioningError::Provider("MEGA account configuration is invalid".to_owned())
+        })?;
+        mega.health().await.map_err(|_| {
+            ProvisioningError::Provider("MEGA authentication validation failed".to_owned())
+        })?;
+        let capacity = mega
+            .capacity()
+            .await
+            .map_err(|_| ProvisioningError::Provider("MEGA capacity query failed".to_owned()))?;
+        let available = capacity.capacity_bytes.saturating_sub(capacity.used_bytes);
+        if available < requested_capacity_bytes {
+            return Err(ProvisioningError::Provider(
+                "MEGA account does not have the requested capacity".to_owned(),
+            ));
+        }
+        let mut payload = vec![0_u8; 1024];
+        OsRng.fill_bytes(&mut payload);
+        let digest = blake3::hash(&payload);
+        let id = uuid::Uuid::new_v4();
+        let temp_dir = env::var("PROVISIONING_TEMP_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| env::temp_dir());
+        tokio::fs::create_dir_all(&temp_dir).await.map_err(|_| {
+            ProvisioningError::Provider("could not prepare bounded validation space".to_owned())
+        })?;
+        let upload_path = temp_dir.join(format!("launcher-provisioning-{id}.upload"));
+        let download_path = temp_dir.join(format!("launcher-provisioning-{id}.download"));
+        tokio::fs::write(&upload_path, &payload)
+            .await
+            .map_err(|_| {
+                ProvisioningError::Provider("could not write validation object".to_owned())
+            })?;
+        let remote_path = format!(
+            "{}/.launcher-provisioning/{id}",
+            mega.remote_root().trim_end_matches('/')
+        );
+        let transfer = async {
+            mega.upload_file(&upload_path, &remote_path)
+                .await
+                .map_err(|_| {
+                    ProvisioningError::Provider("MEGA validation upload failed".to_owned())
+                })?;
+            mega.download_file(&remote_path, &download_path)
+                .await
+                .map_err(|_| {
+                    ProvisioningError::Provider("MEGA validation download failed".to_owned())
+                })?;
+            let downloaded = tokio::fs::read(&download_path).await.map_err(|_| {
+                ProvisioningError::Provider("could not read validation download".to_owned())
+            })?;
+            if blake3::hash(&downloaded) != digest {
+                return Err(ProvisioningError::Provider(
+                    "MEGA validation BLAKE3 integrity check failed".to_owned(),
+                ));
+            }
+            mega.delete_object(&remote_path).await.map_err(|_| {
+                ProvisioningError::Provider("MEGA validation delete failed".to_owned())
+            })?;
+            Ok::<(), ProvisioningError>(())
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&upload_path).await;
+        let _ = tokio::fs::remove_file(&download_path).await;
+        if transfer.is_err() {
+            let _ = mega.delete_object(&remote_path).await;
+        }
+        transfer?;
+        Ok(ValidatedCapacity {
+            candidate: candidate.clone(),
+            observed_capacity_bytes: capacity.capacity_bytes,
+        })
+    }
+}
+
+struct MegaCandidateEnroller {
+    database: Database,
+}
+
+#[async_trait]
+impl CapacityCandidateEnroller for MegaCandidateEnroller {
+    async fn enroll(
+        &self,
+        _pool_id: &str,
+        validated: &ValidatedCapacity,
+    ) -> Result<(), ProvisioningError> {
+        self.database
+            .set_storage_account_status(
+                &validated.candidate.external_account_id,
+                StorageAccountStatus::Active,
+                None,
+            )
+            .await
+            .map_err(|_| {
+                ProvisioningError::Provider("could not mark MEGA account active".to_owned())
+            })
+    }
+}
+
 async fn handle_storage_account_command(command: StorageAccountCommands) -> Result<()> {
     match command {
         StorageAccountCommands::Add {
@@ -1424,11 +1866,11 @@ async fn handle_storage_account_command(command: StorageAccountCommands) -> Resu
                 )
                 .await?;
             println!(
-                "account={} provider={} status={} credential_reference={} capacity_bytes={}",
+                "account={} provider={} status={} credential_configured={} capacity_bytes={}",
                 persisted_config.account_id,
                 provider_id,
                 status.as_str(),
-                persisted_config.credential_reference,
+                !persisted_config.credential_reference.is_empty(),
                 persisted_config.capacity_bytes
             );
             health.map_err(|error| anyhow::anyhow!(error))?;
@@ -1441,11 +1883,11 @@ async fn handle_storage_account_command(command: StorageAccountCommands) -> Resu
                 .await?
             {
                 println!(
-                    "account={} provider={} status={} credential_reference={} capacity={} used={} reserved={} available={}",
+                    "account={} provider={} status={} credential_configured={} capacity={} used={} reserved={} available={}",
                     record.snapshot.account_id,
                     record.snapshot.provider_id,
                     record.snapshot.status.as_str(),
-                    record.credential_reference,
+                    !record.credential_reference.is_empty(),
                     record.snapshot.capacity_bytes,
                     record.snapshot.used_bytes,
                     record.snapshot.reserved_bytes,
@@ -1462,12 +1904,12 @@ async fn handle_storage_account_command(command: StorageAccountCommands) -> Resu
                 .find(|record| record.snapshot.account_id == account_id)
                 .with_context(|| format!("unknown storage account {account_id}"))?;
             println!(
-                "account={} provider={} tier={} status={} credential_reference={} capacity={} used={} reserved={} available={} last_capacity_check={:?}",
+                "account={} provider={} tier={} status={} credential_configured={} capacity={} used={} reserved={} available={} last_capacity_check={:?}",
                 record.snapshot.account_id,
                 record.snapshot.provider_id,
                 record.snapshot.tier,
                 record.snapshot.status.as_str(),
-                record.credential_reference,
+                !record.credential_reference.is_empty(),
                 record.snapshot.capacity_bytes,
                 record.snapshot.used_bytes,
                 record.snapshot.reserved_bytes,
@@ -1752,6 +2194,47 @@ async fn publish_verified_build(
                 &placement_pools,
             );
             if !plan.policy_satisfied {
+                let cold_capacity_needed = plan.projected_cold_replicas
+                    < plan.required_cold_replicas
+                    || plan.projected_cold_failure_domains < plan.required_cold_failure_domains;
+                if cold_capacity_needed
+                    && let Some(database) = database
+                    && let Some(candidate) = placement_pools.iter().find(|candidate| {
+                        candidate.storage_class == StorageClass::Cold
+                            && storage.pool(&candidate.pool_id).is_some_and(|pool| {
+                                !matches!(
+                                    pool.provisioning_mode,
+                                    launcher_storage::ProvisioningMode::Disabled
+                                )
+                            })
+                    })
+                {
+                    let manager = provisioning_manager(database);
+                    let headroom = env::var("PROVISIONING_CAPACITY_HEADROOM_BYTES")
+                        .ok()
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    let request = ProvisionRequest {
+                        provider_type: candidate.provider_type.clone(),
+                        pool_id: candidate.pool_id.clone(),
+                        requested_capacity_bytes: (bytes.len() as u64).saturating_add(headroom),
+                        expires_at: Utc::now() + chrono::Duration::hours(24),
+                        idempotency_key: format!(
+                            "publication:{}:{}",
+                            manifest.build_id, candidate.pool_id
+                        ),
+                    };
+                    let job = manager
+                        .ensure_capacity(request)
+                        .await
+                        .map_err(provisioning_anyhow)?;
+                    anyhow::bail!(
+                        "storage policy is blocked on capacity provisioning for {}: job={} status={}",
+                        chunk.encoded_hash,
+                        job.id,
+                        job.status
+                    );
+                }
                 anyhow::bail!(
                     "storage policy cannot be satisfied for {}: {}",
                     chunk.encoded_hash,

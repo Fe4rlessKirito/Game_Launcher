@@ -1,9 +1,13 @@
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use launcher_common::{
     ChunkRef, ChunkingConfig, EncodingConfig, FileRecipe, GameSummary, LaunchProfile, Manifest,
     ManifestSignature,
 };
 use launcher_database::Database;
+use launcher_provisioning::{
+    ProvisionRequest, ProvisioningEvent, ProvisioningMailRecord, ProvisioningStatus,
+    ProvisioningStore,
+};
 use launcher_storage::{
     CapacityReservationStore, MegaAccountConfig, StorageAccountStatus, StorageError, StoragePolicy,
     StorageTier,
@@ -94,6 +98,103 @@ async fn postgres_repository_migrates_publishes_and_recovers_leases()
     .await?;
     database.migrate().await?;
     assert!(database.schema_status().await?.ready());
+    let provisioning_job = database
+        .create_or_get_job(ProvisionRequest {
+            provider_type: "mega".to_owned(),
+            pool_id: "legacy-mega".to_owned(),
+            requested_capacity_bytes: 1024,
+            expires_at: Utc::now() + ChronoDuration::hours(1),
+            idempotency_key: "postgres-provisioning-upgrade".to_owned(),
+        })
+        .await?;
+    assert_eq!(provisioning_job.status, ProvisioningStatus::Created);
+    assert_eq!(
+        database
+            .create_or_get_job(ProvisionRequest {
+                provider_type: "mega".to_owned(),
+                pool_id: "legacy-mega".to_owned(),
+                requested_capacity_bytes: 1024,
+                expires_at: Utc::now() + ChronoDuration::hours(1),
+                idempotency_key: "postgres-provisioning-upgrade".to_owned(),
+            })
+            .await?
+            .id,
+        provisioning_job.id
+    );
+    let provisioning_job = database
+        .apply_event(
+            provisioning_job.id,
+            "postgres-start",
+            ProvisioningEvent::Start,
+        )
+        .await?;
+    let alias = "p-upgrade@vaultnode.pp.ua".to_owned();
+    let provisioning_job = database
+        .apply_event(
+            provisioning_job.id,
+            "postgres-registration",
+            ProvisioningEvent::RegistrationStarted {
+                inbound_email_address: alias.clone(),
+                inbound_email_expires_at: Utc::now() + ChronoDuration::minutes(10),
+                inbound_email_token_hash: "hashed-alias".to_owned(),
+            },
+        )
+        .await?;
+    let provisioning_job = database
+        .apply_event(
+            provisioning_job.id,
+            "postgres-waiting-email",
+            ProvisioningEvent::AwaitingEmail,
+        )
+        .await?;
+    assert_eq!(
+        database.find_active_job_by_email(&alias).await?.unwrap().id,
+        provisioning_job.id
+    );
+    let provisioning_job = database
+        .apply_event(
+            provisioning_job.id,
+            "postgres-mail-received",
+            ProvisioningEvent::EmailReceived {
+                message_id: "<upgrade-mail@example.test>".to_owned(),
+            },
+        )
+        .await?;
+    assert_eq!(provisioning_job.status, ProvisioningStatus::EmailReceived);
+    assert_eq!(
+        database
+            .apply_event(
+                provisioning_job.id,
+                "postgres-mail-received",
+                ProvisioningEvent::EmailReceived {
+                    message_id: "<upgrade-mail@example.test>".to_owned(),
+                },
+            )
+            .await?
+            .status,
+        ProvisioningStatus::EmailReceived
+    );
+    assert!(
+        database
+            .claim_mail_nonce("upgrade-nonce", Utc::now() + ChronoDuration::minutes(5))
+            .await?
+    );
+    assert!(
+        !database
+            .claim_mail_nonce("upgrade-nonce", Utc::now() + ChronoDuration::minutes(5))
+            .await?
+    );
+    let mail = ProvisioningMailRecord {
+        message_id: "<upgrade-mail@example.test>".to_owned(),
+        body_sha256: "a".repeat(64),
+        envelope_from: Some("sender@example.test".to_owned()),
+        envelope_to: alias,
+        from_header: Some("sender@example.test".to_owned()),
+        subject: Some("fixture".to_owned()),
+        job_id: provisioning_job.id,
+    };
+    assert!(database.record_mail(mail.clone()).await?);
+    assert!(!database.record_mail(mail).await?);
     let migrated_pools: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id, storage_class, failure_domain FROM storage_pools ORDER BY id")
             .fetch_all(database.pool())

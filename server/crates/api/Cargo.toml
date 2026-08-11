@@ -10,6 +10,7 @@ axum.workspace = true
 chrono.workspace = true
 launcher-common = { path = "../common" }
 launcher-database = { path = "../database" }
+launcher-provisioning = { path = "../provisioning" }
 launcher-storage = { path = "../storage" }
 serde.workspace = true
 serde_json.workspace = true

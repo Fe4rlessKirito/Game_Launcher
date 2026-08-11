@@ -15,6 +15,8 @@ use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
+mod provisioning;
+
 #[derive(Debug, Error)]
 pub enum DatabaseError {
     #[error("database error: {0}")]
@@ -191,6 +193,8 @@ impl Database {
         sqlx::raw_sql(storage_tiering).execute(&self.pool).await?;
         let storage_pools = include_str!("../../../../migrations/003_storage_pools.sql");
         sqlx::raw_sql(storage_pools).execute(&self.pool).await?;
+        let provisioning = include_str!("../../../../migrations/004_provisioning.sql");
+        sqlx::raw_sql(provisioning).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -206,7 +210,9 @@ impl Database {
                  FROM unnest(ARRAY[
                      'games', 'builds', 'chunks', 'build_chunks', 'storage_locations',
                      'storage_objects', 'ingestion_jobs', 'storage_providers', 'storage_pools', 'storage_accounts',
-                     'storage_reservations', 'storage_health_events', 'restore_jobs'
+                     'storage_reservations', 'storage_health_events', 'restore_jobs',
+                     'provisioning_jobs', 'provisioning_job_events',
+                     'provisioning_mail_messages', 'provisioning_mail_nonces'
                  ]::text[]) AS table_name
              ),
              checks AS (

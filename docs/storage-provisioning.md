@@ -22,3 +22,31 @@ ledger.
 Provisioning never changes launcher behavior and never exposes cold
 credentials or URLs. Fake provisioners cover successful automatic capacity,
 manual `NEEDS_CAPACITY`, and failure paths without external services.
+
+## Account provisioning jobs
+
+The generic account lifecycle is implemented in `launcher-provisioning` and
+uses PostgreSQL migration 004. It is intentionally separate from the existing
+`StorageCapacityProvisioner` pool hook: a generic `CapacityProvisioner` can
+wait for provider email or operator action and return a candidate, while the
+server-owned validator/enroller controls admission to the storage ledger.
+
+Use the operator surface to inspect or advance jobs without exposing secret
+material:
+
+```powershell
+launcher-admin provisioning list
+launcher-admin provisioning inspect <job-id>
+launcher-admin provisioning readiness
+launcher-admin provisioning retry <job-id>
+launcher-admin provisioning cancel <job-id>
+launcher-admin provisioning complete-manual <job-id> `
+  --candidate-reference mega-a `
+  --credential-reference secret://mega/a/session `
+  --expected-capacity-bytes 1099511627776
+```
+
+The manual MEGA provisioner only creates `NEEDS_OPERATOR`; it does not sign up
+an account or modify pool membership. `complete-manual` runs the same
+authoritative health/capacity and tiny random object validation before the
+existing account ledger is marked active.

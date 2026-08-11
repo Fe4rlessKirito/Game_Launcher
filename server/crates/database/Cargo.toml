@@ -8,6 +8,7 @@ license.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 launcher-common = { path = "../common" }
+launcher-provisioning = { path = "../provisioning" }
 launcher-storage = { path = "../storage" }
 serde_json.workspace = true
 sqlx.workspace = true
