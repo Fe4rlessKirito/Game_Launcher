@@ -54,6 +54,34 @@ restore job, and the client receives `503` with code `restore_pending` and a
 `Retry-After` header. Cold provider credentials, paths, and download URLs are
 never exposed to clients.
 
+## Build history retention
+
+Published builds are immutable history. Publishing build `B` for a game does
+not delete build `A` from the manifest database or from Telegram COLD:
+
+```text
+latest build B  -> normal HOT resolution and mirrors
+older build A   -> Telegram COLD -> private restore worker -> temporary HOT
+```
+
+Only the newest published build is eligible for normal HOT resolution. When a
+new build is published, HOT objects and HOT pack locations that are unique to
+superseded builds are retired. Content-addressed bytes shared with the newest
+build remain HOT. Telegram COLD packs are never removed by this retention pass
+or by unreachable-object garbage collection; `build_packs` keeps the historical
+build-to-pack relationship, including a migration backfill for existing packs.
+
+An old build can therefore still be selected and downloaded, but it is served
+through a server-side Telegram restore, never through a Telegram URL or
+credential in the launcher. Restored data is verified and uploaded to HOT
+before the launcher receives a normal direct URL. If an old build has a HOT
+pack already, it may be reused as a temporary cache; it is not treated as a
+permanent HOT copy of historical content.
+
+If a superseded HOT provider is not configured during publication, retention is
+reported as partial and the provider is left untouched rather than silently
+deleting database records for bytes the worker cannot delete.
+
 Before staging traffic is enabled, run:
 
 ```powershell

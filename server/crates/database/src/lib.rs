@@ -271,6 +271,11 @@ impl Database {
         sqlx::raw_sql(provisioning).execute(&self.pool).await?;
         let physical_packs = include_str!("../../../../migrations/005_physical_packs.sql");
         sqlx::raw_sql(physical_packs).execute(&self.pool).await?;
+        let build_pack_retention =
+            include_str!("../../../../migrations/006_build_pack_retention.sql");
+        sqlx::raw_sql(build_pack_retention)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -289,7 +294,7 @@ impl Database {
                      'storage_reservations', 'storage_health_events', 'restore_jobs',
                      'provisioning_jobs', 'provisioning_job_events',
                      'provisioning_mail_messages', 'provisioning_mail_nonces'
-                     , 'physical_packs', 'pack_chunks', 'pack_locations',
+                     , 'physical_packs', 'pack_chunks', 'pack_locations', 'build_packs',
                      'pack_restore_jobs', 'pack_leases'
                  ]::text[]) AS table_name
              ),
@@ -681,6 +686,22 @@ impl Database {
         .bind(chunk_count)
         .bind(target_size)
         .bind(state)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn attach_build_pack(
+        &self,
+        build_id: &str,
+        pack_hash: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "INSERT INTO build_packs(build_id, pack_hash)
+             VALUES($1,$2) ON CONFLICT(build_id, pack_hash) DO NOTHING",
+        )
+        .bind(build_id)
+        .bind(pack_hash)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1277,6 +1298,7 @@ impl Database {
                  WHERE bc.encoded_hash = so.encoded_hash
                    AND b.state IN ('PUBLISHED','READY','VERIFIED')
              )
+               AND so.tier <> 'COLD'
              ORDER BY so.created_at, so.encoded_hash, so.provider
              LIMIT $1",
         )
@@ -1314,6 +1336,145 @@ impl Database {
             .bind(provider)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn is_latest_published_build(&self, build_id: &str) -> Result<bool, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM builds candidate
+                 WHERE candidate.id=$1
+                   AND candidate.state='PUBLISHED'
+                   AND NOT EXISTS(
+                       SELECT 1
+                       FROM builds newer
+                       WHERE newer.game_id=candidate.game_id
+                         AND newer.state='PUBLISHED'
+                         AND (
+                             COALESCE(newer.published_at, newer.created_at)
+                                 > COALESCE(candidate.published_at, candidate.created_at)
+                             OR (
+                                 COALESCE(newer.published_at, newer.created_at)
+                                     = COALESCE(candidate.published_at, candidate.created_at)
+                                 AND newer.id > candidate.id
+                             )
+                         )
+                   )
+             ) AS is_latest",
+        )
+        .bind(build_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.try_get("is_latest")?)
+    }
+
+    pub async fn list_hot_objects_to_retire(
+        &self,
+        game_id: &str,
+        latest_build_id: &str,
+    ) -> Result<Vec<StorageObjectRecord>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT so.encoded_hash, so.encoded_size, so.provider,
+                    COALESCE(so.pool_id, so.provider) AS pool_id,
+                    COALESCE(so.failure_domain, so.pool_id, so.provider) AS failure_domain,
+                    so.tier, so.object_key, so.verified_at
+             FROM storage_objects so
+             JOIN build_chunks old_chunks ON old_chunks.encoded_hash=so.encoded_hash
+             JOIN builds old_build ON old_build.id=old_chunks.build_id
+             WHERE old_build.game_id=$1
+               AND old_build.state='PUBLISHED'
+               AND old_build.id<>$2
+               AND so.tier='HOT'
+               AND NOT EXISTS(
+                   SELECT 1 FROM build_chunks latest_chunks
+                   WHERE latest_chunks.build_id=$2
+                     AND latest_chunks.encoded_hash=so.encoded_hash
+               )
+             ORDER BY so.encoded_hash, so.provider",
+        )
+        .bind(game_id)
+        .bind(latest_build_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(StorageObjectRecord {
+                    encoded_hash: row.try_get("encoded_hash")?,
+                    encoded_size: row.try_get("encoded_size")?,
+                    provider: row.try_get("provider")?,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
+                    tier: parse_storage_tier(row.try_get::<String, _>("tier")?.as_str())?,
+                    object_key: row.try_get("object_key")?,
+                    verified_at: row.try_get("verified_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn list_hot_pack_locations_to_retire(
+        &self,
+        game_id: &str,
+        latest_build_id: &str,
+    ) -> Result<Vec<PackLocationRecord>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT pl.pack_hash, pl.provider, pl.pool_id, pl.failure_domain,
+                    pl.storage_class, pl.object_key, pl.direct_url, pl.priority,
+                    pl.verified_at, pl.expires_at
+             FROM pack_locations pl
+             JOIN build_packs old_packs ON old_packs.pack_hash=pl.pack_hash
+             JOIN builds old_build ON old_build.id=old_packs.build_id
+             WHERE old_build.game_id=$1
+               AND old_build.state='PUBLISHED'
+               AND old_build.id<>$2
+               AND pl.storage_class='HOT'
+               AND NOT EXISTS(
+                   SELECT 1 FROM build_packs latest_packs
+                   WHERE latest_packs.build_id=$2
+                     AND latest_packs.pack_hash=pl.pack_hash
+               )
+             ORDER BY pl.pack_hash, pl.provider, pl.direct_url",
+        )
+        .bind(game_id)
+        .bind(latest_build_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(PackLocationRecord {
+                    pack_hash: row.try_get("pack_hash")?,
+                    provider: row.try_get("provider")?,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
+                    storage_class: parse_storage_tier(
+                        row.try_get::<String, _>("storage_class")?.as_str(),
+                    )?,
+                    object_key: row.try_get("object_key")?,
+                    direct_url: row.try_get("direct_url")?,
+                    priority: row.try_get("priority")?,
+                    verified_at: row.try_get("verified_at")?,
+                    expires_at: row.try_get("expires_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn delete_pack_location(
+        &self,
+        pack_hash: &str,
+        provider: &str,
+        direct_url: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "DELETE FROM pack_locations
+             WHERE pack_hash=$1 AND provider=$2 AND direct_url=$3",
+        )
+        .bind(pack_hash)
+        .bind(provider)
+        .bind(direct_url)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

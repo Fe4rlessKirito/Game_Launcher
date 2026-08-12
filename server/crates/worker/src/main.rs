@@ -2343,6 +2343,15 @@ async fn publish_verified_build(
 ) -> Result<()> {
     let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
     let packs_enabled = env_bool("PACK_STORAGE_ENABLED", false);
+    let telegram_enabled = storage
+        .providers()
+        .iter()
+        .any(|provider| provider.provider_type().eq_ignore_ascii_case("telegram"));
+    if telegram_enabled && !packs_enabled {
+        anyhow::bail!(
+            "Telegram COLD retention requires PACK_STORAGE_ENABLED=true; Telegram stores immutable packs, not an untracked logical-chunk history"
+        );
+    }
     // Physical packs are the COLD contract whenever pack storage is enabled.
     // Keep the legacy flag as an explicit compatibility override, but default
     // it on so Telegram cannot silently receive logical-chunk replicas.
@@ -2461,12 +2470,91 @@ async fn publish_verified_build(
         result.context("logical chunk publish task failed")??;
     }
     if packs_enabled && let Some(database) = database {
-        publish_physical_packs(package, storage, database, &pack_policy).await?;
+        publish_physical_packs(&manifest.build_id, package, storage, database, &pack_policy)
+            .await?;
     }
     if let Some(database) = database {
         database
             .publish_build_with_storage_policy(&manifest.build_id, &logical_policy)
             .await?;
+        retire_superseded_hot_storage(&manifest.game_id, &manifest.build_id, storage, database)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn retire_superseded_hot_storage(
+    game_id: &str,
+    latest_build_id: &str,
+    storage: &StorageRegistry,
+    database: &Database,
+) -> Result<()> {
+    let objects = database
+        .list_hot_objects_to_retire(game_id, latest_build_id)
+        .await?;
+    let packs = database
+        .list_hot_pack_locations_to_retire(game_id, latest_build_id)
+        .await?;
+    let mut retired_objects = 0_u64;
+    let mut retired_packs = 0_u64;
+    let mut skipped_providers = HashSet::new();
+
+    for object in objects {
+        let Some(provider) = storage.provider(&object.provider) else {
+            skipped_providers.insert(object.provider);
+            continue;
+        };
+        provider
+            .delete_encoded(&object.encoded_hash)
+            .await
+            .with_context(|| {
+                format!(
+                    "could not retire old HOT object {} from {}",
+                    object.encoded_hash,
+                    provider.provider_id()
+                )
+            })?;
+        database
+            .delete_storage_object(&object.encoded_hash, &object.provider)
+            .await?;
+        retired_objects += 1;
+    }
+
+    for location in packs {
+        let Some(provider) = storage.provider(&location.provider) else {
+            skipped_providers.insert(location.provider);
+            continue;
+        };
+        provider
+            .delete_pack(&location.pack_hash)
+            .await
+            .with_context(|| {
+                format!(
+                    "could not retire old HOT pack {} from {}",
+                    location.pack_hash,
+                    provider.provider_id()
+                )
+            })?;
+        database
+            .delete_pack_location(
+                &location.pack_hash,
+                &location.provider,
+                &location.direct_url,
+            )
+            .await?;
+        retired_packs += 1;
+    }
+
+    if skipped_providers.is_empty() {
+        println!(
+            "hot_retention=APPLIED game={} latest_build={} objects={} packs={}",
+            game_id, latest_build_id, retired_objects, retired_packs
+        );
+    } else {
+        println!(
+            "hot_retention=PARTIAL game={} latest_build={} objects={} packs={} providers_not_configured={:?}",
+            game_id, latest_build_id, retired_objects, retired_packs, skipped_providers
+        );
     }
     Ok(())
 }
@@ -2626,6 +2714,7 @@ async fn publish_logical_chunk(
 }
 
 async fn publish_physical_packs(
+    build_id: &str,
     package: &Path,
     storage: &StorageRegistry,
     database: &Database,
@@ -2686,6 +2775,7 @@ async fn publish_physical_packs(
                 "UPLOADING",
             )
             .await?;
+        database.attach_build_pack(build_id, pack_hash).await?;
         for entry in reader.entries() {
             database
                 .add_pack_chunk(

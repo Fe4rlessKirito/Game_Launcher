@@ -428,3 +428,140 @@ async fn postgres_capacity_reservations_are_atomic_and_recoverable()
     postgres.stop().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn postgres_build_history_retention_keeps_cold_and_only_retires_old_hot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let settings = SettingsBuilder::new()
+        .timeout(Some(Duration::from_secs(60)))
+        .build();
+    let mut postgres = PostgreSQL::new(settings);
+    postgres.setup().await?;
+    postgres.start().await?;
+    let database_name = format!("launcher_history_test_{}", std::process::id());
+    postgres.create_database(&database_name).await?;
+    let database = Database::connect(&postgres.settings().url(&database_name)).await?;
+    database.migrate().await?;
+
+    sqlx::query(
+        "INSERT INTO games(id, slug, title) VALUES('history-game','history-game','History Game')",
+    )
+    .execute(database.pool())
+    .await?;
+    let old_published = Utc::now() - ChronoDuration::hours(1);
+    let new_published = Utc::now();
+    for (build_id, version, published_at) in [
+        ("history-old", "1.0.0", old_published),
+        ("history-new", "2.0.0", new_published),
+    ] {
+        sqlx::query(
+            "INSERT INTO builds(id, game_id, display_version, state, published_at)
+             VALUES($1,'history-game',$2,'PUBLISHED',$3)",
+        )
+        .bind(build_id)
+        .bind(version)
+        .bind(published_at)
+        .execute(database.pool())
+        .await?;
+    }
+
+    let old_hash = "c".repeat(64);
+    let new_hash = "d".repeat(64);
+    let unreferenced_cold_hash = "e".repeat(64);
+    for hash in [&old_hash, &new_hash, &unreferenced_cold_hash] {
+        sqlx::query(
+            "INSERT INTO chunks(encoded_hash, encoded_size, encoding_id) VALUES($1,1,'test')",
+        )
+        .bind(hash)
+        .execute(database.pool())
+        .await?;
+    }
+    for (build_id, hash) in [("history-old", &old_hash), ("history-new", &new_hash)] {
+        sqlx::query(
+            "INSERT INTO build_chunks(build_id, encoded_hash, raw_size, raw_hash, ordinal)
+             VALUES($1,$2,1,$2,0)",
+        )
+        .bind(build_id)
+        .bind(hash)
+        .execute(database.pool())
+        .await?;
+    }
+    for (hash, tier, provider) in [
+        (&old_hash, "HOT", "hot-old"),
+        (&unreferenced_cold_hash, "COLD", "telegram-cold"),
+    ] {
+        sqlx::query(
+            "INSERT INTO storage_objects(
+                encoded_hash, encoded_size, provider, tier, object_key, verified_at
+             ) VALUES($1,1,$2,$3,$4,now())",
+        )
+        .bind(hash)
+        .bind(provider)
+        .bind(tier)
+        .bind(format!("objects/{hash}"))
+        .execute(database.pool())
+        .await?;
+    }
+
+    let pack_hash = "f".repeat(64);
+    database
+        .upsert_physical_pack(&pack_hash, 1, 1, 1, 1, "VERIFIED")
+        .await?;
+    database
+        .add_pack_chunk(&pack_hash, &old_hash, &old_hash, 1, 0, 1, "test", 0)
+        .await?;
+    database
+        .attach_build_pack("history-old", &pack_hash)
+        .await?;
+    database
+        .add_pack_location(
+            &pack_hash,
+            "hot-old",
+            "hot-old",
+            "hot-old",
+            StorageClass::Hot,
+            &format!("packs/{pack_hash}"),
+            "https://hot.invalid/old",
+            100,
+            None,
+        )
+        .await?;
+    database
+        .add_pack_location(
+            &pack_hash,
+            "telegram-cold",
+            "telegram-cold",
+            "telegram",
+            StorageClass::Cold,
+            &format!("packs/{pack_hash}"),
+            "",
+            100,
+            None,
+        )
+        .await?;
+
+    assert!(!database.is_latest_published_build("history-old").await?);
+    assert!(database.is_latest_published_build("history-new").await?);
+    let old_hot = database
+        .list_hot_objects_to_retire("history-game", "history-new")
+        .await?;
+    assert_eq!(old_hot.len(), 1);
+    assert_eq!(old_hot[0].encoded_hash, old_hash);
+    let old_hot_packs = database
+        .list_hot_pack_locations_to_retire("history-game", "history-new")
+        .await?;
+    assert_eq!(old_hot_packs.len(), 1);
+    assert_eq!(old_hot_packs[0].direct_url, "https://hot.invalid/old");
+    assert!(
+        !database
+            .list_unreachable_storage_objects(100)
+            .await?
+            .iter()
+            .any(|object| object.encoded_hash == unreferenced_cold_hash)
+    );
+
+    database.close().await;
+    postgres.drop_database(&database_name).await?;
+    postgres.stop().await?;
+    Ok(())
+}

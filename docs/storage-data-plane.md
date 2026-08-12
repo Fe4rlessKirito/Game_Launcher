@@ -24,6 +24,13 @@ bounded acceleration cache and may be evicted after a lease expires.
 `launcher-admin storage probe` is offline by default; `--live` is an explicit
 network/credential health probe.
 
+Build history is retained independently of the normal HOT path. The resolver
+uses HOT locations and configured mirrors only for the newest published build.
+For an older build, it queues a private COLD-to-HOT restore for the required
+pack(s); the launcher polls the resolver and then downloads from the verified
+temporary HOT copy. Telegram remains the historical source of record, while
+the newest build is the only version maintained as normal HOT traffic.
+
 The physical schema is additive: `physical_packs`, `pack_chunks`,
-`pack_locations`, `pack_restore_jobs`, and `pack_leases` coexist with the
-legacy logical-object tables.
+`pack_locations`, `pack_restore_jobs`, `pack_leases`, and `build_packs` coexist
+with the legacy logical-object tables.

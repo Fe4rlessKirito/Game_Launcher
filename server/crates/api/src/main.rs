@@ -849,6 +849,14 @@ async fn resolve_chunks(
         })
     };
     let allowed = allowed.ok_or_else(|| ApiResponseError::not_found("build"))?;
+    let build_is_latest = if let Some(database) = &state.database {
+        database
+            .is_latest_published_build(&build_id)
+            .await
+            .map_err(ApiResponseError::from)?
+    } else {
+        true
+    };
     let database_locations = if let Some(database) = &state.database {
         database
             .get_storage_locations(&request.encoded_hashes)
@@ -872,11 +880,15 @@ async fn resolve_chunks(
                 "chunk is not referenced by the requested build",
             ));
         }
-        let locations = state
-            .storage
-            .download_locations_for_tier(&hash, Some(StorageTier::Hot))
-            .await
-            .map_err(ApiResponseError::from)?;
+        let locations = if build_is_latest {
+            state
+                .storage
+                .download_locations_for_tier(&hash, Some(StorageTier::Hot))
+                .await
+                .map_err(ApiResponseError::from)?
+        } else {
+            Vec::new()
+        };
         let mirror_urls = state
             .mirrors
             .urls(&hash)
@@ -885,14 +897,16 @@ async fn resolve_chunks(
             .iter()
             .map(|location| location.url.clone())
             .collect::<Vec<_>>();
-        for record in database_locations
-            .get(&hash)
-            .into_iter()
-            .flat_map(|records| records.iter())
-            .filter(|record| record.tier == StorageTier::Hot && !record.direct_url.is_empty())
-        {
-            if !urls.contains(&record.direct_url) {
-                urls.push(record.direct_url.clone());
+        if build_is_latest {
+            for record in database_locations
+                .get(&hash)
+                .into_iter()
+                .flat_map(|records| records.iter())
+                .filter(|record| record.tier == StorageTier::Hot && !record.direct_url.is_empty())
+            {
+                if !urls.contains(&record.direct_url) {
+                    urls.push(record.direct_url.clone());
+                }
             }
         }
         let has_cold_replica = database_locations
@@ -903,26 +917,68 @@ async fn resolve_chunks(
             || database_objects
                 .iter()
                 .any(|object| object.encoded_hash == hash && object.tier == StorageTier::Cold);
-        for mirror_url in mirror_urls {
-            if !urls.contains(&mirror_url) {
-                urls.push(mirror_url);
+        if build_is_latest {
+            for mirror_url in mirror_urls {
+                if !urls.contains(&mirror_url) {
+                    urls.push(mirror_url);
+                }
+            }
+        }
+        if !build_is_latest && urls.is_empty() && state.packs_enabled {
+            if let Some(database) = &state.database {
+                let hot_packs = database
+                    .get_hot_pack_sources_for_chunks(std::slice::from_ref(&hash))
+                    .await
+                    .map_err(ApiResponseError::from)?;
+                if hot_packs.contains_key(&hash) {
+                    // The pack-first client path will resolve and materialize
+                    // the bytes. No logical HOT URL should be exposed for a
+                    // superseded build.
+                    continue;
+                }
             }
         }
         if urls.is_empty() {
-            if has_cold_replica && let Some(database) = &state.database {
-                database
-                    .enqueue_restore_job(
-                        &hash,
-                        &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
-                            .unwrap_or_else(|_| "hot".to_owned()),
-                    )
-                    .await
-                    .map_err(ApiResponseError::from)?;
-                return Err(ApiResponseError::temporary(
-                    "restore_pending",
-                    "the chunk is in cold storage and a hot restore has been queued",
-                    30,
-                ));
+            let cold_pack_hashes = if !build_is_latest && state.packs_enabled {
+                if let Some(database) = &state.database {
+                    database
+                        .get_cold_pack_hashes_for_chunks(std::slice::from_ref(&hash))
+                        .await
+                        .map_err(ApiResponseError::from)?
+                } else {
+                    HashMap::new()
+                }
+            } else {
+                HashMap::new()
+            };
+            if let Some(database) = &state.database {
+                if has_cold_replica || !cold_pack_hashes.is_empty() {
+                    for pack_hash in cold_pack_hashes.values().flatten() {
+                        database
+                            .enqueue_pack_restore_job(
+                                pack_hash,
+                                &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
+                                    .unwrap_or_else(|_| "hot".to_owned()),
+                            )
+                            .await
+                            .map_err(ApiResponseError::from)?;
+                    }
+                    if has_cold_replica {
+                        database
+                            .enqueue_restore_job(
+                                &hash,
+                                &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
+                                    .unwrap_or_else(|_| "hot".to_owned()),
+                            )
+                            .await
+                            .map_err(ApiResponseError::from)?;
+                    }
+                    return Err(ApiResponseError::temporary(
+                        "restore_pending",
+                        "the chunk is in cold storage and a hot restore has been queued",
+                        30,
+                    ));
+                }
             }
             return Err(ApiResponseError {
                 status: StatusCode::SERVICE_UNAVAILABLE,

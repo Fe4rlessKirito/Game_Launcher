@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Launcher.Core;
@@ -30,6 +31,8 @@ public sealed record ResolvedPack(
 
 public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 {
+    private const int MaxRestorePolls = 20;
+    private static readonly TimeSpan DefaultRestorePollDelay = TimeSpan.FromSeconds(5);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
     public async Task<IReadOnlyList<GameCatalogItem>> GetGamesAsync(CancellationToken cancellationToken = default)
@@ -63,10 +66,20 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 
     public async Task<IReadOnlyDictionary<string, ResolvedChunk>> ResolveChunksAsync(string buildId, IReadOnlyCollection<string> encodedHashes, CancellationToken cancellationToken = default)
     {
-        using var response = await httpClient.PostAsJsonAsync(new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/resolve"), new ChunkResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        var resolved = await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedChunk>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
-        return resolved.ToDictionary(item => item.EncodedHash, StringComparer.Ordinal);
+        var endpoint = new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/resolve");
+        for (var attempt = 0; ; attempt++)
+        {
+            using var response = await httpClient.PostAsJsonAsync(endpoint, new ChunkResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.ServiceUnavailable || response.Headers.RetryAfter is null || attempt >= MaxRestorePolls - 1)
+            {
+                response.EnsureSuccessStatusCode();
+                var resolved = await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedChunk>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+                return resolved.ToDictionary(item => item.EncodedHash, StringComparer.Ordinal);
+            }
+
+            var delay = response.Headers.RetryAfter?.Delta ?? DefaultRestorePollDelay;
+            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 1, 30)), cancellationToken).ConfigureAwait(false);
+        }
     }
 
     public async Task<IReadOnlyList<ResolvedPack>> ResolvePacksAsync(string buildId, IReadOnlyCollection<string> encodedHashes, CancellationToken cancellationToken = default)
