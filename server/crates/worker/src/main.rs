@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use launcher_common::{GameSummary, Manifest, ManifestSignature};
+use launcher_common::{ChunkRef, GameSummary, Manifest, ManifestSignature};
 use launcher_database::Database;
 use launcher_domain::BuildState;
 use launcher_manifests::{
@@ -2333,9 +2333,7 @@ async fn publish_verified_build(
     let packs_enabled = env_bool("PACK_STORAGE_ENABLED", false);
     let pack_cold_only = env_bool("LAUNCHER_PACK_COLD_ONLY", false);
     if pack_cold_only && !packs_enabled {
-        anyhow::bail!(
-            "LAUNCHER_PACK_COLD_ONLY=true requires PACK_STORAGE_ENABLED=true"
-        );
+        anyhow::bail!("LAUNCHER_PACK_COLD_ONLY=true requires PACK_STORAGE_ENABLED=true");
     }
     let logical_policy = if pack_cold_only {
         let mut logical_policy = policy.clone();
@@ -2347,9 +2345,8 @@ async fn publish_verified_build(
     } else {
         policy.clone()
     };
-    let placement_engine =
-        StoragePlacementEngine::new(logical_policy.clone())
-            .map_err(|error| anyhow::anyhow!(error))?;
+    let placement_engine = StoragePlacementEngine::new(logical_policy.clone())
+        .map_err(|error| anyhow::anyhow!(error))?;
     if let Some(database) = database {
         database
             .upsert_game(&GameSummary {
@@ -2389,155 +2386,193 @@ async fn publish_verified_build(
 
     let placement_pools = storage.placement_pools().await;
     let mut uploaded = HashSet::new();
-    for file in &manifest.files {
-        for chunk in &file.chunks {
-            if !uploaded.insert(chunk.encoded_hash.clone()) {
-                continue;
-            }
-            let object_path = package
-                .join(&chunk.object_key)
-                .canonicalize()
-                .with_context(|| format!("could not resolve {}", chunk.object_key))?;
-            let bytes = std::fs::read(&object_path)
-                .with_context(|| format!("could not read {}", object_path.display()))?;
-            if blake3::hash(&bytes).to_hex().as_str() != chunk.encoded_hash {
-                anyhow::bail!("storage object hash mismatch: {}", chunk.encoded_hash);
-            }
-            let existing_objects = if let Some(database) = database {
-                database
-                    .list_storage_objects(std::slice::from_ref(&chunk.encoded_hash))
-                    .await?
-            } else {
-                Vec::new()
-            };
-            let existing_replicas = existing_objects
-                .iter()
-                .filter(|object| object.verified_at.is_some())
-                .filter_map(|object| {
-                    let pool = storage
-                        .pool_for_provider(&object.provider)
-                        .or_else(|| storage.pool(&object.pool_id))?;
-                    Some(ExistingStorageReplica {
-                        provider_id: object.provider.clone(),
-                        pool_id: pool.id.clone(),
-                        storage_class: object.tier,
-                        failure_domain: if object.failure_domain.is_empty() {
-                            pool.failure_domain.clone()
-                        } else {
-                            object.failure_domain.clone()
-                        },
-                    })
-                })
-                .collect::<Vec<_>>();
-            let plan = placement_engine.plan_with_pools(
-                bytes.len() as u64,
-                &existing_replicas,
-                &placement_pools,
-            );
-            if !plan.policy_satisfied {
-                let cold_capacity_needed = plan.projected_cold_replicas
-                    < plan.required_cold_replicas
-                    || plan.projected_cold_failure_domains < plan.required_cold_failure_domains;
-                if cold_capacity_needed
-                    && let Some(database) = database
-                    && let Some(candidate) = placement_pools.iter().find(|candidate| {
-                        candidate.storage_class == StorageClass::Cold
-                            && storage.pool(&candidate.pool_id).is_some_and(|pool| {
-                                !matches!(
-                                    pool.provisioning_mode,
-                                    launcher_storage::ProvisioningMode::Disabled
-                                )
-                            })
-                    })
-                {
-                    let manager = provisioning_manager(database);
-                    let headroom = env::var("PROVISIONING_CAPACITY_HEADROOM_BYTES")
-                        .ok()
-                        .and_then(|value| value.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    let request = ProvisionRequest {
-                        provider_type: candidate.provider_type.clone(),
-                        pool_id: candidate.pool_id.clone(),
-                        requested_capacity_bytes: (bytes.len() as u64).saturating_add(headroom),
-                        expires_at: Utc::now() + chrono::Duration::hours(24),
-                        idempotency_key: format!(
-                            "publication:{}:{}",
-                            manifest.build_id, candidate.pool_id
-                        ),
-                    };
-                    let job = manager
-                        .ensure_capacity(request)
-                        .await
-                        .map_err(provisioning_anyhow)?;
-                    anyhow::bail!(
-                        "storage policy is blocked on capacity provisioning for {}: job={} status={}",
-                        chunk.encoded_hash,
-                        job.id,
-                        job.status
-                    );
-                }
-                anyhow::bail!(
-                    "storage policy cannot be satisfied for {}: {}",
-                    chunk.encoded_hash,
-                    plan.explanation
-                );
-            }
-            for action in plan.actions {
-                let provider = storage.provider(&action.provider_id).ok_or_else(|| {
-                    anyhow::anyhow!("storage provider {} is not configured", action.provider_id)
-                })?;
-                provider
-                    .put_encoded(&chunk.encoded_hash, &bytes)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "could not upload {} to {} ({})",
-                            chunk.encoded_hash, action.provider_id, action.tier
-                        )
-                    })?;
-                if let Some(database) = database {
-                    let encoded_size = i64::try_from(bytes.len())?;
-                    database
-                        .add_storage_object_with_pool(
-                            &chunk.encoded_hash,
-                            encoded_size,
-                            provider.provider_id(),
-                            &action.pool_id,
-                            &action.failure_domain,
-                            action.tier,
-                            &chunk.object_key,
-                        )
-                        .await?;
-                    if action.tier == StorageTier::Hot
-                        && let Ok(location) = provider.download_location(&chunk.encoded_hash).await
-                        && location.expires_at.is_none()
-                    {
-                        database
-                            .add_storage_location_with_pool(
-                                &chunk.encoded_hash,
-                                provider.provider_id(),
-                                &action.pool_id,
-                                &action.failure_domain,
-                                action.tier,
-                                &chunk.object_key,
-                                &location.url,
-                                action.priority,
-                            )
-                            .await?;
-                    }
-                }
-            }
+    let chunks = manifest
+        .files
+        .iter()
+        .flat_map(|file| file.chunks.iter())
+        .filter(|chunk| uploaded.insert(chunk.encoded_hash.clone()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let publish_concurrency = env::var("LAUNCHER_PUBLISH_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(8)
+        .clamp(1, 32);
+    let mut tasks = tokio::task::JoinSet::new();
+    for chunk in chunks {
+        while tasks.len() >= publish_concurrency {
+            let _ = tasks
+                .join_next()
+                .await
+                .context("logical chunk publish task disappeared")??;
         }
+        let package = package.to_owned();
+        let storage = storage.clone();
+        let database = database.cloned();
+        let placement_engine = placement_engine.clone();
+        let placement_pools = placement_pools.clone();
+        let build_id = manifest.build_id.clone();
+        tasks.spawn(async move {
+            publish_logical_chunk(
+                &chunk,
+                &build_id,
+                &package,
+                &storage,
+                database.as_ref(),
+                &placement_engine,
+                &placement_pools,
+            )
+            .await
+        });
     }
-    if packs_enabled
-        && let Some(database) = database
-    {
+    while let Some(result) = tasks.join_next().await {
+        result.context("logical chunk publish task failed")??;
+    }
+    if packs_enabled && let Some(database) = database {
         publish_physical_packs(package, storage, database, &policy).await?;
     }
     if let Some(database) = database {
         database
             .publish_build_with_storage_policy(&manifest.build_id, &logical_policy)
             .await?;
+    }
+    Ok(())
+}
+
+async fn publish_logical_chunk(
+    chunk: &ChunkRef,
+    build_id: &str,
+    package: &Path,
+    storage: &StorageRegistry,
+    database: Option<&Database>,
+    placement_engine: &StoragePlacementEngine,
+    placement_pools: &[launcher_storage::StoragePoolCandidate],
+) -> Result<()> {
+    let object_path = package
+        .join(&chunk.object_key)
+        .canonicalize()
+        .with_context(|| format!("could not resolve {}", chunk.object_key))?;
+    let bytes = std::fs::read(&object_path)
+        .with_context(|| format!("could not read {}", object_path.display()))?;
+    if blake3::hash(&bytes).to_hex().as_str() != chunk.encoded_hash {
+        anyhow::bail!("storage object hash mismatch: {}", chunk.encoded_hash);
+    }
+    let existing_objects = if let Some(database) = database {
+        database
+            .list_storage_objects(std::slice::from_ref(&chunk.encoded_hash))
+            .await?
+    } else {
+        Vec::new()
+    };
+    let existing_replicas = existing_objects
+        .iter()
+        .filter(|object| object.verified_at.is_some())
+        .filter_map(|object| {
+            let pool = storage
+                .pool_for_provider(&object.provider)
+                .or_else(|| storage.pool(&object.pool_id))?;
+            Some(ExistingStorageReplica {
+                provider_id: object.provider.clone(),
+                pool_id: pool.id.clone(),
+                storage_class: object.tier,
+                failure_domain: if object.failure_domain.is_empty() {
+                    pool.failure_domain.clone()
+                } else {
+                    object.failure_domain.clone()
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let plan =
+        placement_engine.plan_with_pools(bytes.len() as u64, &existing_replicas, placement_pools);
+    if !plan.policy_satisfied {
+        let cold_capacity_needed = plan.projected_cold_replicas < plan.required_cold_replicas
+            || plan.projected_cold_failure_domains < plan.required_cold_failure_domains;
+        if cold_capacity_needed
+            && let Some(database) = database
+            && let Some(candidate) = placement_pools.iter().find(|candidate| {
+                candidate.storage_class == StorageClass::Cold
+                    && storage.pool(&candidate.pool_id).is_some_and(|pool| {
+                        !matches!(
+                            pool.provisioning_mode,
+                            launcher_storage::ProvisioningMode::Disabled
+                        )
+                    })
+            })
+        {
+            let manager = provisioning_manager(database);
+            let headroom = env::var("PROVISIONING_CAPACITY_HEADROOM_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            let request = ProvisionRequest {
+                provider_type: candidate.provider_type.clone(),
+                pool_id: candidate.pool_id.clone(),
+                requested_capacity_bytes: (bytes.len() as u64).saturating_add(headroom),
+                expires_at: Utc::now() + chrono::Duration::hours(24),
+                idempotency_key: format!("publication:{}:{}", build_id, candidate.pool_id),
+            };
+            let job = manager
+                .ensure_capacity(request)
+                .await
+                .map_err(provisioning_anyhow)?;
+            anyhow::bail!(
+                "storage policy is blocked on capacity provisioning for {}: job={} status={}",
+                chunk.encoded_hash,
+                job.id,
+                job.status
+            );
+        }
+        anyhow::bail!(
+            "storage policy cannot be satisfied for {}: {}",
+            chunk.encoded_hash,
+            plan.explanation
+        );
+    }
+    for action in plan.actions {
+        let provider = storage.provider(&action.provider_id).ok_or_else(|| {
+            anyhow::anyhow!("storage provider {} is not configured", action.provider_id)
+        })?;
+        provider
+            .put_encoded(&chunk.encoded_hash, &bytes)
+            .await
+            .with_context(|| {
+                format!(
+                    "could not upload {} to {} ({})",
+                    chunk.encoded_hash, action.provider_id, action.tier
+                )
+            })?;
+        if let Some(database) = database {
+            let encoded_size = i64::try_from(bytes.len())?;
+            database
+                .add_storage_object_with_pool(
+                    &chunk.encoded_hash,
+                    encoded_size,
+                    provider.provider_id(),
+                    &action.pool_id,
+                    &action.failure_domain,
+                    action.tier,
+                    &chunk.object_key,
+                )
+                .await?;
+            if action.tier == StorageTier::Hot
+                && let Ok(location) = provider.download_location(&chunk.encoded_hash).await
+                && location.expires_at.is_none()
+            {
+                database
+                    .add_storage_location_with_pool(
+                        &chunk.encoded_hash,
+                        provider.provider_id(),
+                        &action.pool_id,
+                        &action.failure_domain,
+                        action.tier,
+                        &chunk.object_key,
+                        &location.url,
+                        action.priority,
+                    )
+                    .await?;
+            }
+        }
     }
     Ok(())
 }
