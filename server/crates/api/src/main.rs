@@ -963,18 +963,20 @@ async fn resolve_chunks(
                     continue;
                 }
             }
-        } else if !build_is_latest && urls.is_empty() && state.packs_enabled {
-            if let Some(database) = &state.database {
-                let hot_packs = database
-                    .get_hot_pack_sources_for_chunks(std::slice::from_ref(&hash))
-                    .await
-                    .map_err(ApiResponseError::from)?;
-                if hot_packs.contains_key(&hash) {
-                    // The pack-first client path will resolve and materialize
-                    // the bytes. No logical HOT URL should be exposed for a
-                    // superseded build.
-                    continue;
-                }
+        } else if !build_is_latest
+            && urls.is_empty()
+            && state.packs_enabled
+            && let Some(database) = &state.database
+        {
+            let hot_packs = database
+                .get_hot_pack_sources_for_chunks(std::slice::from_ref(&hash))
+                .await
+                .map_err(ApiResponseError::from)?;
+            if hot_packs.contains_key(&hash) {
+                // The pack-first client path will resolve and materialize
+                // the bytes. No logical HOT URL should be exposed for a
+                // superseded build.
+                continue;
             }
         }
         if urls.is_empty() {
@@ -991,34 +993,34 @@ async fn resolve_chunks(
                 } else {
                     HashMap::new()
                 };
-            if let Some(database) = &state.database {
-                if has_cold_replica || !cold_pack_hashes.is_empty() {
-                    for pack_hash in cold_pack_hashes.values().flatten() {
-                        database
-                            .enqueue_pack_restore_job(
-                                pack_hash,
-                                &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
-                                    .unwrap_or_else(|_| "hot".to_owned()),
-                            )
-                            .await
-                            .map_err(ApiResponseError::from)?;
-                    }
-                    if has_cold_replica {
-                        database
-                            .enqueue_restore_job(
-                                &hash,
-                                &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
-                                    .unwrap_or_else(|_| "hot".to_owned()),
-                            )
-                            .await
-                            .map_err(ApiResponseError::from)?;
-                    }
-                    return Err(ApiResponseError::temporary(
-                        "restore_pending",
-                        "the chunk is in cold storage and a hot restore has been queued",
-                        30,
-                    ));
+            if let Some(database) = &state.database
+                && (has_cold_replica || !cold_pack_hashes.is_empty())
+            {
+                for pack_hash in cold_pack_hashes.values().flatten() {
+                    database
+                        .enqueue_pack_restore_job(
+                            pack_hash,
+                            &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
+                                .unwrap_or_else(|_| "hot".to_owned()),
+                        )
+                        .await
+                        .map_err(ApiResponseError::from)?;
                 }
+                if has_cold_replica {
+                    database
+                        .enqueue_restore_job(
+                            &hash,
+                            &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
+                                .unwrap_or_else(|_| "hot".to_owned()),
+                        )
+                        .await
+                        .map_err(ApiResponseError::from)?;
+                }
+                return Err(ApiResponseError::temporary(
+                    "restore_pending",
+                    "the chunk is in cold storage and a hot restore has been queued",
+                    30,
+                ));
             }
             return Err(ApiResponseError {
                 status: StatusCode::SERVICE_UNAVAILABLE,

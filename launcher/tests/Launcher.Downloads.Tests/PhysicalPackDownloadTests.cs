@@ -17,8 +17,6 @@ public sealed class PhysicalPackDownloadTests
     [Fact]
     public async Task PackDownloadUsesDirectHotSourceAndMaterializesLogicalChunk()
     {
-        var previous = Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED");
-        Environment.SetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED", "true");
         var root = Path.Combine(Path.GetTempPath(), "launcher-pack-download-" + Guid.NewGuid().ToString("N"));
         try
         {
@@ -33,7 +31,7 @@ public sealed class PhysicalPackDownloadTests
             var chunkCache = new ChunkCache(Path.Combine(root, "chunks"), 1024 * 1024);
             var packCache = new PackCache(Path.Combine(root, "packs"), 1024 * 1024);
             await chunkCache.InitializeAsync();
-            using var manager = new DownloadManager(client, new LauncherApiClient(client, new Uri("http://launcher/")), chunkCache, 2, packCache: packCache);
+            using var manager = new DownloadManager(client, new LauncherApiClient(client, new Uri("http://launcher/")), chunkCache, 2, packCache: packCache, packDownloadEnabled: true);
             var chunk = new ChunkReference(Hashing.ComputeHash(raw), raw.Length, encodedHash, encoded.Length, $"chunks/encoded/{encodedHash}.bin");
             var manifest = new Manifest(1, "manifest", "game", "build", "A", DateTimeOffset.UnixEpoch, ChunkingConfig.Default, EncodingConfig.Default, [new FileRecipe("game.exe", raw.Length, Hashing.ComputeHash(raw), [chunk])], new LaunchProfile("game.exe", ".", [], new Dictionary<string, string>()));
 
@@ -50,7 +48,6 @@ public sealed class PhysicalPackDownloadTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED", previous);
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
@@ -58,8 +55,6 @@ public sealed class PhysicalPackDownloadTests
     [Fact]
     public async Task PackDownloadResumesPartialAndReportsObservedAmplification()
     {
-        var previous = Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED");
-        Environment.SetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED", "true");
         var root = Path.Combine(Path.GetTempPath(), "launcher-pack-resume-" + Guid.NewGuid().ToString("N"));
         try
         {
@@ -77,7 +72,7 @@ public sealed class PhysicalPackDownloadTests
             await packCache.InitializeAsync();
             var partialLength = pack.Length / 2;
             await File.WriteAllBytesAsync(packCache.GetPartialPath(packHash), pack[..partialLength]);
-            using var manager = new DownloadManager(client, new LauncherApiClient(client, new Uri("http://launcher/")), chunkCache, 2, packCache: packCache);
+            using var manager = new DownloadManager(client, new LauncherApiClient(client, new Uri("http://launcher/")), chunkCache, 2, packCache: packCache, packDownloadEnabled: true);
             var chunk = new ChunkReference(Hashing.ComputeHash(raw), raw.Length, encodedHash, encoded.Length, $"chunks/encoded/{encodedHash}.bin");
             var manifest = new Manifest(1, "manifest", "game", "build", "A", DateTimeOffset.UnixEpoch, ChunkingConfig.Default, EncodingConfig.Default, [new FileRecipe("game.exe", raw.Length, Hashing.ComputeHash(raw), [chunk])], new LaunchProfile("game.exe", ".", [], new Dictionary<string, string>()));
 
@@ -93,7 +88,6 @@ public sealed class PhysicalPackDownloadTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED", previous);
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
@@ -101,74 +95,65 @@ public sealed class PhysicalPackDownloadTests
     [Fact]
     public async Task PackDownloadFailsOverRefreshesAndRejectsCorruption()
     {
-        var previous = Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED");
-        Environment.SetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED", "true");
+        var raw = Encoding.UTF8.GetBytes("physical pack fault injection payload");
+        using var compressor = new ZstdSharp.Compressor(3);
+        var encoded = compressor.Wrap(raw).ToArray();
+        var encodedHash = Hashing.ComputeHash(encoded);
+        var pack = BuildPack(raw, encoded);
+        var packHash = Hashing.ComputeHash(pack);
+
+        await RunPackScenarioAsync(
+            "pack-failover-job",
+            new DirectPackHandler(pack, packHash, encodedHash, failFirstPackSource: true),
+            raw,
+            encoded,
+            encodedHash,
+            pack.Length,
+            handler => Assert.Contains("bad", handler.PackHosts));
+        await RunPackScenarioAsync(
+            "pack-refresh-job",
+            new DirectPackHandler(pack, packHash, encodedHash, expiredFirstPackResolution: true),
+            raw,
+            encoded,
+            encodedHash,
+            pack.Length,
+            handler =>
+            {
+                Assert.True(handler.PackResolutionCalls >= 2);
+                Assert.Contains("expired", handler.PackHosts);
+                Assert.Contains("hot", handler.PackHosts);
+            });
+        await RunPackScenarioAsync(
+            "pack-corrupt-failover-job",
+            new DirectPackHandler(pack, packHash, encodedHash, corruptFirstPackSource: true),
+            raw,
+            encoded,
+            encodedHash,
+            pack.Length,
+            handler =>
+            {
+                Assert.Contains("bad", handler.PackHosts);
+                Assert.Contains("hot", handler.PackHosts);
+            });
+
+        var corruptRoot = Path.Combine(Path.GetTempPath(), "launcher-pack-corrupt-" + Guid.NewGuid().ToString("N"));
         try
         {
-            var raw = Encoding.UTF8.GetBytes("physical pack fault injection payload");
-            using var compressor = new ZstdSharp.Compressor(3);
-            var encoded = compressor.Wrap(raw).ToArray();
-            var encodedHash = Hashing.ComputeHash(encoded);
-            var pack = BuildPack(raw, encoded);
-            var packHash = Hashing.ComputeHash(pack);
+            var corruptHandler = new DirectPackHandler(pack, packHash, encodedHash, corruptPack: true);
+            using var corruptClient = new HttpClient(corruptHandler);
+            var corruptCache = new ChunkCache(Path.Combine(corruptRoot, "chunks"), 1024 * 1024);
+            var corruptPackCache = new PackCache(Path.Combine(corruptRoot, "packs"), 1024 * 1024);
+            await corruptCache.InitializeAsync();
+            using var corruptManager = new DownloadManager(corruptClient, new LauncherApiClient(corruptClient, new Uri("http://launcher/")), corruptCache, 2, packCache: corruptPackCache, packDownloadEnabled: true);
 
-            await RunPackScenarioAsync(
-                "pack-failover-job",
-                new DirectPackHandler(pack, packHash, encodedHash, failFirstPackSource: true),
-                raw,
-                encoded,
-                encodedHash,
-                pack.Length,
-                handler => Assert.Contains("bad", handler.PackHosts));
-            await RunPackScenarioAsync(
-                "pack-refresh-job",
-                new DirectPackHandler(pack, packHash, encodedHash, expiredFirstPackResolution: true),
-                raw,
-                encoded,
-                encodedHash,
-                pack.Length,
-                handler =>
-                {
-                    Assert.True(handler.PackResolutionCalls >= 2);
-                    Assert.Contains("expired", handler.PackHosts);
-                    Assert.Contains("hot", handler.PackHosts);
-                });
-            await RunPackScenarioAsync(
-                "pack-corrupt-failover-job",
-                new DirectPackHandler(pack, packHash, encodedHash, corruptFirstPackSource: true),
-                raw,
-                encoded,
-                encodedHash,
-                pack.Length,
-                handler =>
-                {
-                    Assert.Contains("bad", handler.PackHosts);
-                    Assert.Contains("hot", handler.PackHosts);
-                });
+            await Assert.ThrowsAsync<LauncherOperationException>(() => corruptManager.DownloadAsync(BuildManifest(raw, encoded, encodedHash), "pack-corrupt-job"));
 
-            var corruptRoot = Path.Combine(Path.GetTempPath(), "launcher-pack-corrupt-" + Guid.NewGuid().ToString("N"));
-            try
-            {
-                var corruptHandler = new DirectPackHandler(pack, packHash, encodedHash, corruptPack: true);
-                using var corruptClient = new HttpClient(corruptHandler);
-                var corruptCache = new ChunkCache(Path.Combine(corruptRoot, "chunks"), 1024 * 1024);
-                var corruptPackCache = new PackCache(Path.Combine(corruptRoot, "packs"), 1024 * 1024);
-                await corruptCache.InitializeAsync();
-                using var corruptManager = new DownloadManager(corruptClient, new LauncherApiClient(corruptClient, new Uri("http://launcher/")), corruptCache, 2, packCache: corruptPackCache);
-
-                await Assert.ThrowsAsync<LauncherOperationException>(() => corruptManager.DownloadAsync(BuildManifest(raw, encoded, encodedHash), "pack-corrupt-job"));
-
-                Assert.False(File.Exists(corruptPackCache.GetPath(packHash)));
-                Assert.False(File.Exists(corruptPackCache.GetPartialPath(packHash)));
-            }
-            finally
-            {
-                if (Directory.Exists(corruptRoot)) Directory.Delete(corruptRoot, true);
-            }
+            Assert.False(File.Exists(corruptPackCache.GetPath(packHash)));
+            Assert.False(File.Exists(corruptPackCache.GetPartialPath(packHash)));
         }
         finally
         {
-            Environment.SetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED", previous);
+            if (Directory.Exists(corruptRoot)) Directory.Delete(corruptRoot, true);
         }
 
         async Task RunPackScenarioAsync(string jobId, DirectPackHandler handler, byte[] scenarioRaw, byte[] scenarioEncoded, string scenarioEncodedHash, int scenarioPackLength, Action<DirectPackHandler> assertHandler)
@@ -180,7 +165,7 @@ public sealed class PhysicalPackDownloadTests
                 var chunkCache = new ChunkCache(Path.Combine(root, "chunks"), 1024 * 1024);
                 var packCache = new PackCache(Path.Combine(root, "packs"), 1024 * 1024);
                 await chunkCache.InitializeAsync();
-                using var manager = new DownloadManager(client, new LauncherApiClient(client, new Uri("http://launcher/")), chunkCache, 2, packCache: packCache);
+                using var manager = new DownloadManager(client, new LauncherApiClient(client, new Uri("http://launcher/")), chunkCache, 2, packCache: packCache, packDownloadEnabled: true);
 
                 var summary = await manager.DownloadAsync(BuildManifest(scenarioRaw, scenarioEncoded, scenarioEncodedHash), jobId);
 

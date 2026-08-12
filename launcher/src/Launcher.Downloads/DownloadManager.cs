@@ -29,7 +29,8 @@ public sealed class DownloadManager(
     int maxConcurrency = 4,
     LocalStateStore? stateStore = null,
     DownloadFailureInjection? failureInjection = null,
-    PackCache? packCache = null) : IDisposable
+    PackCache? packCache = null,
+    bool? packDownloadEnabled = null) : IDisposable
 {
     private readonly SemaphoreSlim _pauseGate = new(1, 1);
     private readonly SemaphoreSlim _concurrency = new(Math.Clamp(maxConcurrency, 1, 32));
@@ -63,7 +64,7 @@ public sealed class DownloadManager(
         await SaveJobAsync(new PersistedDownloadJob(jobId, manifest.BuildId, DownloadJobState.Resolving, 0, totalBytes, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         progress?.Report(new DownloadProgress(jobId, DownloadJobState.Resolving, 0, totalBytes, 0, null));
         var resolved = await apiClient.ResolveChunksAsync(manifest.BuildId, uniqueChunks.Select(chunk => chunk.EncodedHash).ToArray(), cancellationToken).ConfigureAwait(false);
-        if (packCache is not null && IsPackDownloadEnabled())
+        if (packCache is not null && (packDownloadEnabled ?? IsPackDownloadEnabled()))
         {
             try
             {

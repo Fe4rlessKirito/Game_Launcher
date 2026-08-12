@@ -371,11 +371,7 @@ impl TelegramColdStorageProvider {
                 expected_hash,
             )),
             |state| async move {
-                let Some((mut source, mut hasher, mut received, expected_size, expected_hash)) =
-                    state
-                else {
-                    return None;
-                };
+                let (mut source, mut hasher, mut received, expected_size, expected_hash) = state?;
                 match source.next().await {
                     Some(Ok(bytes)) => {
                         received = received.saturating_add(bytes.len() as u64);
