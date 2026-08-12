@@ -28,4 +28,7 @@ smaller than the minimum. A logical chunk is never split across packs.
 
 Legacy `chunks/encoded/{hash}.bin` objects and manifest `object_key` values are
 kept during migration. Pack output is additive and controlled by
-`PACK_STORAGE_ENABLED`.
+`PACK_STORAGE_ENABLED`. When `LAUNCHER_PACK_COLD_ONLY=true`, logical chunks
+remain HOT-only for compatibility while physical packs are placed according
+to the full HOT/COLD policy. This avoids sending every logical chunk as a
+separate COLD object; the pack remains the verified restore unit.

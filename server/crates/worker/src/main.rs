@@ -2330,8 +2330,26 @@ async fn publish_verified_build(
     database: Option<&Database>,
 ) -> Result<()> {
     let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
+    let packs_enabled = env_bool("PACK_STORAGE_ENABLED", false);
+    let pack_cold_only = env_bool("LAUNCHER_PACK_COLD_ONLY", false);
+    if pack_cold_only && !packs_enabled {
+        anyhow::bail!(
+            "LAUNCHER_PACK_COLD_ONLY=true requires PACK_STORAGE_ENABLED=true"
+        );
+    }
+    let logical_policy = if pack_cold_only {
+        let mut logical_policy = policy.clone();
+        logical_policy.min_verified_cold_replicas = 0;
+        logical_policy.preferred_cold_replicas = 0;
+        logical_policy.min_cold_failure_domains = 0;
+        logical_policy.cold_backup_required = false;
+        logical_policy
+    } else {
+        policy.clone()
+    };
     let placement_engine =
-        StoragePlacementEngine::new(policy.clone()).map_err(|error| anyhow::anyhow!(error))?;
+        StoragePlacementEngine::new(logical_policy.clone())
+            .map_err(|error| anyhow::anyhow!(error))?;
     if let Some(database) = database {
         database
             .upsert_game(&GameSummary {
@@ -2511,14 +2529,14 @@ async fn publish_verified_build(
             }
         }
     }
-    if env_bool("PACK_STORAGE_ENABLED", false)
+    if packs_enabled
         && let Some(database) = database
     {
         publish_physical_packs(package, storage, database, &policy).await?;
     }
     if let Some(database) = database {
         database
-            .publish_build_with_storage_policy(&manifest.build_id, &policy)
+            .publish_build_with_storage_policy(&manifest.build_id, &logical_policy)
             .await?;
     }
     Ok(())
