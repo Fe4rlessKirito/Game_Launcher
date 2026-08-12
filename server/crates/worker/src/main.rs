@@ -886,7 +886,10 @@ fn read_public_key_der(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn build_endpoint(base_url: &reqwest::Url, build_id: &str, suffix: &str) -> Result<reqwest::Url> {
-    let mut url = base_url.join("api/v1/builds/")?;
+    // Keep the collection path without a trailing slash.  `push` on a
+    // `Url` path-segment mutator preserves a trailing slash from the base,
+    // which would produce `/manifest/` and miss the API's exact route.
+    let mut url = base_url.join("api/v1/builds")?;
     {
         let mut segments = url
             .path_segments_mut()
