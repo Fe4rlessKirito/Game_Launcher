@@ -55,6 +55,8 @@ TELEGRAM_COLD_ENABLED=true
 TELEGRAM_COLD_MAX_UPLOAD_BYTES=536870912
 TELEGRAM_COLD_STATE_FILE=/var/lib/launcher/telegram/telegram-cold-state.json
 LAUNCHER_STORAGE_PROVIDERS=s3,telegram
+LAUNCHER_COLD_STREAM_TOKEN=<same sealed secret as the API>
+# Optional; omit this and the worker binds 0.0.0.0:$PORT automatically.
 ```
 
 Create the worker volume directory used by `TELEGRAM_COLD_STATE_FILE` and
@@ -66,16 +68,30 @@ The exact private hostname is the Railway internal hostname assigned to the
 Local Bot API service. Do not use a public domain or commit the resolved
 hostname if Railway changes it.
 
+Set these only on the API service:
+
+```text
+LAUNCHER_STORAGE_PROVIDERS=s3
+LAUNCHER_COLD_STREAM_WORKER_URL=http://<restore-worker-private-host>:<worker-port>
+LAUNCHER_COLD_STREAM_TOKEN=<same sealed secret as the worker>
+```
+
+The API uses the worker URL only for superseded-build pack streams. The worker
+authenticates the internal request, reads Telegram through the private Local
+Bot API, and streams the body back. No Telegram URL or credential is exposed,
+and no restored pack is written to HOT.
+
 ## First checks
 
 From the worker environment, run:
 
 ```text
 launcher-admin storage health
-launcher-admin storage smoke --provider telegram --skip-download-url --bytes 32768
 ```
 
-Then run the real 512 MiB pack smoke, verify BLAKE3, delete the Telegram
-message, and record the 1/2/4/8/16 restore timings before enabling the COLD
-publication gate. Never paste `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_HASH`, or
-the state file into chat or Git.
+Then run the real 512 MiB pack smoke, verify BLAKE3, stream it through the
+private worker/API path, and record the 1/2/4/8/16 restore timings before
+enabling the COLD publication gate. Keep the Telegram message; only transient
+HTTP response state and any opted-in local cache copy may be discarded. Never
+paste `TELEGRAM_BOT_TOKEN`, `TELEGRAM_API_HASH`, or the state file into chat or
+Git.

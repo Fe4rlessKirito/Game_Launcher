@@ -1,8 +1,9 @@
+use anyhow::Context;
 use axum::{
     Json, Router,
-    body::to_bytes,
+    body::{Body, to_bytes},
     extract::{Path, Query, Request, State},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -48,6 +49,10 @@ struct AppState {
     provisioning_email_max_bytes: usize,
     provisioning_email_clock_skew_seconds: i64,
     packs_enabled: bool,
+    public_base_url: String,
+    cold_stream_worker_url: Option<String>,
+    cold_stream_token: Option<Arc<String>>,
+    cold_stream_client: reqwest::Client,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +191,17 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| PathBuf::from("storage"));
     let base_url =
         env::var("LAUNCHER_PUBLIC_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8080".to_owned());
+    let cold_stream_worker_url = env::var("LAUNCHER_COLD_STREAM_WORKER_URL")
+        .ok()
+        .map(|value| value.trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty());
+    let cold_stream_token = env::var("LAUNCHER_COLD_STREAM_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(Arc::new);
+    let cold_stream_client = reqwest::Client::builder()
+        .build()
+        .context("could not create cold stream client")?;
     let reservation_store: Arc<dyn CapacityReservationStore> = database
         .as_ref()
         .map(|database| Arc::new(database.clone()) as Arc<dyn CapacityReservationStore>)
@@ -221,6 +237,10 @@ async fn main() -> anyhow::Result<()> {
         provisioning_email_max_bytes,
         provisioning_email_clock_skew_seconds,
         packs_enabled,
+        public_base_url: base_url,
+        cold_stream_worker_url,
+        cold_stream_token,
+        cold_stream_client,
     };
     let app = Router::new()
         .route("/health", get(health))
@@ -237,6 +257,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/builds/{id}/signature", get(get_signature))
         .route("/api/v1/builds/{id}/resolve", post(resolve_chunks))
         .route("/api/v1/builds/{id}/packs/resolve", post(resolve_packs))
+        .route(
+            "/api/v1/builds/{build_id}/cold-packs/{pack_hash}",
+            get(stream_cold_pack),
+        )
         .route("/objects/{encoded_hash}", get(get_object))
         .route("/packs/{pack_hash}", get(get_pack))
         .layer(CorsLayer::permissive())
@@ -857,6 +881,9 @@ async fn resolve_chunks(
     } else {
         true
     };
+    let cold_stream_enabled = !build_is_latest
+        && state.cold_stream_worker_url.is_some()
+        && state.cold_stream_token.is_some();
     let database_locations = if let Some(database) = &state.database {
         database
             .get_storage_locations(&request.encoded_hashes)
@@ -924,7 +951,19 @@ async fn resolve_chunks(
                 }
             }
         }
-        if !build_is_latest && urls.is_empty() && state.packs_enabled {
+        if !build_is_latest && urls.is_empty() && state.packs_enabled && cold_stream_enabled {
+            if let Some(database) = &state.database {
+                let cold_packs = database
+                    .get_cold_pack_sources_for_build_chunks(&build_id, std::slice::from_ref(&hash))
+                    .await
+                    .map_err(ApiResponseError::from)?;
+                if cold_packs.contains_key(&hash) {
+                    // The pack resolver will expose the authenticated server
+                    // stream. Do not enqueue or expose a historical HOT copy.
+                    continue;
+                }
+            }
+        } else if !build_is_latest && urls.is_empty() && state.packs_enabled {
             if let Some(database) = &state.database {
                 let hot_packs = database
                     .get_hot_pack_sources_for_chunks(std::slice::from_ref(&hash))
@@ -939,18 +978,19 @@ async fn resolve_chunks(
             }
         }
         if urls.is_empty() {
-            let cold_pack_hashes = if !build_is_latest && state.packs_enabled {
-                if let Some(database) = &state.database {
-                    database
-                        .get_cold_pack_hashes_for_chunks(std::slice::from_ref(&hash))
-                        .await
-                        .map_err(ApiResponseError::from)?
+            let cold_pack_hashes =
+                if !cold_stream_enabled && !build_is_latest && state.packs_enabled {
+                    if let Some(database) = &state.database {
+                        database
+                            .get_cold_pack_hashes_for_chunks(std::slice::from_ref(&hash))
+                            .await
+                            .map_err(ApiResponseError::from)?
+                    } else {
+                        HashMap::new()
+                    }
                 } else {
                     HashMap::new()
-                }
-            } else {
-                HashMap::new()
-            };
+                };
             if let Some(database) = &state.database {
                 if has_cold_replica || !cold_pack_hashes.is_empty() {
                     for pack_hash in cold_pack_hashes.values().flatten() {
@@ -1046,10 +1086,22 @@ async fn resolve_packs(
         ));
     }
 
-    let records = database
-        .get_hot_pack_sources_for_chunks(&request.encoded_hashes)
+    let build_is_latest = database
+        .is_latest_published_build(&build_id)
         .await
         .map_err(ApiResponseError::from)?;
+    let cold_stream_enabled = !build_is_latest
+        && state.cold_stream_worker_url.is_some()
+        && state.cold_stream_token.is_some();
+
+    let records = if build_is_latest {
+        database
+            .get_hot_pack_sources_for_chunks(&request.encoded_hashes)
+            .await
+            .map_err(ApiResponseError::from)?
+    } else {
+        HashMap::new()
+    };
     let requested = request
         .encoded_hashes
         .into_iter()
@@ -1118,10 +1170,57 @@ async fn resolve_packs(
             });
         }
     }
-    let cold_pack_hashes = database
-        .get_cold_pack_hashes_for_chunks(&requested.iter().cloned().collect::<Vec<_>>())
-        .await
-        .map_err(ApiResponseError::from)?;
+    if cold_stream_enabled {
+        let cold_pack_sources = database
+            .get_cold_pack_sources_for_build_chunks(
+                &build_id,
+                &requested.iter().cloned().collect::<Vec<_>>(),
+            )
+            .await
+            .map_err(ApiResponseError::from)?;
+        for (encoded_hash, packs) in cold_pack_sources {
+            for (pack_hash, encoded_size) in packs {
+                let entry = grouped
+                    .entry(pack_hash.clone())
+                    .or_insert_with(|| ResolvedPack {
+                        pack_hash: pack_hash.clone(),
+                        encoded_size: encoded_size.max(0) as u64,
+                        chunk_hashes: Vec::new(),
+                        sources: Vec::new(),
+                    });
+                if !entry.chunk_hashes.contains(&encoded_hash) {
+                    entry.chunk_hashes.push(encoded_hash.clone());
+                }
+                let url = format!(
+                    "{}/api/v1/builds/{}/cold-packs/{}",
+                    state.public_base_url.trim_end_matches('/'),
+                    build_id,
+                    pack_hash
+                );
+                if !entry.sources.iter().any(|source| source.url == url) {
+                    entry.sources.push(HotPackSource {
+                        provider: "telegram-cold-stream".to_owned(),
+                        pool_id: "telegram-cold".to_owned(),
+                        provider_type: "telegram".to_owned(),
+                        failure_domain: "telegram".to_owned(),
+                        url,
+                        expires_at: None,
+                        range_supported: false,
+                        stable_url: false,
+                        priority: 1000,
+                    });
+                }
+            }
+        }
+    }
+    let cold_pack_hashes = if cold_stream_enabled {
+        HashMap::new()
+    } else {
+        database
+            .get_cold_pack_hashes_for_chunks(&requested.iter().cloned().collect::<Vec<_>>())
+            .await
+            .map_err(ApiResponseError::from)?
+    };
     let mut queued_restore = false;
     let restore_target =
         env::var("LAUNCHER_RESTORE_TARGET_PROVIDER").unwrap_or_else(|_| "hot".to_owned());
@@ -1158,6 +1257,86 @@ async fn resolve_packs(
         });
     }
     Ok(Json(response))
+}
+
+async fn stream_cold_pack(
+    State(state): State<AppState>,
+    Path((build_id, pack_hash)): Path<(String, String)>,
+    request: Request,
+) -> Result<Response, ApiResponseError> {
+    let Some(database) = &state.database else {
+        return Err(ApiResponseError::temporary(
+            "database_unavailable",
+            "cold streaming requires the metadata database",
+            15,
+        ));
+    };
+    if database
+        .is_latest_published_build(&build_id)
+        .await
+        .map_err(ApiResponseError::from)?
+    {
+        return Err(ApiResponseError::not_found("historical cold pack"));
+    }
+    if !database
+        .cold_pack_available_for_build(&build_id, &pack_hash)
+        .await
+        .map_err(ApiResponseError::from)?
+    {
+        return Err(ApiResponseError::not_found("cold pack"));
+    }
+    let Some(worker_url) = &state.cold_stream_worker_url else {
+        return Err(ApiResponseError::temporary(
+            "cold_stream_unavailable",
+            "the private cold stream worker is not configured",
+            30,
+        ));
+    };
+    let Some(token) = &state.cold_stream_token else {
+        return Err(ApiResponseError::temporary(
+            "cold_stream_unavailable",
+            "the private cold stream worker token is not configured",
+            30,
+        ));
+    };
+    let worker_endpoint = format!(
+        "{}/internal/v1/cold-packs/{}",
+        worker_url.trim_end_matches('/'),
+        pack_hash
+    );
+    let mut outbound = state
+        .cold_stream_client
+        .get(worker_endpoint)
+        .bearer_auth(token.as_str());
+    if let Some(range) = request.headers().get(header::RANGE) {
+        outbound = outbound.header(header::RANGE, range);
+    }
+    let upstream = outbound.send().await.map_err(|error| {
+        ApiResponseError::temporary(
+            "cold_stream_unavailable",
+            &format!("private cold stream worker unavailable: {error}"),
+            30,
+        )
+    })?;
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut response = Response::builder().status(status);
+    for name in [
+        header::CONTENT_TYPE,
+        header::CONTENT_LENGTH,
+        header::CONTENT_RANGE,
+        header::ACCEPT_RANGES,
+        header::RETRY_AFTER,
+    ] {
+        if let Some(value) = upstream.headers().get(&name) {
+            response = response.header(name, value.clone());
+        }
+    }
+    response
+        .body(Body::from_stream(upstream.bytes_stream()))
+        .map_err(|error| {
+            ApiResponseError::internal(&format!("could not build cold stream: {error}"))
+        })
 }
 
 async fn get_object(
@@ -1520,6 +1699,10 @@ mod tests {
             provisioning_email_max_bytes: 5 * 1024 * 1024,
             provisioning_email_clock_skew_seconds: 300,
             packs_enabled: false,
+            public_base_url: "https://launcher.example".to_owned(),
+            cold_stream_worker_url: None,
+            cold_stream_token: None,
+            cold_stream_client: reqwest::Client::new(),
         };
         let resolved = resolve_chunks(
             State(state),

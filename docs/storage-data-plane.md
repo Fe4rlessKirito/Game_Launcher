@@ -1,7 +1,9 @@
 # Storage data plane
 
 The control plane stores manifests, logical chunk identity, pack metadata,
-provider pools, and verified locations. It does not proxy normal game bytes.
+provider pools, and verified locations. Normal current-build bytes are still
+downloaded directly from HOT providers. Historical Telegram packs use the
+bounded private-worker relay described below.
 
 ```text
 manifest -> logical chunk hashes -> pack resolver -> direct HOT URL
@@ -10,10 +12,11 @@ manifest -> logical chunk hashes -> pack resolver -> direct HOT URL
 
 The signed manifest stays provider-independent. `POST
 /api/v1/builds/{build_id}/packs/resolve` is an additive, build-scoped
-resolution endpoint. It returns only HOT sources and safe capability metadata;
-COLD locations are never returned to clients. If a requested pack has only
-COLD locations, the endpoint queues a server-side pack restore and returns
-`restore_pending`.
+resolution endpoint. The newest build receives only HOT sources. An older
+build may receive an API-owned, build-scoped COLD stream URL; it never receives
+a Telegram URL, message ID, credential, or provider location. If the private
+stream worker is not configured, the compatibility path queues a server-side
+HOT restore and returns `restore_pending`.
 
 The launcher downloads a pack directly, verifies its BLAKE3 identity and
 index, extracts only the requested logical chunks, verifies each encoded hash,
@@ -26,10 +29,13 @@ network/credential health probe.
 
 Build history is retained independently of the normal HOT path. The resolver
 uses HOT locations and configured mirrors only for the newest published build.
-For an older build, it queues a private COLD-to-HOT restore for the required
-pack(s); the launcher polls the resolver and then downloads from the verified
-temporary HOT copy. Telegram remains the historical source of record, while
-the newest build is the only version maintained as normal HOT traffic.
+For an older build, the launcher downloads the required pack through the API
+relay: Telegram COLD -> private worker -> API -> launcher. The worker applies
+backpressure and deletes no Telegram data; it also does not persist a permanent
+HOT copy. The launcher verifies the pack BLAKE3 and may retain the verified
+bytes in its normal local cache. Telegram remains the historical source of
+record, while the newest build is the only version maintained as normal HOT
+traffic.
 
 The physical schema is additive: `physical_packs`, `pack_chunks`,
 `pack_locations`, `pack_restore_jobs`, `pack_leases`, and `build_packs` coexist

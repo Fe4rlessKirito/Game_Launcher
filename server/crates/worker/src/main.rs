@@ -1,5 +1,13 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use axum::{
+    Router,
+    body::Body,
+    extract::{Path as AxumPath, State as AxumState},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
@@ -43,6 +51,58 @@ use std::{
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone)]
+struct ColdStreamState {
+    storage: StorageRegistry,
+    token: Arc<String>,
+}
+
+async fn cold_pack_stream(
+    AxumState(state): AxumState<ColdStreamState>,
+    AxumPath(pack_hash): AxumPath<String>,
+    headers: HeaderMap,
+) -> Response {
+    let expected = format!("Bearer {}", state.token);
+    let authorized = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value == expected);
+    if !authorized {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
+    let mut attempted = false;
+    for provider in state.storage.restore_sources(StorageClass::Cold) {
+        attempted = true;
+        match provider.read_pack_stream(&pack_hash).await {
+            Ok(stream) => {
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::ACCEPT_RANGES, "none")
+                    .body(Body::from_stream(stream))
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
+            Err(_) => continue,
+        }
+    }
+    if attempted {
+        (StatusCode::BAD_GATEWAY, "cold pack source unavailable").into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "no cold pack source configured").into_response()
+    }
+}
+
+async fn run_cold_stream_server(bind: String, state: ColdStreamState) -> Result<()> {
+    let app = Router::new()
+        .route("/internal/v1/cold-packs/{pack_hash}", get(cold_pack_stream))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    println!("cold_stream=LISTENING bind={bind}");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
 #[derive(Debug, Subcommand)]
@@ -1188,9 +1248,27 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             let database = command_database().await?;
             let (storage, _) = storage_command_context(&storage_root).await?;
             let poll = Duration::from_secs(poll_seconds.clamp(1, 300));
+            let mut cold_stream_server = env::var("LAUNCHER_COLD_STREAM_TOKEN")
+                .ok()
+                .filter(|token| !token.is_empty())
+                .map(|token| {
+                    let bind = env::var("LAUNCHER_COLD_STREAM_BIND").unwrap_or_else(|_| {
+                        env::var("PORT")
+                            .map(|port| format!("0.0.0.0:{port}"))
+                            .unwrap_or_else(|_| "0.0.0.0:8081".to_owned())
+                    });
+                    tokio::spawn(run_cold_stream_server(
+                        bind,
+                        ColdStreamState {
+                            storage: storage.clone(),
+                            token: Arc::new(token),
+                        },
+                    ))
+                });
             println!(
-                "restore_worker=STARTED worker_id={worker_id} poll_seconds={}",
-                poll.as_secs()
+                "restore_worker=STARTED worker_id={worker_id} poll_seconds={} cold_stream={}",
+                poll.as_secs(),
+                cold_stream_server.is_some()
             );
             loop {
                 database.recover_expired_restore_jobs().await?;
@@ -1214,7 +1292,17 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                         );
                     }
                 } else {
-                    tokio::time::sleep(poll).await;
+                    if let Some(server) = cold_stream_server.as_mut() {
+                        tokio::select! {
+                            result = server => {
+                                result??;
+                                anyhow::bail!("cold stream server stopped unexpectedly");
+                            }
+                            _ = tokio::time::sleep(poll) => {}
+                        }
+                    } else {
+                        tokio::time::sleep(poll).await;
+                    }
                 }
             }
         }

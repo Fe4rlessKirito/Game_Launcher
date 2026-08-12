@@ -17,8 +17,17 @@ cleanup.
 The provider uploads each physical pack as a document with a deterministic
 hash caption and persists only Telegram message/file references in its worker
 state file. It uses `sendDocument`, `getFile`, and `deleteMessage`; download
-URLs are resolved and consumed by the private restore worker only. Telegram
+URLs are resolved and consumed by the private restore worker only. For
+historical downloads, the worker streams the verified response through the API
+with bounded backpressure; it does not create a permanent HOT copy. Telegram
 Bot API file links are never sent to a launcher.
+
+Set `LAUNCHER_COLD_STREAM_TOKEN` to the same operator-generated secret on the
+API and private restore worker. Set `LAUNCHER_COLD_STREAM_WORKER_URL` on the
+API to the worker's Railway private URL, and set
+`LAUNCHER_COLD_STREAM_BIND` on the worker to its private listening address.
+These values are sealed Railway variables; they are not stored in PostgreSQL
+or returned by any launcher endpoint.
 
 The public Bot API accepts bot uploads up to 50 MB and its `getFile` download
 path is limited to 20 MB. That makes the public endpoint unsuitable for a

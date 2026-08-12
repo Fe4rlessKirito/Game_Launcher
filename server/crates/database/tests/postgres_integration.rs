@@ -552,6 +552,15 @@ async fn postgres_build_history_retention_keeps_cold_and_only_retires_old_hot()
         .await?;
     assert_eq!(old_hot_packs.len(), 1);
     assert_eq!(old_hot_packs[0].direct_url, "https://hot.invalid/old");
+    let cold_pack_sources = database
+        .get_cold_pack_sources_for_build_chunks("history-old", std::slice::from_ref(&old_hash))
+        .await?;
+    assert_eq!(cold_pack_sources[&old_hash][0].0, pack_hash);
+    assert!(
+        database
+            .cold_pack_available_for_build("history-old", &pack_hash)
+            .await?
+    );
     assert!(
         !database
             .list_unreachable_storage_objects(100)

@@ -1,9 +1,10 @@
 use super::{
-    DownloadLocation, StorageClass, StorageError, StorageProvider, StorageProviderCapabilities,
-    StorageTier,
+    DownloadLocation, StorageByteStream, StorageClass, StorageError, StorageProvider,
+    StorageProviderCapabilities, StorageTier,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use futures_util::{StreamExt, stream};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -297,7 +298,7 @@ impl TelegramColdStorageProvider {
         self.save_state().await
     }
 
-    async fn read(&self, hash: &str) -> Result<Vec<u8>, StorageError> {
+    async fn open_download(&self, hash: &str) -> Result<(reqwest::Response, u64), StorageError> {
         self.ensure_state_loaded().await?;
         super::validate_hash(hash)?;
         let reference = self
@@ -337,19 +338,79 @@ impl TelegramColdStorageProvider {
                 response.status().as_u16()
             )));
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| {
-                StorageError::NetworkUnavailable(format!("Telegram file read failed: {error}"))
-            })?
-            .to_vec();
-        if bytes.len() as u64 != reference.size {
+        Ok((response, reference.size))
+    }
+
+    async fn read(&self, hash: &str) -> Result<Vec<u8>, StorageError> {
+        let (response, expected_size) = self.open_download(hash).await?;
+        let bytes = response.bytes().await.map_err(|error| {
+            StorageError::NetworkUnavailable(format!("Telegram file read failed: {error}"))
+        })?;
+        if bytes.len() as u64 != expected_size {
             return Err(StorageError::Provider(
                 "Telegram file size verification failed".to_owned(),
             ));
         }
-        Ok(bytes)
+        Ok(bytes.to_vec())
+    }
+
+    async fn read_stream(&self, hash: &str) -> Result<StorageByteStream, StorageError> {
+        let (response, expected_size) = self.open_download(hash).await?;
+        let expected_hash = hash.to_owned();
+        let source = response.bytes_stream().map(|item| {
+            item.map_err(|error| {
+                StorageError::NetworkUnavailable(format!("Telegram file stream failed: {error}"))
+            })
+        });
+        let stream = stream::unfold(
+            Some((
+                source,
+                blake3::Hasher::new(),
+                0_u64,
+                expected_size,
+                expected_hash,
+            )),
+            |state| async move {
+                let Some((mut source, mut hasher, mut received, expected_size, expected_hash)) =
+                    state
+                else {
+                    return None;
+                };
+                match source.next().await {
+                    Some(Ok(bytes)) => {
+                        received = received.saturating_add(bytes.len() as u64);
+                        hasher.update(&bytes);
+                        Some((
+                            Ok(bytes),
+                            Some((source, hasher, received, expected_size, expected_hash)),
+                        ))
+                    }
+                    Some(Err(error)) => Some((Err(error), None)),
+                    None => {
+                        if received != expected_size {
+                            return Some((
+                                Err(StorageError::Provider(
+                                    "Telegram file size verification failed".to_owned(),
+                                )),
+                                None,
+                            ));
+                        }
+                        let actual_hash = hasher.finalize().to_hex().to_string();
+                        if actual_hash != expected_hash {
+                            return Some((
+                                Err(StorageError::HashMismatch {
+                                    expected: expected_hash,
+                                    actual: actual_hash,
+                                }),
+                                None,
+                            ));
+                        }
+                        None
+                    }
+                }
+            },
+        );
+        Ok(Box::pin(stream))
     }
 
     async fn delete(&self, hash: &str) -> Result<(), StorageError> {
@@ -430,6 +491,9 @@ impl StorageProvider for TelegramColdStorageProvider {
         let bytes = self.read(pack_hash).await?;
         super::verify_pack_bytes(pack_hash, &bytes)?;
         Ok(bytes)
+    }
+    async fn read_pack_stream(&self, pack_hash: &str) -> Result<StorageByteStream, StorageError> {
+        self.read_stream(pack_hash).await
     }
     async fn delete_pack(&self, pack_hash: &str) -> Result<(), StorageError> {
         self.delete(pack_hash).await

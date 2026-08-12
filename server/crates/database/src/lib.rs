@@ -886,6 +886,65 @@ impl Database {
         Ok(result)
     }
 
+    pub async fn get_cold_pack_sources_for_build_chunks(
+        &self,
+        build_id: &str,
+        encoded_hashes: &[String],
+    ) -> Result<HashMap<String, Vec<(String, i64)>>, DatabaseError> {
+        if encoded_hashes.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows = sqlx::query(
+            "SELECT pc.encoded_hash, pp.pack_hash, pp.encoded_size
+             FROM build_packs bp
+             JOIN physical_packs pp ON pp.pack_hash=bp.pack_hash
+             JOIN pack_chunks pc ON pc.pack_hash=pp.pack_hash
+             JOIN pack_locations pl ON pl.pack_hash=pp.pack_hash
+             WHERE bp.build_id=$1
+               AND pc.encoded_hash=ANY($2)
+               AND pp.state='VERIFIED' AND pp.verified_at IS NOT NULL
+               AND pl.storage_class='COLD' AND pl.verified_at IS NOT NULL
+             ORDER BY pc.encoded_hash, pp.pack_hash",
+        )
+        .bind(build_id)
+        .bind(encoded_hashes)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut result = HashMap::<String, Vec<(String, i64)>>::new();
+        for row in rows {
+            let encoded_hash: String = row.try_get("encoded_hash")?;
+            let pack = (row.try_get("pack_hash")?, row.try_get("encoded_size")?);
+            let packs = result.entry(encoded_hash).or_default();
+            if !packs.contains(&pack) {
+                packs.push(pack);
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn cold_pack_available_for_build(
+        &self,
+        build_id: &str,
+        pack_hash: &str,
+    ) -> Result<bool, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM build_packs bp
+                 JOIN physical_packs pp ON pp.pack_hash=bp.pack_hash
+                 JOIN pack_locations pl ON pl.pack_hash=pp.pack_hash
+                 WHERE bp.build_id=$1 AND bp.pack_hash=$2
+                   AND pp.state='VERIFIED' AND pp.verified_at IS NOT NULL
+                   AND pl.storage_class='COLD' AND pl.verified_at IS NOT NULL
+             ) AS available",
+        )
+        .bind(build_id)
+        .bind(pack_hash)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.try_get("available")?)
+    }
+
     pub async fn get_storage_locations(
         &self,
         encoded_hashes: &[String],

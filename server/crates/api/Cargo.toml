@@ -12,6 +12,7 @@ launcher-common = { path = "../common" }
 launcher-database = { path = "../database" }
 launcher-provisioning = { path = "../provisioning" }
 launcher-storage = { path = "../storage" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

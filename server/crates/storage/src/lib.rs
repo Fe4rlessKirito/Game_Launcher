@@ -8,9 +8,12 @@ use aws_sdk_s3::{
     primitives::ByteStream,
     types::{CompletedMultipartUpload, CompletedPart},
 };
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -83,6 +86,8 @@ pub enum StorageError {
     #[error("storage pool is unavailable")]
     PoolUnavailable,
 }
+
+pub type StorageByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, StorageError>> + Send>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DownloadLocation {
@@ -214,6 +219,12 @@ pub trait StorageProvider: Send + Sync {
         Err(StorageError::Provider(
             "physical pack reads are not supported by this provider".to_owned(),
         ))
+    }
+    async fn read_pack_stream(&self, pack_hash: &str) -> Result<StorageByteStream, StorageError> {
+        let bytes = self.read_pack(pack_hash).await?;
+        Ok(Box::pin(futures_util::stream::once(async move {
+            Ok(Bytes::from(bytes))
+        })))
     }
     async fn delete_pack(&self, pack_hash: &str) -> Result<(), StorageError> {
         let _ = pack_hash;

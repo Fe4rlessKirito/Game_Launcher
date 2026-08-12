@@ -14,10 +14,11 @@ deduplicated `restore_jobs` row and returns:
 The response is HTTP `503` with `Retry-After: 30`. This keeps the client
 protocol simple: retry resolution, then download from a normal HOT URL.
 
-The worker restore path claims jobs with a lease, ranks enabled source pools by
-class and priority, tries each available verified source, verifies BLAKE3,
-writes to a selected HOT pool, records the verified HOT object/location, and
-marks the job `DONE`. Logs include the selected source pool and failure domain.
+The compatibility worker restore path claims jobs with a lease, ranks enabled
+source pools by class and priority, tries each available verified source,
+verifies BLAKE3, writes to a selected HOT pool, records the verified HOT
+object/location, and marks the job `DONE`. Logs include the selected source
+pool and failure domain.
 Failures are recorded with attempts and a retry state; expired leases are
 recoverable by another worker. `ON_DEMAND` is the development default.
 `PROACTIVE` is suitable for staging after a cold pool has been validated and
@@ -31,15 +32,17 @@ launcher-admin storage restore <encoded-blake3-hash>
 launcher-admin storage restore-pending --limit 100
 ```
 
-Restoration is server-side and does not use API request threads for byte
-transfers. A missing cold object or corrupt download produces a failed and
-retryable job rather than publishing or serving unverified bytes.
+The preferred historical-pack path is a private authenticated stream. Telegram
+bytes flow through the worker and API with backpressure; no Telegram URL is
+returned and no permanent HOT object is created. A pack hash and size are
+verified while streaming, and the launcher performs its normal full BLAKE3 and
+pack-index verification. The older job-based restore path remains available
+for operators and for deployments that have not configured the stream worker.
 
 ## Pack restoration
 
-Physical packs use the additive `pack_restore_jobs` queue. If a pack resolver
-request finds only verified COLD pack locations, the API queues the pack,
-returns `restore_pending`, and the private worker downloads the entire pack,
-validates its BLAKE3 identity and index, uploads it to HOT, and records a
-verified `pack_locations` row. The launcher then receives the direct HOT pack
-URL and never contacts MEGA, Telegram, or another COLD provider.
+Physical packs use the additive `pack_restore_jobs` queue for compatibility.
+When `LAUNCHER_COLD_STREAM_WORKER_URL` and the shared
+`LAUNCHER_COLD_STREAM_TOKEN` are configured, an older-build pack instead gets
+an API relay source. The private worker reads Telegram COLD and streams it;
+the API forwards the body without exposing Telegram or retaining a HOT copy.

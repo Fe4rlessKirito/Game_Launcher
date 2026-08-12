@@ -5,6 +5,7 @@ use axum::{
     response::Response,
     routing::any,
 };
+use futures_util::StreamExt;
 use launcher_storage::{
     StorageClass, StorageProvider, TelegramColdStorageConfig, TelegramColdStorageProvider,
 };
@@ -66,6 +67,12 @@ async fn fake_telegram_upload_restore_delete_keeps_credentials_out_of_state() {
     let pack_hash = blake3::hash(&bytes).to_hex().to_string();
     provider.put_pack(&pack_hash, &bytes).await.unwrap();
     assert_eq!(provider.read_pack(&pack_hash).await.unwrap(), bytes);
+    let mut streamed = Vec::new();
+    let mut source = provider.read_pack_stream(&pack_hash).await.unwrap();
+    while let Some(chunk) = source.next().await {
+        streamed.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(streamed, bytes);
     for concurrency in [1_usize, 2, 4, 8, 16] {
         let started = tokio::time::Instant::now();
         let mut tasks = Vec::with_capacity(concurrency);
