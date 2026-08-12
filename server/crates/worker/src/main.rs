@@ -2331,7 +2331,10 @@ async fn publish_verified_build(
 ) -> Result<()> {
     let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
     let packs_enabled = env_bool("PACK_STORAGE_ENABLED", false);
-    let pack_cold_only = env_bool("LAUNCHER_PACK_COLD_ONLY", false);
+    // Physical packs are the COLD contract whenever pack storage is enabled.
+    // Keep the legacy flag as an explicit compatibility override, but default
+    // it on so Telegram cannot silently receive logical-chunk replicas.
+    let pack_cold_only = env_bool("LAUNCHER_PACK_COLD_ONLY", packs_enabled);
     if pack_cold_only && !packs_enabled {
         anyhow::bail!("LAUNCHER_PACK_COLD_ONLY=true requires PACK_STORAGE_ENABLED=true");
     }
