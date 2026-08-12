@@ -9,9 +9,8 @@ local_api_port="${TELEGRAM_LOCAL_API_PORT:-8081}"
 data_dir="${TELEGRAM_BOT_API_DIR:-/var/lib/telegram-bot-api}"
 temp_dir="${TELEGRAM_BOT_API_TEMP_DIR:-/tmp/telegram-bot-api}"
 mkdir -p "$data_dir" "$temp_dir"
-chown -R telegram:telegram "$data_dir" "$temp_dir"
 
-gosu telegram /usr/local/bin/telegram-bot-api \
+/usr/local/bin/telegram-bot-api \
     --api-id="$TELEGRAM_API_ID" \
     --api-hash="$TELEGRAM_API_HASH" \
     --local \

@@ -2,7 +2,7 @@ FROM ghcr.io/fe4rlesskirito/game-launcher-telegram-bot-api@sha256:0691ebdaaccd79
 
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gosu python3 \
+    && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY deploy/telegram-bot-api-file-proxy.py /usr/local/bin/telegram-bot-api-file-proxy.py
