@@ -425,8 +425,15 @@ async fn main() -> Result<()> {
             let (storage, _) =
                 storage_from_env_with_reservation_store(&storage_root, base_url, reservation_store)
                     .await?;
-            publish_verified_build(&manifest, &signature, &package, &storage, database.as_ref())
-                .await?;
+            publish_verified_build(
+                &manifest,
+                &manifest_bytes,
+                &signature,
+                &package,
+                &storage,
+                database.as_ref(),
+            )
+            .await?;
             atomic_copy(&manifest_path, &destination.join("manifest.json"))?;
             atomic_copy(&signature_path, &destination.join("manifest.sig.json"))?;
             println!(
@@ -2316,6 +2323,7 @@ async fn process_pack_restore_job(
 
 async fn publish_verified_build(
     manifest: &Manifest,
+    manifest_bytes: &[u8],
     signature: &ManifestSignature,
     package: &Path,
     storage: &StorageRegistry,
@@ -2337,7 +2345,7 @@ async fn publish_verified_build(
             })
             .await?;
         database
-            .upsert_build(manifest, Some(signature), "READY")
+            .upsert_build_with_bytes(manifest, manifest_bytes, Some(signature), "READY")
             .await?;
         for file in &manifest.files {
             for (ordinal, chunk) in file.chunks.iter().enumerate() {
