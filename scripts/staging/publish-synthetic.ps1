@@ -67,16 +67,18 @@ Sign-Package $packageB $privateKey
 $remoteRoot = "/var/lib/launcher/staging-publish"
 $remoteA = "$remoteRoot/A"
 $remoteB = "$remoteRoot/B"
+
+# Railway CLI 5.x resolves service-scoped filesystem commands from the
+# currently linked service instead of accepting --service on this subcommand.
+Invoke-Checked -File "railway" -Arguments @("service", "link", $WorkerService)
 Invoke-Checked -File "railway" -Arguments @(
     "service", "files", "upload",
     $packageA, $remoteA,
-    "--service", $WorkerService,
     "--overwrite"
 )
 Invoke-Checked -File "railway" -Arguments @(
     "service", "files", "upload",
     $packageB, $remoteB,
-    "--service", $WorkerService,
     "--overwrite"
 )
 
