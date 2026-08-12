@@ -31,4 +31,9 @@ kept during migration. Pack output is additive and controlled by
 `PACK_STORAGE_ENABLED`. When `LAUNCHER_PACK_COLD_ONLY=true`, logical chunks
 remain HOT-only for compatibility while physical packs are placed according
 to the full HOT/COLD policy. This avoids sending every logical chunk as a
-separate COLD object; the pack remains the verified restore unit.
+separate COLD object; the pack remains the verified restore unit. Pack mode
+requires at least one COLD pack replica, so the staging Telegram provider
+stores physical packs rather than a second copy of every logical chunk.
+Logical chunks default to one HOT copy via
+`LAUNCHER_LOGICAL_HOT_REPLICAS=1`; HOT redundancy is carried by physical pack
+replicas instead.

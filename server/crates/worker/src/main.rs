@@ -2335,8 +2335,25 @@ async fn publish_verified_build(
     if pack_cold_only && !packs_enabled {
         anyhow::bail!("LAUNCHER_PACK_COLD_ONLY=true requires PACK_STORAGE_ENABLED=true");
     }
+    let pack_policy = if pack_cold_only {
+        let mut pack_policy = policy.clone();
+        // In pack mode, the immutable physical pack is the COLD replication
+        // unit. This makes an accidentally incomplete COLD configuration fail
+        // before a build can be published without a cold copy.
+        pack_policy.min_verified_cold_replicas = pack_policy.min_verified_cold_replicas.max(1);
+        pack_policy.preferred_cold_replicas = pack_policy.preferred_cold_replicas.max(1);
+        pack_policy.min_cold_failure_domains = pack_policy.min_cold_failure_domains.max(1);
+        pack_policy.cold_backup_required = true;
+        pack_policy
+    } else {
+        policy.clone()
+    };
     let logical_policy = if pack_cold_only {
-        let mut logical_policy = policy.clone();
+        let logical_hot_replicas = env::var("LAUNCHER_LOGICAL_HOT_REPLICAS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
+        let mut logical_policy = logical_pack_policy(&policy, logical_hot_replicas)?;
         logical_policy.min_verified_cold_replicas = 0;
         logical_policy.preferred_cold_replicas = 0;
         logical_policy.min_cold_failure_domains = 0;
@@ -2429,7 +2446,7 @@ async fn publish_verified_build(
         result.context("logical chunk publish task failed")??;
     }
     if packs_enabled && let Some(database) = database {
-        publish_physical_packs(package, storage, database, &policy).await?;
+        publish_physical_packs(package, storage, database, &pack_policy).await?;
     }
     if let Some(database) = database {
         database
@@ -2437,6 +2454,22 @@ async fn publish_verified_build(
             .await?;
     }
     Ok(())
+}
+
+fn logical_pack_policy(policy: &StoragePolicy, logical_hot_replicas: u32) -> Result<StoragePolicy> {
+    if logical_hot_replicas == 0 {
+        anyhow::bail!("LAUNCHER_LOGICAL_HOT_REPLICAS must be at least 1");
+    }
+    let mut logical_policy = policy.clone();
+    logical_policy.min_verified_hot_replicas = logical_hot_replicas;
+    logical_policy.preferred_hot_replicas = logical_hot_replicas;
+    logical_policy.min_hot_failure_domains = logical_policy
+        .min_hot_failure_domains
+        .min(logical_hot_replicas);
+    logical_policy
+        .validate()
+        .map_err(|error| anyhow::anyhow!(error))?;
+    Ok(logical_policy)
 }
 
 async fn publish_logical_chunk(
