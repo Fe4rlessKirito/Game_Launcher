@@ -7,9 +7,11 @@
   <Application.DataTemplates>
     <DataTemplate DataType="{x:Type vm:HomeViewModel}"><views:HomeView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:LibraryViewModel}"><views:LibraryView /></DataTemplate>
+    <DataTemplate DataType="{x:Type vm:CollectionsViewModel}"><views:CollectionsView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:GameDetailsViewModel}"><views:GameDetailsView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:DownloadsViewModel}"><views:DownloadsView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:SettingsViewModel}"><views:SettingsView /></DataTemplate>
+    <DataTemplate DataType="{x:Type vm:SectionPageViewModel}"><views:SectionPageView /></DataTemplate>
   </Application.DataTemplates>
   <Application.Resources>
     <ResourceDictionary>

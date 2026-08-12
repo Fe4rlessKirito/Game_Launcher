@@ -1,33 +1,96 @@
 <UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="Launcher.App.Views.HomeView">
-  <StackPanel Spacing="26">
-    <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="16" Padding="30" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
-      <Grid ColumnDefinitions="*,Auto">
-        <StackPanel Spacing="14" MaxWidth="650">
-          <TextBlock Text="{Binding Greeting}" Classes="HeroHeading" />
-          <TextBlock Text="{Binding Summary}" Classes="Body" TextWrapping="Wrap" />
-          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,8,0,0">
-            <Button Content="Open library" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Library" Classes="Primary" />
-            <Button Content="View downloads" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Downloads" Classes="Secondary" />
+  <StackPanel Spacing="28">
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="5">
+        <TextBlock Text="What's new" Classes="SectionHeading" />
+        <TextBlock Text="Your library, without the clutter." Classes="Caption" />
+      </StackPanel>
+      <Button Grid.Column="1" Content="&#x203A;" Classes="IconButton" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Library" ToolTip.Tip="Open library" />
+    </Grid>
+
+    <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="14" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" ClipToBounds="True">
+      <Grid ColumnDefinitions="*,330" MinHeight="245">
+        <StackPanel Margin="28,28,22,28" Spacing="12" VerticalAlignment="Center">
+          <TextBlock Text="FEATURED  ·  READY TO PLAY" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
+          <TextBlock Text="Synthetic Game" Classes="Display" />
+          <TextBlock Text="A small verified build, ready when you are." Classes="Body" TextWrapping="Wrap" MaxWidth="560" />
+          <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,6,0,0">
+            <Button Content="Play now" Classes="Primary" Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}" CommandParameter="Synthetic Game" />
+            <Button Content="View library" Classes="Secondary" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Library" />
           </StackPanel>
         </StackPanel>
-        <Border Grid.Column="1" Width="190" Height="190" Background="{DynamicResource AccentSoft}" CornerRadius="95" HorizontalAlignment="Right" VerticalAlignment="Center">
-          <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="4">
-            <TextBlock Text="3" Classes="HeroStat" HorizontalAlignment="Center" />
-            <TextBlock Text="systems online" Classes="Caption" />
-          </StackPanel>
+        <Border Grid.Column="1" Background="{DynamicResource ArtworkPrimary}" ClipToBounds="True">
+          <Grid>
+            <Ellipse Width="330" Height="330" Fill="{DynamicResource ArtworkSecondary}" Opacity="0.52" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="54,0,-94,0" />
+            <Ellipse Width="190" Height="190" Fill="{DynamicResource AccentSoft}" Opacity="0.8" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-50,0,0,-70" />
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="3">
+              <TextBlock Text="SG" Classes="GameMonogram" HorizontalAlignment="Center" />
+              <TextBlock Text="VERIFIED BUILD" Classes="Eyebrow" Foreground="#D6E9F7" />
+            </StackPanel>
+          </Grid>
         </Border>
       </Grid>
     </Border>
-    <Grid ColumnDefinitions="*,*" ColumnSpacing="18">
-      <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="14" Padding="22" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
-        <StackPanel Spacing="18">
-          <Grid ColumnDefinitions="*,Auto"><TextBlock Text="Recent activity" Classes="HeadingMedium" /><TextBlock Grid.Column="1" Text="LOCAL" Classes="Eyebrow" Foreground="{DynamicResource TextSecondary}" /></Grid>
-          <ItemsControl ItemsSource="{Binding RecentActivity}"><ItemsControl.ItemTemplate><DataTemplate><Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,14"><Ellipse Width="9" Height="9" Fill="{DynamicResource AccentPrimary}" Margin="0,5,12,0" /><StackPanel Grid.Column="1" Spacing="2"><TextBlock Text="{Binding Title}" Classes="BodyStrong" /><TextBlock Text="{Binding Detail}" Classes="Caption" /></StackPanel><TextBlock Grid.Column="2" Text="{Binding Time}" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" /></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
-        </StackPanel>
-      </Border>
-      <Border Grid.Column="1" Background="{DynamicResource SurfaceElevated}" CornerRadius="14" Padding="22">
-        <StackPanel Spacing="12"><TextBlock Text="Integrity by default" Classes="HeadingMedium" /><TextBlock Text="Every encoded chunk and reconstructed file is checked before it is promoted. Updates reuse local content when hashes match." Classes="Body" TextWrapping="Wrap" /><TextBlock Text="BLAKE3  ·  ZSTD  ·  FASTCDC" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" Margin="0,12,0,0" /></StackPanel>
-      </Border>
+
+    <Grid ColumnDefinitions="*,Auto">
+      <TextBlock Text="Recently played" Classes="SectionHeading" />
+      <Button Grid.Column="1" Content="See all" Classes="SmallSecondary" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Library" />
     </Grid>
+    <ItemsControl ItemsSource="{Binding RecentlyPlayed}">
+      <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel Orientation="Horizontal" ItemWidth="218" ItemHeight="176" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate>
+          <Border Margin="0,0,16,8" Background="{DynamicResource SurfacePrimary}" CornerRadius="10" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" ClipToBounds="True">
+            <Grid RowDefinitions="*,Auto">
+              <Border Background="{DynamicResource ArtworkSecondary}">
+                <Grid>
+                  <Ellipse Width="160" Height="160" Fill="{DynamicResource ArtworkPrimary}" Opacity="0.5" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="55,-55,-55,0" />
+                  <TextBlock Text="{Binding Monogram}" Classes="GameMonogram" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+              <StackPanel Grid.Row="1" Margin="12,9,12,10" Spacing="2">
+                <TextBlock Text="{Binding Title}" Classes="BodyStrong" TextTrimming="CharacterEllipsis" />
+                <TextBlock Text="{Binding Subtitle}" Classes="Caption" TextTrimming="CharacterEllipsis" />
+              </StackPanel>
+            </Grid>
+          </Border>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+
+    <Grid ColumnDefinitions="*,Auto">
+      <TextBlock Text="Play next" Classes="SectionHeading" />
+      <TextBlock Grid.Column="1" Text="SUGGESTED FROM YOUR LIBRARY" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" />
+    </Grid>
+    <ItemsControl ItemsSource="{Binding PlayNext}">
+      <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel Orientation="Horizontal" ItemWidth="320" ItemHeight="94" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+      <ItemsControl.ItemTemplate>
+        <DataTemplate>
+          <Border Margin="0,0,16,8" Background="{DynamicResource SurfaceElevated}" CornerRadius="10" Padding="12" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+            <Grid ColumnDefinitions="68,*,Auto">
+              <Border Width="68" Height="68" CornerRadius="8" Background="{DynamicResource AccentSoft}">
+                <TextBlock Text="{Binding Monogram}" Classes="GameMonogram" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center" />
+              </Border>
+              <StackPanel Grid.Column="1" Margin="13,0,8,0" VerticalAlignment="Center" Spacing="4">
+                <TextBlock Text="{Binding Title}" Classes="BodyStrong" TextTrimming="CharacterEllipsis" />
+                <TextBlock Text="{Binding Subtitle}" Classes="Caption" TextWrapping="Wrap" />
+              </StackPanel>
+              <Button Grid.Column="2" Content="{Binding Action}" Classes="SmallSecondary" VerticalAlignment="Center" Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}" CommandParameter="{Binding Title}" />
+            </Grid>
+          </Border>
+        </DataTemplate>
+      </ItemsControl.ItemTemplate>
+    </ItemsControl>
+
+    <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="12" Padding="18" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <Border Width="36" Height="36" CornerRadius="10" Background="{DynamicResource AccentSoft}"><TextBlock Text="&#x2713;" Foreground="{DynamicResource AccentPrimary}" FontSize="18" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
+        <StackPanel Grid.Column="1" Margin="13,0,18,0" Spacing="3" VerticalAlignment="Center">
+          <TextBlock Text="Integrity by default" Classes="BodyStrong" />
+          <TextBlock Text="BLAKE3 verifies every chunk before a build reaches the install folder." Classes="Caption" TextWrapping="Wrap" />
+        </StackPanel>
+        <TextBlock Grid.Column="2" Text="BLAKE3  ·  ZSTD  ·  FASTCDC" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
   </StackPanel>
 </UserControl>

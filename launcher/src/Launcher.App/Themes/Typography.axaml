@@ -9,6 +9,12 @@
   <Style Selector="TextBlock.HeadingLarge"><Setter Property="FontSize" Value="28" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
   <Style Selector="TextBlock.HeroHeading"><Setter Property="FontSize" Value="34" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="LineHeight" Value="42" /></Style>
   <Style Selector="TextBlock.HeroStat"><Setter Property="FontSize" Value="52" /><Setter Property="FontWeight" Value="Bold" /><Setter Property="Foreground" Value="{DynamicResource AccentPrimary}" /></Style>
+  <Style Selector="TextBlock.Display"><Setter Property="FontSize" Value="30" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="LineHeight" Value="36" /></Style>
+  <Style Selector="TextBlock.SectionHeading"><Setter Property="FontSize" Value="19" /><Setter Property="FontWeight" Value="SemiBold" /></Style>
   <Style Selector="TextBlock.NavGlyph"><Setter Property="Width" Value="18" /><Setter Property="FontSize" Value="18" /></Style>
   <Style Selector="TextBlock.Monogram"><Setter Property="FontSize" Value="18" /><Setter Property="FontWeight" Value="Bold" /><Setter Property="Foreground" Value="{DynamicResource AccentPrimary}" /></Style>
+  <Style Selector="TextBlock.GameMonogram"><Setter Property="FontSize" Value="28" /><Setter Property="FontWeight" Value="Bold" /><Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /></Style>
+  <Style Selector="TextBlock.Wordmark"><Setter Property="FontSize" Value="15" /><Setter Property="FontWeight" Value="Bold" /><Setter Property="LetterSpacing" Value="1.2" /></Style>
+  <Style Selector="TextBlock.WordmarkSub"><Setter Property="FontSize" Value="9" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="Foreground" Value="{DynamicResource TextMuted}" /><Setter Property="LetterSpacing" Value="1.1" /></Style>
+  <Style Selector="TextBlock.Micro"><Setter Property="FontSize" Value="10" /><Setter Property="FontWeight" Value="SemiBold" /><Setter Property="Foreground" Value="{DynamicResource TextMuted}" /></Style>
 </Styles>

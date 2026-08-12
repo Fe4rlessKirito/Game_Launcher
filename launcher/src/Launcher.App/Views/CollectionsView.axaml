@@ -1,0 +1,56 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Launcher.App.Views.CollectionsView">
+  <StackPanel Spacing="18">
+    <StackPanel Orientation="Horizontal" Spacing="7">
+      <TextBlock Text="YOUR COLLECTIONS" Classes="SectionHeading" />
+      <Border Width="16" Height="16" CornerRadius="8" Background="{DynamicResource SurfaceElevated}" VerticalAlignment="Center">
+        <TextBlock Text="?" Classes="Caption" HorizontalAlignment="Center" VerticalAlignment="Center" />
+      </Border>
+    </StackPanel>
+
+    <Grid ColumnDefinitions="200,*" ColumnSpacing="18">
+      <Button Grid.Column="0"
+              Classes="CollectionCreateCard"
+              Command="{Binding $parent[Window].DataContext.BeginAddCategoryCommand}"
+              ToolTip.Tip="Create a new collection">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="5">
+          <TextBlock Text="+" Classes="CollectionCreateGlyph" HorizontalAlignment="Center" />
+          <TextBlock Text="CREATE A NEW" Classes="CollectionCardTitle" HorizontalAlignment="Center" />
+          <TextBlock Text="COLLECTION" Classes="CollectionCardTitle" HorizontalAlignment="Center" />
+        </StackPanel>
+      </Button>
+
+      <ItemsControl Grid.Column="1" ItemsSource="{Binding Categories}">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel Orientation="Horizontal" />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Button Classes="CollectionCard"
+                    Command="{Binding $parent[Window].DataContext.SelectCollectionCommand}"
+                    CommandParameter="{Binding}"
+                    ToolTip.Tip="Open collection">
+              <Border Background="{DynamicResource ArtworkSecondary}" CornerRadius="4" ClipToBounds="True">
+                <Grid>
+                  <Ellipse Width="178" Height="178" Fill="{DynamicResource ArtworkPrimary}" Opacity="0.72" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="42,-44,-42,0" />
+                  <Ellipse Width="92" Height="92" Fill="{DynamicResource ArtworkTertiary}" Opacity="0.48" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-20,0,0,-20" />
+                  <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="4">
+                    <TextBlock Text="{Binding Name}" Classes="CollectionCardTitle" HorizontalAlignment="Center" />
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                      <TextBlock Text="( " Classes="CollectionCardCount" />
+                      <TextBlock Text="{Binding GameCount}" Classes="CollectionCardCount" />
+                      <TextBlock Text=" )" Classes="CollectionCardCount" />
+                    </StackPanel>
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </Button>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </Grid>
+  </StackPanel>
+</UserControl>

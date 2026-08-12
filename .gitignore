@@ -28,3 +28,4 @@ cache/
 secrets/
 *.private.pem
 coverage/
+launcher/src/Launcher.App/Assets/vaultnode-mark-source.png

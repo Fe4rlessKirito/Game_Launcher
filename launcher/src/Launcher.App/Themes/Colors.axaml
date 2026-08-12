@@ -1,15 +1,24 @@
 <ResourceDictionary xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <x:String x:Key="ProductName">LAUNCHER</x:String>
-  <Color x:Key="BackgroundPrimaryColor">#0B0F18</Color>
-  <Color x:Key="SurfacePrimaryColor">#111827</Color>
-  <Color x:Key="SurfaceElevatedColor">#182238</Color>
-  <Color x:Key="BorderSubtleColor">#26344D</Color>
-  <Color x:Key="TextPrimaryColor">#F5F7FB</Color>
-  <Color x:Key="TextSecondaryColor">#9AA8BF</Color>
-  <Color x:Key="TextMutedColor">#66748C</Color>
-  <Color x:Key="AccentPrimaryColor">#75E0C1</Color>
-  <Color x:Key="AccentSoftColor">#234D50</Color>
+  <x:String x:Key="ProductName">VAULTNODE</x:String>
+  <Color x:Key="BackgroundPrimaryColor">#2A2F3A</Color>
+  <Color x:Key="ChromeBarColor">#171D25</Color>
+  <Color x:Key="SidebarBackgroundColor">#2A2F3A</Color>
+  <Color x:Key="SurfacePrimaryColor">#2A2F3A</Color>
+  <Color x:Key="SurfaceElevatedColor">#3A4352</Color>
+  <Color x:Key="BorderSubtleColor">#3D4A5A</Color>
+  <Color x:Key="TextPrimaryColor">#D6D7D8</Color>
+  <Color x:Key="TextSecondaryColor">#A4B3C2</Color>
+  <Color x:Key="TextMutedColor">#6D7886</Color>
+  <Color x:Key="AccentPrimaryColor">#1A9FFF</Color>
+  <Color x:Key="AccentSoftColor">#2A475E</Color>
+  <Color x:Key="ArtworkPrimaryColor">#1D4D78</Color>
+  <Color x:Key="ArtworkSecondaryColor">#4B3D5E</Color>
+  <Color x:Key="ArtworkTertiaryColor">#64483D</Color>
+  <Color x:Key="DownloadChartColor">#0E141B</Color>
+  <Color x:Key="DownloadPanelColor">#2A2F3A</Color>
   <SolidColorBrush x:Key="BackgroundPrimary" Color="{DynamicResource BackgroundPrimaryColor}" />
+  <SolidColorBrush x:Key="ChromeBar" Color="{DynamicResource ChromeBarColor}" />
+  <SolidColorBrush x:Key="SidebarBackground" Color="{DynamicResource SidebarBackgroundColor}" />
   <SolidColorBrush x:Key="SurfacePrimary" Color="{DynamicResource SurfacePrimaryColor}" />
   <SolidColorBrush x:Key="SurfaceElevated" Color="{DynamicResource SurfaceElevatedColor}" />
   <SolidColorBrush x:Key="BorderSubtle" Color="{DynamicResource BorderSubtleColor}" />
@@ -18,4 +27,9 @@
   <SolidColorBrush x:Key="TextMuted" Color="{DynamicResource TextMutedColor}" />
   <SolidColorBrush x:Key="AccentPrimary" Color="{DynamicResource AccentPrimaryColor}" />
   <SolidColorBrush x:Key="AccentSoft" Color="{DynamicResource AccentSoftColor}" />
+  <SolidColorBrush x:Key="ArtworkPrimary" Color="{DynamicResource ArtworkPrimaryColor}" />
+  <SolidColorBrush x:Key="ArtworkSecondary" Color="{DynamicResource ArtworkSecondaryColor}" />
+  <SolidColorBrush x:Key="ArtworkTertiary" Color="{DynamicResource ArtworkTertiaryColor}" />
+  <SolidColorBrush x:Key="DownloadChart" Color="{DynamicResource DownloadChartColor}" />
+  <SolidColorBrush x:Key="DownloadPanel" Color="{DynamicResource DownloadPanelColor}" />
 </ResourceDictionary>

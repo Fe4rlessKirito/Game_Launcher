@@ -8,6 +8,24 @@ public partial class HomeViewModel : ObservableObject
     private readonly string _summary = "Your installed library is available even when the network is not. New builds are verified before they reach the install folder.";
     public string Greeting => _greeting;
     public string Summary => _summary;
+    public IReadOnlyList<FeaturedGame> FeaturedGames { get; } =
+    [
+        new("Synthetic Game", "A small verified build, ready when you are.", "PLAYABLE NOW", "SG")
+    ];
+
+    public IReadOnlyList<HomeGame> RecentlyPlayed { get; } =
+    [
+        new("Synthetic Game", "Played recently", "SG", "28 min"),
+        new("Build Playground", "Ready to install", "BP", "New"),
+        new("Asterfall", "Not installed", "AF", "Explore"),
+        new("Northstar", "Not installed", "NS", "Explore")
+    ];
+
+    public IReadOnlyList<HomeGame> PlayNext { get; } =
+    [
+        new("Build Playground", "A verified build is waiting", "BP", "Install"),
+        new("Asterfall", "Add it to your library", "AF", "Explore")
+    ];
     public IReadOnlyList<HomeActivity> RecentActivity { get; } =
     [
         new("Synthetic Game", "Ready to play", "NOW", "Accent"),
@@ -16,4 +34,6 @@ public partial class HomeViewModel : ObservableObject
     ];
 }
 
+public sealed record FeaturedGame(string Title, string Description, string Badge, string Monogram);
+public sealed record HomeGame(string Title, string Subtitle, string Monogram, string Action);
 public sealed record HomeActivity(string Title, string Detail, string Time, string Tone);

@@ -6,13 +6,22 @@
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
   <ItemGroup>
+    <AvaloniaResource Include="Assets\vaultnode-mark.png" />
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="SQLitePCLRaw.bundle_winsqlite3" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+    <PackageReference Include="ZstdSharp.Port" />
     <ProjectReference Include="..\Launcher.Core\Launcher.Core.csproj" />
+    <ProjectReference Include="..\Launcher.Downloads\Launcher.Downloads.csproj" />
+    <ProjectReference Include="..\Launcher.Installation\Launcher.Installation.csproj" />
     <ProjectReference Include="..\Launcher.Manifests\Launcher.Manifests.csproj" />
+    <ProjectReference Include="..\Launcher.Networking\Launcher.Networking.csproj" />
+    <ProjectReference Include="..\Launcher.Security\Launcher.Security.csproj" />
+    <ProjectReference Include="..\Launcher.Storage\Launcher.Storage.csproj" />
   </ItemGroup>
 </Project>

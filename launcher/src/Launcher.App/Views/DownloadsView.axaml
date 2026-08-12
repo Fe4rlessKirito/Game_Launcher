@@ -1,9 +1,68 @@
 <UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="Launcher.App.Views.DownloadsView">
-  <StackPanel Spacing="20">
-    <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="14" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
-      <StackPanel Spacing="15"><Grid ColumnDefinitions="*,Auto"><StackPanel Spacing="5"><TextBlock Text="Queue is clear" Classes="HeadingMedium" /><TextBlock Text="Pause, resume, retry, and verify each content chunk independently." Classes="Body" /></StackPanel><TextBlock Grid.Column="1" Text="0 B/s" Classes="HeadingMedium" Foreground="{DynamicResource AccentPrimary}" /></Grid><ProgressBar Minimum="0" Maximum="1" Value="0" Classes="SlimProgress" /></StackPanel>
+  <Border Background="{DynamicResource DownloadPanel}" MinHeight="700">
+    <StackPanel Spacing="0">
+    <Border Background="{DynamicResource DownloadChart}" Height="176" Padding="28,22" BorderThickness="0" ClipToBounds="True">
+      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,*">
+        <StackPanel Spacing="4">
+          <TextBlock Text="DOWNLOAD ACTIVITY" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
+          <TextBlock Text="Network overview" Classes="HeadingMedium" />
+        </StackPanel>
+        <TextBlock Grid.Column="1" Text="Auto-updates enabled" Classes="Caption" VerticalAlignment="Top" />
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="36" VerticalAlignment="Bottom">
+          <StackPanel Spacing="3"><TextBlock Text="NETWORK" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" /><TextBlock Text="{Binding NetworkRate}" Classes="HeadingMedium" Foreground="{DynamicResource TextPrimary}" /></StackPanel>
+          <StackPanel Spacing="3"><TextBlock Text="PEAK" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" /><TextBlock Text="{Binding PeakRate}" Classes="HeadingMedium" Foreground="{DynamicResource AccentPrimary}" /></StackPanel>
+          <StackPanel Spacing="3"><TextBlock Text="DISK USAGE" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" /><TextBlock Text="{Binding DiskRate}" Classes="HeadingMedium" Foreground="{DynamicResource TextPrimary}" /></StackPanel>
+        </StackPanel>
+        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom" Height="58" Spacing="3">
+          <Border Width="4" Height="28" Background="{DynamicResource ArtworkPrimary}" VerticalAlignment="Bottom" />
+          <Border Width="4" Height="46" Background="{DynamicResource AccentPrimary}" VerticalAlignment="Bottom" />
+          <Border Width="4" Height="58" Background="{DynamicResource ArtworkPrimary}" VerticalAlignment="Bottom" />
+          <Border Width="4" Height="40" Background="{DynamicResource AccentPrimary}" VerticalAlignment="Bottom" />
+          <Border Width="4" Height="50" Background="{DynamicResource ArtworkPrimary}" VerticalAlignment="Bottom" />
+        </StackPanel>
+      </Grid>
     </Border>
-    <TextBlock Text="Activity" Classes="HeadingMedium" />
-    <ItemsControl ItemsSource="{Binding Jobs}"><ItemsControl.ItemTemplate><DataTemplate><Border Background="{DynamicResource SurfacePrimary}" CornerRadius="12" Padding="20" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1"><Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto"><StackPanel Spacing="5"><TextBlock Text="{Binding Title}" Classes="BodyStrong" /><TextBlock Text="{Binding Detail}" Classes="Caption" /></StackPanel><TextBlock Grid.Column="1" Text="Idle" Classes="Caption" Foreground="{DynamicResource TextMuted}" /><ProgressBar Grid.Row="1" Grid.ColumnSpan="2" Margin="0,18,0,0" Minimum="0" Maximum="1" Value="{Binding Progress}" Classes="SlimProgress" /></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
-  </StackPanel>
+
+    <TextBlock Text="{Binding LastActionMessage}" Classes="Caption" Margin="0,14,0,0" />
+
+    <StackPanel Margin="0,28,0,0" Spacing="12">
+      <Grid ColumnDefinitions="*,Auto"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Up Next" Classes="SectionHeading" /><TextBlock Text="{Binding UpNextCount}" Classes="Caption" VerticalAlignment="Center" /></StackPanel><TextBlock Grid.Column="1" Text="There are no downloads in the queue" Classes="Caption" /></Grid>
+      <Border Height="1" Background="{DynamicResource BorderSubtle}" />
+    </StackPanel>
+
+    <StackPanel Margin="0,38,0,0" Spacing="12">
+      <Grid ColumnDefinitions="*,Auto"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Scheduled" Classes="SectionHeading" /><TextBlock Text="{Binding ScheduledCount}" Classes="Caption" VerticalAlignment="Center" /></StackPanel><TextBlock Grid.Column="1" Text="Next queued install" Classes="Caption" /></Grid>
+      <Border Height="1" Background="{DynamicResource BorderSubtle}" />
+      <ItemsControl ItemsSource="{Binding Scheduled}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Grid ColumnDefinitions="52,*,Auto,Auto" Margin="0,8,0,0" MinHeight="62">
+              <Border Width="48" Height="48" CornerRadius="2" Background="{DynamicResource ArtworkSecondary}"><TextBlock Text="{Binding Monogram}" Classes="GameMonogram" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
+              <StackPanel Grid.Column="1" Margin="14,0,18,0" VerticalAlignment="Center" Spacing="3"><TextBlock Text="{Binding Title}" Classes="BodyStrong" /><TextBlock Text="{Binding Detail}" Classes="Caption" /></StackPanel>
+              <TextBlock Grid.Column="2" Text="{Binding Timestamp}" Classes="Caption" VerticalAlignment="Center" Margin="0,0,22,0" />
+              <Button Grid.Column="3" Content="GET" Classes="SmallSecondary" VerticalAlignment="Center" Command="{Binding $parent[UserControl].DataContext.InstallScheduledCommand}" CommandParameter="{Binding}" />
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </StackPanel>
+
+    <StackPanel Margin="0,38,0,0" Spacing="12">
+      <Grid ColumnDefinitions="*,Auto"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Completed" Classes="SectionHeading" /><TextBlock Text="{Binding CompletedCount}" Classes="Caption" VerticalAlignment="Center" /></StackPanel><Button Grid.Column="1" Content="Clear All" Classes="SmallSecondary" Command="{Binding ClearCompletedCommand}" /></Grid>
+      <Border Height="1" Background="{DynamicResource BorderSubtle}" />
+      <ItemsControl ItemsSource="{Binding Completed}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Grid ColumnDefinitions="52,*,Auto,Auto" Margin="0,8,0,0" MinHeight="62">
+              <Border Width="48" Height="48" CornerRadius="2" Background="{DynamicResource ArtworkPrimary}"><TextBlock Text="{Binding Monogram}" Classes="GameMonogram" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
+              <StackPanel Grid.Column="1" Margin="14,0,18,0" VerticalAlignment="Center" Spacing="3"><TextBlock Text="{Binding Title}" Classes="BodyStrong" /><TextBlock Text="{Binding Detail}" Classes="Caption" /></StackPanel>
+              <TextBlock Grid.Column="2" Text="{Binding Timestamp}" Classes="Caption" VerticalAlignment="Center" Margin="0,0,22,0" />
+              <Button Grid.Column="3" Content="PLAY" Classes="Primary" VerticalAlignment="Center" Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}" CommandParameter="{Binding Title}" />
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </StackPanel>
+    </StackPanel>
+  </Border>
 </UserControl>

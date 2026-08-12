@@ -1,0 +1,7 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Launcher.App.Views.VaultnodeLogo"
+             Width="34"
+             Height="34">
+  <Image Source="avares://Launcher.App/Assets/vaultnode-mark.png" Stretch="Uniform" />
+</UserControl>

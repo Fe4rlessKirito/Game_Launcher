@@ -1,0 +1,14 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Launcher.App.Views.SectionPageView">
+  <Border Background="{DynamicResource SurfacePrimary}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="14" Padding="30" MaxWidth="820">
+    <StackPanel Spacing="16">
+      <TextBlock Text="{Binding Kicker}" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
+      <TextBlock Text="{Binding Title}" Classes="Display" />
+      <TextBlock Text="{Binding Description}" Classes="Body" TextWrapping="Wrap" />
+      <Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="8" Padding="16">
+        <TextBlock Text="{Binding Detail}" Classes="Caption" TextWrapping="Wrap" />
+      </Border>
+    </StackPanel>
+  </Border>
+</UserControl>

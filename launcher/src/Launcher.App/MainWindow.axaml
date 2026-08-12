@@ -1,54 +1,231 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="using:Launcher.App.Views"
         x:Class="Launcher.App.MainWindow"
-        Width="1280"
-        Height="820"
-        MinWidth="980"
-        MinHeight="640"
+        Width="1440"
+        Height="900"
+        MinWidth="1040"
+        MinHeight="680"
+        WindowDecorations="None"
+        ExtendClientAreaToDecorationsHint="True"
+        CanResize="True"
         Background="{DynamicResource BackgroundPrimary}"
         Title="{DynamicResource ProductName}">
-  <Grid ColumnDefinitions="248,*">
-    <Border Grid.Column="0" Background="{DynamicResource SurfacePrimary}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,1,0">
-      <DockPanel Margin="24,28,20,24">
-        <StackPanel DockPanel.Dock="Top" Spacing="6">
-          <TextBlock Text="{DynamicResource ProductName}" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
-          <TextBlock Text="Your library, ready." Classes="HeadingSmall" />
-        </StackPanel>
-        <StackPanel DockPanel.Dock="Bottom" Spacing="10">
-          <Border Background="{DynamicResource SurfaceElevated}" CornerRadius="10" Padding="14">
-            <StackPanel Spacing="5">
-              <TextBlock Text="LOCAL MODE" Classes="Eyebrow" Foreground="{DynamicResource TextSecondary}" />
-              <TextBlock Text="Installed games remain available offline." TextWrapping="Wrap" Classes="Caption" />
+  <Grid RowDefinitions="78,*,38">
+    <Border x:Name="TitleBar"
+            Grid.Row="0"
+            Background="{DynamicResource ChromeBar}"
+            BorderBrush="{DynamicResource BorderSubtle}"
+            BorderThickness="0,0,0,1"
+            PointerPressed="OnTitleBarPointerPressed">
+      <Grid RowDefinitions="29,49">
+        <Border Grid.Row="0" Classes="TitlebarUtility" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,0,1">
+          <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,*,Auto,Auto,Auto,Auto" Margin="12,0">
+            <StackPanel Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+              <views:VaultnodeLogo Width="20" Height="20" />
+              <TextBlock Text="{DynamicResource ProductName}" Classes="Micro" Foreground="{DynamicResource TextPrimary}" />
             </StackPanel>
-          </Border>
-          <TextBlock Text="v0.1 foundation" Classes="Caption" Foreground="{DynamicResource TextMuted}" />
-        </StackPanel>
-        <StackPanel Margin="0,42,0,0" Spacing="8">
-          <Button Command="{Binding NavigateCommand}" CommandParameter="Home" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="⌂" Classes="NavGlyph" /><TextBlock Text="Home" /></StackPanel></Button>
-          <Button Command="{Binding NavigateCommand}" CommandParameter="Library" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="▦" Classes="NavGlyph" /><TextBlock Text="Library" /></StackPanel></Button>
-          <Button Command="{Binding NavigateCommand}" CommandParameter="Downloads" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="↓" Classes="NavGlyph" /><TextBlock Text="Downloads" /></StackPanel></Button>
-          <Button Command="{Binding NavigateCommand}" CommandParameter="Settings" Classes="NavButton"><StackPanel Orientation="Horizontal" Spacing="12"><TextBlock Text="⚙" Classes="NavGlyph" /><TextBlock Text="Settings" /></StackPanel></Button>
-        </StackPanel>
-      </DockPanel>
-    </Border>
-    <Grid Grid.Column="1" RowDefinitions="Auto,*">
-      <Border Grid.Row="0" Padding="34,26,38,20" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,0,1">
-        <Grid ColumnDefinitions="*,Auto">
-          <StackPanel Spacing="4">
-            <TextBlock Text="{Binding PageKicker}" Classes="Eyebrow" Foreground="{DynamicResource TextSecondary}" />
-            <TextBlock Text="{Binding PageTitle}" Classes="HeadingLarge" />
+            <Button Grid.Column="1" Content="View" Classes="UtilityLink" Command="{Binding NavigateCommand}" CommandParameter="Home" />
+            <Button Grid.Column="2" Content="Friends" Classes="UtilityLink" Command="{Binding NavigateCommand}" CommandParameter="Community" />
+            <Button Grid.Column="3" Content="Games" Classes="UtilityLink" Command="{Binding NavigateCommand}" CommandParameter="Library" />
+            <Button Grid.Column="4" Content="Help" Classes="UtilityLink" Command="{Binding NavigateCommand}" CommandParameter="Help" />
+            <TextBlock Grid.Column="6" Text="PRIVATE GAME LIBRARY" Classes="Micro" VerticalAlignment="Center" Margin="0,0,10,0" />
+            <Button Grid.Column="7" Content="&#x2014;" Classes="WindowControl" Click="OnMinimizeClick" />
+            <Button Grid.Column="8" Content="&#x25A1;" Classes="WindowControl" Click="OnMaximizeClick" />
+            <Button Grid.Column="9" Content="&#x00D7;" Classes="WindowControl Close" Click="OnCloseClick" />
+          </Grid>
+        </Border>
+        <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" Margin="10,0">
+          <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+            <Button Content="&#x2190;" Classes="BrowserArrow" Command="{Binding GoBackCommand}" IsEnabled="{Binding CanGoBack}" ToolTip.Tip="Back" />
+            <Button Content="&#x2192;" Classes="BrowserArrow" Command="{Binding GoForwardCommand}" IsEnabled="{Binding CanGoForward}" ToolTip.Tip="Forward" />
+            <StackPanel Orientation="Horizontal" Spacing="2" Margin="8,0,0,0">
+              <Button Content="STORE" Classes="TopLink" Classes.active="{Binding IsStoreSelected}" Command="{Binding NavigateCommand}" CommandParameter="Store" />
+              <Button Content="LIBRARY" Classes="TopLink" Classes.active="{Binding IsLibrarySelected}" Command="{Binding NavigateCommand}" CommandParameter="Library" />
+              <Button Content="COMMUNITY" Classes="TopLink" Classes.active="{Binding IsCommunitySelected}" Command="{Binding NavigateCommand}" CommandParameter="Community" />
+            </StackPanel>
           </StackPanel>
-          <Border Grid.Column="1" Background="{DynamicResource SurfacePrimary}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="18" Padding="12,8">
-            <StackPanel Orientation="Horizontal" Spacing="8">
-              <Ellipse Width="8" Height="8" Fill="{DynamicResource AccentPrimary}" VerticalAlignment="Center" />
-              <TextBlock Text="{Binding ConnectionStatus}" Classes="Caption" />
-            </StackPanel>
-          </Border>
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <Button Classes="HeaderAction" Command="{Binding NavigateCommand}" CommandParameter="Downloads">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <Path Width="13" Height="13" Stretch="Uniform" Fill="{DynamicResource TextSecondary}" Data="M5,20 L19,20 L19,18 L5,18 Z M19,9 L15,9 L15,3 L9,3 L9,9 L5,9 L12,16 Z" />
+                <TextBlock Text="DOWNLOADS" />
+              </StackPanel>
+            </Button>
+            <Button Content="&#x2699;" Classes="HeaderSettings" Command="{Binding NavigateCommand}" CommandParameter="Settings" ToolTip.Tip="Settings" />
+          </StackPanel>
         </Grid>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
+      <Border Grid.Column="0" Width="244" IsVisible="{Binding IsSidebarVisible}" Background="{DynamicResource SidebarBackground}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,1,0">
+        <ScrollViewer Margin="12,16,12,8" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="9">
+            <Grid ColumnDefinitions="*,34" ColumnSpacing="3">
+              <Button Command="{Binding NavigateCommand}" CommandParameter="Home" Classes="NavButton Active HomeButton">
+                <TextBlock Text="Home" />
+              </Button>
+              <Button Grid.Column="1"
+                      Command="{Binding NavigateCommand}"
+                      CommandParameter="Collections"
+                      Classes="CollectionButton"
+                      ToolTip.Tip="View collections">
+                <Path Width="17" Height="17" Stretch="Uniform" Fill="{DynamicResource TextPrimary}" Data="M2,2 H10 V10 H2 Z M14,2 H22 V10 H14 Z M2,14 H10 V22 H2 Z M14,14 H22 V22 H14 Z" />
+              </Button>
+            </Grid>
+            <Border Background="{DynamicResource SurfaceElevated}" CornerRadius="4" Height="34">
+              <Grid ColumnDefinitions="*,28,28">
+                <Button Classes="GamesHeader" ToolTip.Tip="Choose a game library or grouping">
+                  <Button.Flyout>
+                    <Flyout Placement="BottomEdgeAlignedLeft">
+                      <Border Width="210" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="3" Padding="4">
+                        <StackPanel Spacing="1">
+                          <CheckBox Content="Games (4)" Classes="LibraryMenuItem" IsChecked="True" />
+                          <CheckBox Content="Software (0)" Classes="LibraryMenuItem" />
+                          <CheckBox Content="Tools (0)" Classes="LibraryMenuItem" />
+                          <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="4,4" />
+                          <CheckBox Content="Group by Collection" Classes="LibraryMenuItem" IsChecked="True" />
+                          <CheckBox Content="Group by Library" Classes="LibraryMenuItem" />
+                        </StackPanel>
+                      </Border>
+                    </Flyout>
+                  </Button.Flyout>
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="Games" VerticalAlignment="Center" />
+                    <Path Grid.Column="1" Width="9" Height="6" Stretch="Fill" Stroke="{DynamicResource TextMuted}" StrokeThickness="1.4" Data="M1,1 L4.5,4.5 L8,1" Margin="8,0,1,0" />
+                  </Grid>
+                </Button>
+                <Button Grid.Column="1" Classes="SidebarIconButton" Command="{Binding SortByRecentActivityCommand}" ToolTip.Tip="Sort by recent activity">
+                  <Path Width="14" Height="14" Stretch="Uniform" Fill="{DynamicResource TextMuted}" Data="M12,2 A10,10 0 1,0 12,22 A10,10 0 1,0 12,2 M12,6 V12 L16,14" />
+                </Button>
+                <Button Grid.Column="2" Classes="SidebarIconButton" Command="{Binding ToggleReadyToPlayCommand}" ToolTip.Tip="{Binding ReadyToPlayFilterTip}">
+                  <Path Width="14" Height="14" Stretch="Uniform" Fill="{DynamicResource TextMuted}" Data="M12,2 A10,10 0 1,0 12,22 A10,10 0 1,0 12,2 M10,8 L16,12 L10,16 Z" />
+                </Button>
+              </Grid>
+            </Border>
+            <Grid ColumnDefinitions="*,32" ColumnSpacing="3" Height="35">
+              <Grid>
+                <TextBox PlaceholderText="Search by Name" Classes="SearchBox" Text="{Binding SearchQuery, Mode=TwoWay}" Padding="31,7,28,7" />
+                <Path Width="16" Height="16" Stretch="Uniform" Stroke="{DynamicResource TextMuted}" StrokeThickness="1.5" Data="M9,3 A6,6 0 1,0 9,15 A6,6 0 1,0 9,3 M13.5,13.5 L19,19" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="8,0,0,0" IsHitTestVisible="False" />
+                <Button Classes="SearchClear" Command="{Binding ClearSearchCommand}" ToolTip.Tip="Clear search">
+                  <Path Width="11" Height="11" Stretch="Uniform" Stroke="{DynamicResource TextMuted}" StrokeThickness="1.5" Data="M2,2 L10,10 M10,2 L2,10" />
+                </Button>
+              </Grid>
+              <Button Grid.Column="1" Classes="SidebarIconButton FilterButton" ToolTip.Tip="Filter games">
+                <Path Width="15" Height="15" Stretch="Uniform" Fill="{DynamicResource TextMuted}" Data="M2,5 H22 V7 H2 Z M5,11 H19 V13 H5 Z M8,17 H16 V19 H8 Z" />
+              </Button>
+            </Grid>
+            <StackPanel Spacing="9">
+            <ItemsControl ItemsSource="{Binding VisibleSidebarCategories}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <StackPanel Spacing="2" Margin="0,10,0,0">
+                    <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="7,0,4,2">
+                      <Button Command="{Binding $parent[Window].DataContext.ToggleCategoryCommand}" CommandParameter="{Binding}" Classes="CategoryToggle">
+                        <TextBlock Text="{Binding ExpandGlyph}" Classes="CategoryGlyph" />
+                      </Button>
+                      <TextBlock Grid.Column="1" Text="{Binding Name}" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="2" Text="{Binding GameCountDisplay}" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" Margin="0,0,6,0" />
+                      <Button Grid.Column="3" Content="&#x00D7;" IsVisible="{Binding IsUserCreated}" Command="{Binding $parent[Window].DataContext.RemoveCategoryCommand}" CommandParameter="{Binding}" Classes="CategoryRemove" />
+                    </Grid>
+                    <ItemsControl IsVisible="{Binding IsExpanded}" ItemsSource="{Binding VisibleGames}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Button Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}" CommandParameter="{Binding Title}" Classes="SidebarGame">
+                            <Button.ContextMenu>
+                              <ContextMenu Opened="OnGameContextMenuOpened" />
+                            </Button.ContextMenu>
+                            <Grid ColumnDefinitions="45,*" MinHeight="34">
+                              <Border Width="42" Height="28" CornerRadius="2" Background="{DynamicResource ArtworkSecondary}" VerticalAlignment="Center" ClipToBounds="True">
+                                <Grid>
+                                  <Border Width="30" Height="30" CornerRadius="15" Background="{DynamicResource ArtworkPrimary}" Opacity="0.55" HorizontalAlignment="Right" Margin="0,-8,-8,0" />
+                                  <TextBlock Text="{Binding Monogram}" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Grid>
+                              </Border>
+                              <TextBlock Grid.Column="1" Text="{Binding Title}" Classes="BodyStrong" Foreground="{Binding StatusBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                            </Grid>
+                          </Button>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="No games in this category" IsVisible="{Binding IsEmpty}" Classes="Caption" Margin="45,2,0,3" />
+                  </StackPanel>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Border IsVisible="{Binding IsAddingGame}" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="4" Margin="7,8,7,0">
+              <Grid ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
+                <TextBox Text="{Binding NewGameName}" PlaceholderText="Game name" Classes="CategoryInput" KeyDown="OnAddGameInputKeyDown" />
+                <Button Grid.Column="1" Content="OK" Classes="CategoryAction" Command="{Binding CommitAddGameCommand}" />
+                <Button Grid.Column="2" Content="&#x00D7;" Classes="CategoryAction" Command="{Binding CancelAddGameCommand}" />
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding GameError}" Classes="Caption" Foreground="#E06C75" Margin="6,4,4,1" />
+              </Grid>
+            </Border>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
       </Border>
-      <ScrollViewer Grid.Row="1" Padding="34,30,38,48" HorizontalScrollBarVisibility="Disabled">
-        <ContentControl Content="{Binding CurrentPage}" />
-      </ScrollViewer>
+
+      <Grid Grid.Column="1" RowDefinitions="Auto,*">
+        <Border Grid.Row="0" IsVisible="{Binding IsPageHeaderVisible}" Background="{DynamicResource BackgroundPrimary}" Padding="30,22,34,16" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,0,1">
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Spacing="3">
+              <TextBlock Text="{Binding PageKicker}" Classes="Eyebrow" Foreground="{DynamicResource TextSecondary}" />
+              <TextBlock Text="{Binding PageTitle}" Classes="HeadingLarge" />
+            </StackPanel>
+          </Grid>
+        </Border>
+        <ScrollViewer Grid.Row="1" Padding="30,26,34,42" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <ContentControl Content="{Binding CurrentPage}" />
+        </ScrollViewer>
+      </Grid>
     </Grid>
+
+    <Border Grid.Row="2" Background="{DynamicResource ChromeBar}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,1,0,0">
+      <Grid ColumnDefinitions="Auto,*,Auto" Margin="12,0">
+        <Button Content="+   Add a Game" Classes="AddGame" Command="{Binding BeginAddGameCommand}" />
+        <Button Grid.Column="1" Command="{Binding NavigateCommand}" CommandParameter="Downloads" Classes="DownloadCenter" HorizontalAlignment="Center">
+          <StackPanel Orientation="Horizontal" Spacing="9">
+            <Path Width="14" Height="14" Stretch="Uniform" Fill="{DynamicResource AccentPrimary}" Data="M5,20 L19,20 L19,18 L5,18 Z M19,9 L15,9 L15,3 L9,3 L9,9 L5,9 L12,16 Z" />
+            <TextBlock Text="Downloads - 1 of 1 items Complete" Classes="Caption" />
+          </StackPanel>
+        </Button>
+        <Button Grid.Column="2" Content="Friends and Chat" Classes="AddGame" HorizontalContentAlignment="Right" />
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="1"
+            Grid.RowSpan="2"
+            IsVisible="{Binding IsAddingCategory}"
+            Background="#B0000000">
+      <Border Width="430"
+              HorizontalAlignment="Center"
+              VerticalAlignment="Center"
+              Background="{DynamicResource SurfacePrimary}"
+              BorderBrush="{DynamicResource BorderSubtle}"
+              BorderThickness="1"
+              CornerRadius="8"
+              Padding="24">
+        <StackPanel Spacing="16">
+          <StackPanel Spacing="4">
+            <TextBlock Text="CREATE A COLLECTION" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
+            <TextBlock Text="New collection" Classes="HeadingMedium" />
+            <TextBlock Text="Give this collection a name." Classes="Caption" />
+          </StackPanel>
+          <TextBox Text="{Binding NewCategoryName}"
+                   PlaceholderText="Collection name"
+                   Classes="CategoryInput"
+                   KeyDown="OnCategoryInputKeyDown" />
+          <TextBlock Text="{Binding CategoryError}"
+                     Classes="Caption"
+                     Foreground="#E06C75" />
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button Content="Cancel" Classes="DialogCancel" Command="{Binding CancelCategoryCommand}" />
+            <Button Content="Confirm" Classes="DialogConfirm" Command="{Binding CommitCategoryCommand}" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+    </Border>
   </Grid>
 </Window>
