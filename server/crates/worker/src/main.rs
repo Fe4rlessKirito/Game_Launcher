@@ -10,6 +10,7 @@ use launcher_manifests::{
     generate_signing_key, load_private_key_pem, private_key_pem, public_key_pem, sign_bytes,
     validate_json, verify_bytes,
 };
+use launcher_normalizer::{NormalizationLimits, normalize_input};
 use launcher_packager::{PackageOptions, package_directory};
 use launcher_packs::PackConfig;
 use launcher_provisioning::{
@@ -475,56 +476,67 @@ async fn main() -> Result<()> {
         } => {
             let mut progress = IngestionProgress::new();
             println!("stage={:?}", progress.state);
-            let analysis_path = output.join("analysis.json");
             std::fs::create_dir_all(&output)?;
-            let status = Command::new("python")
-                .args(["-m", "launcher_analyzer", "analyze"])
-                .arg(&input)
-                .args(["--output"])
-                .arg(&analysis_path)
-                .status()
-                .context("could not start Python analyzer")?;
-            if !status.success() {
-                anyhow::bail!("analyzer failed with status {status}");
-            }
-            progress.advance(BuildState::Analyzed)?;
+            let normalized = normalize_input(&input, &NormalizationLimits::from_env()?)?;
             println!(
-                "stage={:?} report={}",
-                progress.state,
-                analysis_path.display()
+                "stage=NORMALIZED format={} root={}",
+                normalized.format.as_str(),
+                normalized.root.display()
             );
-            let report = package_directory(
-                &input,
-                &output,
-                &PackageOptions {
-                    game_id,
-                    build_id,
-                    display_version,
-                    executable,
-                    chunking: launcher_common::ChunkingConfig {
-                        minimum_bytes,
-                        average_bytes,
-                        maximum_bytes,
-                        ..launcher_common::ChunkingConfig::default()
+            let result = (|| -> Result<()> {
+                let analysis_path = output.join("analysis.json");
+                let status = Command::new("python")
+                    .args(["-m", "launcher_analyzer", "analyze"])
+                    .arg(&normalized.root)
+                    .args(["--output"])
+                    .arg(&analysis_path)
+                    .status()
+                    .context("could not start Python analyzer")?;
+                if !status.success() {
+                    anyhow::bail!("analyzer failed with status {status}");
+                }
+                progress.advance(BuildState::Analyzed)?;
+                println!(
+                    "stage={:?} report={}",
+                    progress.state,
+                    analysis_path.display()
+                );
+                let report = package_directory(
+                    &normalized.root,
+                    &output,
+                    &PackageOptions {
+                        game_id,
+                        build_id,
+                        display_version,
+                        executable,
+                        chunking: launcher_common::ChunkingConfig {
+                            minimum_bytes,
+                            average_bytes,
+                            maximum_bytes,
+                            ..launcher_common::ChunkingConfig::default()
+                        },
+                        pack_config: if env_bool("PACK_STORAGE_ENABLED", false) {
+                            Some(PackConfig::from_env().map_err(|error| anyhow::anyhow!(error))?)
+                        } else {
+                            None
+                        },
+                        ..PackageOptions::default()
                     },
-                    pack_config: if env_bool("PACK_STORAGE_ENABLED", false) {
-                        Some(PackConfig::from_env().map_err(|error| anyhow::anyhow!(error))?)
-                    } else {
-                        None
-                    },
-                    ..PackageOptions::default()
-                },
-            )?;
-            progress.advance(BuildState::Packaged)?;
-            progress.advance(BuildState::Uploaded)?;
-            progress.advance(BuildState::Verified)?;
-            progress.advance(BuildState::Ready)?;
-            println!(
-                "stage={:?} report={}",
-                progress.state,
-                serde_json::to_string_pretty(&report)?
-            );
-            println!("publication=EXPLICIT_OPERATOR_ACTION_REQUIRED");
+                )?;
+                progress.advance(BuildState::Packaged)?;
+                progress.advance(BuildState::Uploaded)?;
+                progress.advance(BuildState::Verified)?;
+                progress.advance(BuildState::Ready)?;
+                println!(
+                    "stage={:?} report={}",
+                    progress.state,
+                    serde_json::to_string_pretty(&report)?
+                );
+                println!("publication=EXPLICIT_OPERATOR_ACTION_REQUIRED");
+                Ok(())
+            })();
+            normalized.cleanup()?;
+            result?;
         }
     }
     Ok(())

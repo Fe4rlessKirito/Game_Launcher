@@ -5,9 +5,10 @@ Launcher is a content-addressed game distribution platform for builds the operat
 The current implementation is an extensible v1 foundation with a complete synthetic local flow:
 
 1. Analyze an authorized game directory with the Python CLI.
-2. Package deterministic files into FastCDC/BLAKE3/Zstandard chunks with the Rust packager.
-3. Serve catalog and manifest metadata from the Rust API.
-4. Download, verify, reconstruct, install, repair, launch, and uninstall from the .NET client core.
+2. Normalize an authorized ZIP/RAR/7z/TAR input into a bounded temporary directory when necessary.
+3. Package deterministic files into FastCDC/BLAKE3/Zstandard chunks with the Rust packager.
+4. Serve catalog and manifest metadata from the Rust API.
+5. Download, verify, reconstruct, install, repair, launch, and uninstall from the .NET client core.
 
 No acquisition, DRM circumvention, license bypass, anti-cheat bypass, account spoofing, or unauthorized service access is implemented or supported.
 

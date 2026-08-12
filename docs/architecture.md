@@ -9,7 +9,7 @@ Avalonia client ── catalog/manifests ──> Axum API ──> PostgreSQL
       │                                      │
       └──────── direct chunk bytes ──────────┴──> local/S3 storage
 
-authorized build ──> Python analyzer ──> Rust packager ──> storage + DB
+authorized directory/archive ──> bounded normalizer ──> Python analyzer ──> Rust packager ──> storage + DB
 ```
 
 The analyzer produces facts and candidates. The packager consumes a versioned analysis report and creates deterministic content-addressed objects. Publication is an explicit operator transition.
@@ -41,6 +41,7 @@ The client owns UI, local SQLite state, download scheduling, cache eviction, rec
 3. Storage placement is tier-aware: hot locations are client-facing, cold locations are operator-facing, and publication is gated by `StoragePolicy`. MEGA cold accounts use a PostgreSQL-backed reservation pool and server-side restore jobs.
 4. The manifest is JSON for inspectability and signed canonical bytes can be introduced without changing the file/chunk model.
 5. SQLite uses numbered SQL migrations and a small repository abstraction instead of an ORM.
+6. Deployment is provider-neutral. Railway is the current staging host; Mantle is a future deployment target, not a storage or database type in the application. The API, worker, PostgreSQL schema, storage pools, and client contracts remain portable across that move.
 
 ## Known limitations
 

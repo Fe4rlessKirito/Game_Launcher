@@ -15,6 +15,7 @@ launcher-common = { path = "../common" }
 launcher-database = { path = "../database" }
 launcher-domain = { path = "../domain" }
 launcher-manifests = { path = "../manifests" }
+launcher-normalizer = { path = "../normalizer" }
 launcher-packager = { path = "../packager" }
 launcher-packs = { path = "../packs" }
 launcher-provisioning = { path = "../provisioning" }
