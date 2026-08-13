@@ -248,6 +248,12 @@ enum StorageCommands {
         #[arg(long, default_value_t = 32 * 1024)]
         bytes: usize,
     },
+    TelegramSmoke {
+        #[arg(long, default_value = "storage")]
+        storage_root: PathBuf,
+        #[arg(long, default_value_t = 1024 * 1024)]
+        bytes: usize,
+    },
     Health {
         #[arg(long, default_value = "storage")]
         storage_root: PathBuf,
@@ -1090,6 +1096,18 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                 return Err(error);
             }
         }
+        StorageCommands::TelegramSmoke {
+            storage_root,
+            bytes,
+        } => {
+            let (storage, _) = storage_command_context(&storage_root).await?;
+            let provider = storage
+                .providers_for_tier(StorageTier::Cold)
+                .into_iter()
+                .find(|provider| provider.provider_type().eq_ignore_ascii_case("telegram"))
+                .context("no Telegram COLD provider is configured")?;
+            run_telegram_pack_smoke(provider, bytes).await?;
+        }
         StorageCommands::Health { storage_root } => {
             let (storage, database) = storage_command_context(&storage_root).await?;
             println!("storage_health=");
@@ -1488,6 +1506,63 @@ async fn run_storage_smoke(
             Err(error)
         }
     }
+}
+
+async fn run_telegram_pack_smoke(
+    provider: Arc<dyn StorageProvider>,
+    requested_bytes: usize,
+) -> Result<()> {
+    if !provider.provider_type().eq_ignore_ascii_case("telegram") {
+        anyhow::bail!(
+            "telegram smoke selected provider {}",
+            provider.provider_type()
+        );
+    }
+    let raw_size = requested_bytes.clamp(1, 8 * 1024 * 1024);
+    let mut raw = vec![0_u8; raw_size];
+    OsRng.fill_bytes(&mut raw);
+    let encoded = zstd::bulk::compress(&raw, 3)?;
+    let encoded_hash = blake3::hash(&encoded).to_hex().to_string();
+    let raw_hash = blake3::hash(&raw).to_hex().to_string();
+    let pack = launcher_packs::build_packs(
+        [launcher_packs::PackInput::new(
+            encoded_hash,
+            raw_hash,
+            raw.len() as u64,
+            encoded,
+        )],
+        launcher_packs::PackConfig {
+            target_bytes: 8 * 1024 * 1024,
+            min_bytes: 1,
+            max_bytes: 8 * 1024 * 1024,
+        },
+    )?
+    .into_iter()
+    .next()
+    .context("pack smoke did not produce a physical pack")?;
+    let pack_hash = pack.pack_hash;
+    let pack_bytes = pack.bytes;
+    provider.health_check().await?;
+    println!("check=TELEGRAM_network status=PASS");
+    provider.put_pack(&pack_hash, &pack_bytes).await?;
+    println!(
+        "check=TELEGRAM_upload status=PASS bytes={} pack_hash={pack_hash}",
+        pack_bytes.len()
+    );
+    let restored = provider.read_pack(&pack_hash).await?;
+    if restored != pack_bytes {
+        anyhow::bail!("Telegram pack bytes did not match the uploaded smoke pack");
+    }
+    launcher_packs::PackReader::parse(&restored)?.verify_pack_hash(&pack_hash)?;
+    println!("check=TELEGRAM_download status=PASS");
+    println!("check=TELEGRAM_integrity status=PASS blake3={pack_hash}");
+    provider.delete_pack(&pack_hash).await?;
+    if provider.read_pack(&pack_hash).await.is_ok() {
+        anyhow::bail!("Telegram smoke delete left the temporary pack readable");
+    }
+    println!("check=TELEGRAM_delete status=PASS");
+    println!("telegram_smoke=PASS pack_bytes={}", pack_bytes.len());
+    Ok(())
 }
 
 fn mega_diagnostic(error: &anyhow::Error) -> &'static str {

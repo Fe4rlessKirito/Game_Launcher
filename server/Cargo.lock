@@ -1953,6 +1953,7 @@ dependencies = [
  "tracing",
  "uuid",
  "walkdir",
+ "zstd",
 ]
 
 [[package]]

@@ -103,7 +103,7 @@ function Invoke-RailwayAdmin {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $commandLine = "export HOME=/var/lib/launcher/megacmd; exec gosu launcher /usr/local/bin/launcher-admin " +
+    $commandLine = "export HOME=/var/lib/launcher/telegram; exec gosu launcher /usr/local/bin/launcher-admin " +
         (($Arguments | ForEach-Object { "'" + ($_ -replace "'", "'\''") + "'" }) -join " ")
     Invoke-Checked -File "railway" -Arguments @("ssh", "--service", $Service, "--", "sh", "-lc", $commandLine)
 }

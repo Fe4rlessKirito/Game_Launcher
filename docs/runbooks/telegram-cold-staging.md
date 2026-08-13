@@ -10,8 +10,11 @@
    private worker environment.
 5. Run the fake-provider suite before a real smoke: upload a tiny random pack,
    restore it, verify BLAKE3, and delete it.
-6. Only then run a single operator-approved real pack smoke. Confirm the bot
-   message reference is persisted without the token and that the launcher sees
-   no Telegram URL.
+6. Only then run `scripts/staging/telegram-smoke.ps1 -Railway`. The command
+   performs
+   Telegram health, physical-pack upload, download, BLAKE3/pack verification,
+   and deletes only its temporary smoke message. Confirm the bot message
+   reference is persisted without the token and that the launcher sees no
+   Telegram URL.
 
 Do not paste a bot token or state file contents into chat.
