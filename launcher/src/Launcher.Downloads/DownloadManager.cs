@@ -63,7 +63,7 @@ public sealed class DownloadManager(
         var stopwatch = Stopwatch.StartNew();
         await SaveJobAsync(new PersistedDownloadJob(jobId, manifest.BuildId, DownloadJobState.Resolving, 0, totalBytes, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         progress?.Report(new DownloadProgress(jobId, DownloadJobState.Resolving, 0, totalBytes, 0, null));
-        var resolved = await apiClient.ResolveChunksAsync(manifest.BuildId, uniqueChunks.Select(chunk => chunk.EncodedHash).ToArray(), cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<string, ResolvedChunk> resolved = new Dictionary<string, ResolvedChunk>(StringComparer.Ordinal);
         if (packCache is not null && (packDownloadEnabled ?? IsPackDownloadEnabled()))
         {
             try
@@ -79,6 +79,24 @@ public sealed class DownloadManager(
                 // Pack resolution is an acceleration path. A client can still
                 // complete through the signed logical chunk resolver.
             }
+        }
+
+        // In pack-canonical mode most or all chunks are materialized by the
+        // verified physical-pack path above. Only ask the legacy resolver for
+        // chunks that are still missing, preserving compatibility with older
+        // builds and deployments while avoiding duplicate logical uploads.
+        var unresolved = new List<string>();
+        foreach (var chunk in uniqueChunks)
+        {
+            if (_packPreparedChunks.Contains(chunk.EncodedHash)) continue;
+            if (await cache.ReadAsync(chunk.EncodedHash, cancellationToken).ConfigureAwait(false) is null)
+            {
+                unresolved.Add(chunk.EncodedHash);
+            }
+        }
+        if (unresolved.Count > 0)
+        {
+            resolved = await apiClient.ResolveChunksAsync(manifest.BuildId, unresolved, cancellationToken).ConfigureAwait(false);
         }
 
         var tasks = uniqueChunks.Select(async chunk =>
@@ -402,5 +420,9 @@ public sealed class DownloadManager(
         return (bytes, received);
     }
 
-    private static bool IsPackDownloadEnabled() => Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED")?.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
+    private static bool IsPackDownloadEnabled()
+    {
+        var value = Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED")?.Trim().ToLowerInvariant();
+        return value is not ("0" or "false" or "no" or "off");
+    }
 }

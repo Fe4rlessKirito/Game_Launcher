@@ -84,9 +84,19 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 
     public async Task<IReadOnlyList<ResolvedPack>> ResolvePacksAsync(string buildId, IReadOnlyCollection<string> encodedHashes, CancellationToken cancellationToken = default)
     {
-        using var response = await httpClient.PostAsJsonAsync(new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/packs/resolve"), new PackResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+        var endpoint = new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/packs/resolve");
+        for (var attempt = 0; ; attempt++)
+        {
+            using var response = await httpClient.PostAsJsonAsync(endpoint, new PackResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.ServiceUnavailable || response.Headers.RetryAfter is null || attempt >= MaxRestorePolls - 1)
+            {
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+            }
+
+            var delay = response.Headers.RetryAfter?.Delta ?? DefaultRestorePollDelay;
+            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 1, 30)), cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private sealed record CatalogResponse([property: JsonPropertyName("items")] IReadOnlyList<GameCatalogItem> Items, [property: JsonPropertyName("next_cursor")] string? NextCursor);

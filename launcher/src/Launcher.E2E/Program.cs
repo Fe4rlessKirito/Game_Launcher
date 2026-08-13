@@ -24,6 +24,7 @@ var cache = new ChunkCache(paths.CachePath, 2L * 1024 * 1024 * 1024);
 await cache.InitializeAsync();
 var state = new LocalStateStore(paths.DatabasePath);
 await state.InitializeAsync();
+var packCache = new PackCache(Path.Combine(stateRoot, "pack-cache"), 2L * 1024 * 1024 * 1024);
 using var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
 var api = new LauncherApiClient(httpClient, apiBase);
 var games = await api.GetGamesAsync();
@@ -44,7 +45,7 @@ else
 {
     ManifestSignatureVerifier.Verify(signedManifest.RawBytes, signature, allowEmbeddedPublicKey: true);
 }
-using var downloader = new DownloadManager(httpClient, api, cache, 4, state);
+using var downloader = new DownloadManager(httpClient, api, cache, 4, state, packCache: packCache);
 var download = await downloader.DownloadAsync(manifest, $"e2e-{mode}-{manifest.BuildId}");
 var installer = new Installer(cache, state);
 long? reusedInstalledBytes = null;

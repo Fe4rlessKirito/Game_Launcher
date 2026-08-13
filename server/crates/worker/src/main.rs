@@ -2474,6 +2474,12 @@ async fn publish_verified_build(
     if pack_cold_only && !packs_enabled {
         anyhow::bail!("LAUNCHER_PACK_COLD_ONLY=true requires PACK_STORAGE_ENABLED=true");
     }
+    // Once pack storage is enabled, make the immutable pack the canonical
+    // byte store by default. Logical chunks remain in the manifest/database
+    // for FastCDC diffing and pack indexes, but are not uploaded as a second
+    // set of HOT objects. Set LAUNCHER_PACK_CANONICAL=false only while
+    // migrating an older deployment that still needs logical object URLs.
+    let pack_canonical = packs_enabled && env_bool("LAUNCHER_PACK_CANONICAL", true);
     let pack_policy = if pack_cold_only {
         let mut pack_policy = policy.clone();
         // In pack mode, the immutable physical pack is the COLD replication
@@ -2487,22 +2493,6 @@ async fn publish_verified_build(
     } else {
         policy.clone()
     };
-    let logical_policy = if pack_cold_only {
-        let logical_hot_replicas = env::var("LAUNCHER_LOGICAL_HOT_REPLICAS")
-            .ok()
-            .and_then(|value| value.parse::<u32>().ok())
-            .unwrap_or(1);
-        let mut logical_policy = logical_pack_policy(&policy, logical_hot_replicas)?;
-        logical_policy.min_verified_cold_replicas = 0;
-        logical_policy.preferred_cold_replicas = 0;
-        logical_policy.min_cold_failure_domains = 0;
-        logical_policy.cold_backup_required = false;
-        logical_policy
-    } else {
-        policy.clone()
-    };
-    let placement_engine = StoragePlacementEngine::new(logical_policy.clone())
-        .map_err(|error| anyhow::anyhow!(error))?;
     if let Some(database) = database {
         database
             .upsert_game(&GameSummary {
@@ -2540,60 +2530,102 @@ async fn publish_verified_build(
         }
     }
 
-    let placement_pools = storage.placement_pools().await;
-    let mut uploaded = HashSet::new();
-    let chunks = manifest
-        .files
-        .iter()
-        .flat_map(|file| file.chunks.iter())
-        .filter(|chunk| uploaded.insert(chunk.encoded_hash.clone()))
-        .cloned()
-        .collect::<Vec<_>>();
-    let publish_concurrency = env::var("LAUNCHER_PUBLISH_CONCURRENCY")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(8)
-        .clamp(1, 32);
-    let mut tasks = tokio::task::JoinSet::new();
-    for chunk in chunks {
-        while tasks.len() >= publish_concurrency {
-            let _ = tasks
-                .join_next()
+    if !pack_canonical {
+        let logical_policy = if pack_cold_only {
+            let logical_hot_replicas = env::var("LAUNCHER_LOGICAL_HOT_REPLICAS")
+                .ok()
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(1);
+            let mut logical_policy = logical_pack_policy(&policy, logical_hot_replicas)?;
+            logical_policy.min_verified_cold_replicas = 0;
+            logical_policy.preferred_cold_replicas = 0;
+            logical_policy.min_cold_failure_domains = 0;
+            logical_policy.cold_backup_required = false;
+            logical_policy
+        } else {
+            policy.clone()
+        };
+        let placement_engine =
+            StoragePlacementEngine::new(logical_policy).map_err(|error| anyhow::anyhow!(error))?;
+        let placement_pools = storage.placement_pools().await;
+        let mut uploaded = HashSet::new();
+        let chunks = manifest
+            .files
+            .iter()
+            .flat_map(|file| file.chunks.iter())
+            .filter(|chunk| uploaded.insert(chunk.encoded_hash.clone()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let publish_concurrency = env::var("LAUNCHER_PUBLISH_CONCURRENCY")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(8)
+            .clamp(1, 32);
+        let mut tasks = tokio::task::JoinSet::new();
+        for chunk in chunks {
+            while tasks.len() >= publish_concurrency {
+                let _ = tasks
+                    .join_next()
+                    .await
+                    .context("logical chunk publish task disappeared")??;
+            }
+            let package = package.to_owned();
+            let storage = storage.clone();
+            let database = database.cloned();
+            let placement_engine = placement_engine.clone();
+            let placement_pools = placement_pools.clone();
+            let build_id = manifest.build_id.clone();
+            tasks.spawn(async move {
+                publish_logical_chunk(
+                    &chunk,
+                    &build_id,
+                    &package,
+                    &storage,
+                    database.as_ref(),
+                    &placement_engine,
+                    &placement_pools,
+                )
                 .await
-                .context("logical chunk publish task disappeared")??;
+            });
         }
-        let package = package.to_owned();
-        let storage = storage.clone();
-        let database = database.cloned();
-        let placement_engine = placement_engine.clone();
-        let placement_pools = placement_pools.clone();
-        let build_id = manifest.build_id.clone();
-        tasks.spawn(async move {
-            publish_logical_chunk(
-                &chunk,
-                &build_id,
-                &package,
-                &storage,
-                database.as_ref(),
-                &placement_engine,
-                &placement_pools,
-            )
-            .await
-        });
-    }
-    while let Some(result) = tasks.join_next().await {
-        result.context("logical chunk publish task failed")??;
+        while let Some(result) = tasks.join_next().await {
+            result.context("logical chunk publish task failed")??;
+        }
     }
     if packs_enabled && let Some(database) = database {
         publish_physical_packs(&manifest.build_id, package, storage, database, &pack_policy)
             .await?;
     }
     if let Some(database) = database {
-        database
-            .publish_build_with_storage_policy(&manifest.build_id, &logical_policy)
-            .await?;
-        retire_superseded_hot_storage(&manifest.game_id, &manifest.build_id, storage, database)
-            .await?;
+        if pack_canonical {
+            if !database
+                .build_packs_cover_all_chunks(&manifest.build_id)
+                .await?
+            {
+                anyhow::bail!(
+                    "pack-canonical build {} has manifest chunks missing from its physical-pack index",
+                    manifest.build_id
+                );
+            }
+            database
+                .publish_build_with_pack_storage_policy(&manifest.build_id, &pack_policy)
+                .await?;
+        } else {
+            database
+                .publish_build_with_storage_policy(&manifest.build_id, &policy)
+                .await?;
+        }
+        // Legacy logical objects are left for a separate cleanup pass in
+        // pack-canonical mode. This keeps publication independent of whether
+        // an old HOT adapter supports deletion.
+        retire_superseded_hot_storage(
+            &manifest.game_id,
+            &manifest.build_id,
+            storage,
+            database,
+            !pack_canonical,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2603,10 +2635,15 @@ async fn retire_superseded_hot_storage(
     latest_build_id: &str,
     storage: &StorageRegistry,
     database: &Database,
+    retire_logical_objects: bool,
 ) -> Result<()> {
-    let objects = database
-        .list_hot_objects_to_retire(game_id, latest_build_id)
-        .await?;
+    let objects = if retire_logical_objects {
+        database
+            .list_hot_objects_to_retire(game_id, latest_build_id)
+            .await?
+    } else {
+        Vec::new()
+    };
     let packs = database
         .list_hot_pack_locations_to_retire(game_id, latest_build_id)
         .await?;
@@ -2619,6 +2656,10 @@ async fn retire_superseded_hot_storage(
             skipped_providers.insert(object.provider);
             continue;
         };
+        if !provider.capabilities().delete {
+            skipped_providers.insert(object.provider.clone());
+            continue;
+        }
         provider
             .delete_encoded(&object.encoded_hash)
             .await
@@ -2640,6 +2681,10 @@ async fn retire_superseded_hot_storage(
             skipped_providers.insert(location.provider);
             continue;
         };
+        if !provider.capabilities().delete {
+            skipped_providers.insert(location.provider.clone());
+            continue;
+        }
         provider
             .delete_pack(&location.pack_hash)
             .await

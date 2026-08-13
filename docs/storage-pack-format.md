@@ -27,14 +27,18 @@ GiB. They are configurable with `LAUNCHER_PACK_TARGET_BYTES`,
 smaller than the minimum. A logical chunk is never split across packs.
 
 Legacy `chunks/encoded/{hash}.bin` objects and manifest `object_key` values are
-kept during migration. Pack output is additive and controlled by
-`PACK_STORAGE_ENABLED`. Pack mode defaults to pack-only COLD behavior; setting
-`LAUNCHER_PACK_COLD_ONLY=true` makes that policy explicit. Logical chunks
-remain HOT-only for compatibility while physical packs are placed according
-to the full HOT/COLD policy. This avoids sending every logical chunk as a
-separate COLD object; the pack remains the verified restore unit. Pack mode
-requires at least one COLD pack replica, so the staging Telegram provider
-stores physical packs rather than a second copy of every logical chunk.
-Logical chunks default to one HOT copy via
-`LAUNCHER_LOGICAL_HOT_REPLICAS=1`; HOT redundancy is carried by physical pack
-replicas instead.
+kept in the schema for migration and compatibility. With
+`PACK_STORAGE_ENABLED=true`, `LAUNCHER_PACK_CANONICAL=true` makes physical
+packs the canonical byte store: publication gates on pack coverage and
+verified HOT/COLD pack locations, while logical chunks remain metadata and
+FastCDC/deduplication indexes only. The launcher resolves packs, verifies the
+pack BLAKE3 identity and structure, and materializes the requested encoded
+chunks into its bounded local chunk cache. It falls back to legacy logical
+URLs only when pack-canonical mode is disabled or a caller explicitly uses an
+older deployment.
+
+`LAUNCHER_PACK_COLD_ONLY=true` makes the COLD policy explicit. Pack mode
+requires at least one COLD pack replica, so staging Telegram stores physical
+packs rather than a second copy of every logical chunk. HOT redundancy is
+carried by physical pack replicas. Set `LAUNCHER_PACK_CANONICAL=false` only
+for a migration deployment that still publishes logical HOT objects.

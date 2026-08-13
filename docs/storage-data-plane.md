@@ -11,17 +11,18 @@ manifest -> logical chunk hashes -> pack resolver -> direct HOT URL
 ```
 
 The signed manifest stays provider-independent. `POST
-/api/v1/builds/{build_id}/packs/resolve` is an additive, build-scoped
-resolution endpoint. The newest build receives only HOT sources. An older
-build may receive an API-owned, build-scoped COLD stream URL; it never receives
-a Telegram URL, message ID, credential, or provider location. If the private
-stream worker is not configured, the compatibility path queues a server-side
-HOT restore and returns `restore_pending`.
+/api/v1/builds/{build_id}/packs/resolve` is the canonical build-scoped
+resolution endpoint when pack storage is enabled. The newest build receives
+only direct HOT pack sources. An older build may receive an API-owned,
+build-scoped COLD stream URL; it never receives a Telegram URL, message ID,
+credential, or provider location. If the private stream worker is not
+configured, the compatibility path queues a server-side HOT restore and
+returns `restore_pending`.
 
 The launcher downloads a pack directly, verifies its BLAKE3 identity and
 index, extracts only the requested logical chunks, verifies each encoded hash,
 and places those chunks in the existing install cache. The pack itself is a
-bounded acceleration cache and may be evicted after a lease expires.
+bounded temporary cache and may be evicted after the install operation.
 
 `GET /api/v1/storage/providers` exposes provider capabilities for operators.
 `launcher-admin storage probe` is offline by default; `--live` is an explicit
@@ -39,4 +40,6 @@ traffic.
 
 The physical schema is additive: `physical_packs`, `pack_chunks`,
 `pack_locations`, `pack_restore_jobs`, `pack_leases`, and `build_packs` coexist
-with the legacy logical-object tables.
+with the legacy logical-object tables. In pack-canonical mode, those legacy
+tables are metadata/compatibility tables and are not required to contain byte
+replicas for publication.

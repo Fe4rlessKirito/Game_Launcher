@@ -5,9 +5,10 @@ and verified failure domains independently. Two providers in one failure
 domain do not satisfy a multi-domain requirement.
 
 `StoragePlacementEngine` selects enabled, healthy pools by priority and
-capacity. Publication still gates on the existing logical chunk policy for
-backward compatibility; when physical packs are enabled, pack placement uses
-the same policy and records independent pack locations.
+capacity. In pack-canonical mode, publication gates on verified physical-pack
+coverage and pack locations for the HOT/COLD policy. Logical chunk rows remain
+the manifest/index contract but do not count as byte replicas. Legacy
+non-canonical publication continues to use the logical chunk policy.
 
 Safe eviction rules are conservative:
 

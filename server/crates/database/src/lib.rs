@@ -945,6 +945,29 @@ impl Database {
         Ok(row.try_get("available")?)
     }
 
+    pub async fn build_packs_cover_all_chunks(
+        &self,
+        build_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT NOT EXISTS(
+                 SELECT 1
+                 FROM build_chunks bc
+                 WHERE bc.build_id=$1
+                   AND NOT EXISTS(
+                       SELECT 1
+                       FROM build_packs bp
+                       JOIN pack_chunks pc ON pc.pack_hash=bp.pack_hash
+                       WHERE bp.build_id=$1 AND pc.encoded_hash=bc.encoded_hash
+                   )
+             ) AS covered",
+        )
+        .bind(build_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.try_get("covered")?)
+    }
+
     pub async fn get_storage_locations(
         &self,
         encoded_hashes: &[String],
@@ -1052,6 +1075,83 @@ impl Database {
             )));
         }
         let result = sqlx::query("UPDATE builds SET state='PUBLISHED', published_at=now() WHERE id=$1 AND state IN ('READY','VERIFIED')").bind(build_id).execute(&mut *transaction).await?;
+        if result.rows_affected() != 1 {
+            return Err(DatabaseError::Manifest(format!(
+                "build {build_id} is not publishable"
+            )));
+        }
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Publish a pack-canonical build. The signed manifest still references
+    /// logical chunks, but the durable byte-storage policy is evaluated over
+    /// verified physical pack locations instead of legacy logical objects.
+    pub async fn publish_build_with_pack_storage_policy(
+        &self,
+        build_id: &str,
+        policy: &StoragePolicy,
+    ) -> Result<(), DatabaseError> {
+        let mut transaction = self.pool.begin().await?;
+        let row = sqlx::query(
+            "WITH replicas AS (
+                SELECT bp.pack_hash, pl.storage_class, pl.provider,
+                       COALESCE(pl.pool_id, pl.provider) AS pool_id,
+                       COALESCE(pl.failure_domain, pl.pool_id, pl.provider) AS failure_domain
+                FROM build_packs bp
+                JOIN physical_packs pp ON pp.pack_hash=bp.pack_hash
+                JOIN pack_locations pl ON pl.pack_hash=bp.pack_hash
+                WHERE bp.build_id=$1
+                  AND pp.state='VERIFIED'
+                  AND pp.verified_at IS NOT NULL
+                  AND pl.verified_at IS NOT NULL
+            )
+            SELECT COUNT(*) AS missing
+            FROM build_packs bp
+            WHERE bp.build_id = $1
+              AND (
+                (SELECT COUNT(DISTINCT provider) FROM replicas
+                 WHERE pack_hash=bp.pack_hash AND storage_class='HOT') < $2
+                OR (SELECT COUNT(DISTINCT failure_domain) FROM replicas
+                 WHERE pack_hash=bp.pack_hash AND storage_class='HOT') < $3
+                OR (SELECT COUNT(DISTINCT provider) FROM replicas
+                 WHERE pack_hash=bp.pack_hash AND storage_class='COLD') < $4
+                OR (SELECT COUNT(DISTINCT failure_domain) FROM replicas
+                 WHERE pack_hash=bp.pack_hash AND storage_class='COLD') < $5
+                OR (SELECT COUNT(DISTINCT provider) FROM replicas
+                 WHERE pack_hash=bp.pack_hash AND storage_class='ARCHIVE') < $6
+                OR (SELECT COUNT(DISTINCT failure_domain) FROM replicas
+                 WHERE pack_hash=bp.pack_hash AND storage_class='ARCHIVE') < $7
+              )",
+        )
+        .bind(build_id)
+        .bind(i64::from(policy.required_replicas(StorageClass::Hot)))
+        .bind(i64::from(
+            policy.required_failure_domains(StorageClass::Hot),
+        ))
+        .bind(i64::from(policy.required_replicas(StorageClass::Cold)))
+        .bind(i64::from(
+            policy.required_failure_domains(StorageClass::Cold),
+        ))
+        .bind(i64::from(policy.required_replicas(StorageClass::Archive)))
+        .bind(i64::from(
+            policy.required_failure_domains(StorageClass::Archive),
+        ))
+        .fetch_one(&mut *transaction)
+        .await?;
+        let missing: i64 = row.try_get("missing")?;
+        if missing != 0 {
+            return Err(DatabaseError::Manifest(format!(
+                "cannot publish pack-canonical build {build_id}: {missing} physical packs do not satisfy the storage class/pool policy"
+            )));
+        }
+        let result = sqlx::query(
+            "UPDATE builds SET state='PUBLISHED', published_at=now()
+             WHERE id=$1 AND state IN ('READY','VERIFIED')",
+        )
+        .bind(build_id)
+        .execute(&mut *transaction)
+        .await?;
         if result.rows_affected() != 1 {
             return Err(DatabaseError::Manifest(format!(
                 "build {build_id} is not publishable"

@@ -12,6 +12,7 @@ services:
       TELEGRAM_COLD_STATE_FILE: /var/lib/launcher/storage/telegram-cold-state.json
       PACK_STORAGE_ENABLED: "true"
       LAUNCHER_PACK_COLD_ONLY: "true"
+      LAUNCHER_PACK_CANONICAL: "true"
     depends_on:
       telegram-bot-api-proxy:
         condition: service_started
@@ -36,6 +37,7 @@ services:
       TELEGRAM_COLD_STATE_FILE: /var/lib/launcher/storage/telegram-cold-state.json
       PACK_STORAGE_ENABLED: "true"
       LAUNCHER_PACK_COLD_ONLY: "true"
+      LAUNCHER_PACK_CANONICAL: "true"
     command: ["storage", "worker", "--poll-seconds", "15", "--storage-root", "/var/lib/launcher/storage"]
     depends_on:
       postgres:

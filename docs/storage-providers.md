@@ -83,9 +83,10 @@ publication gating, and restore behavior.
 
 ## Upload and verification behavior
 
-The object key is deterministic: `chunks/encoded/{lowercase-blake3}.bin`.
-Providers verify size and BLAKE3 after writes and never accept a mismatched
-object as successfully published. MEGA uploads use the account pool's
+The legacy object key is deterministic: `chunks/encoded/{lowercase-blake3}.bin`.
+In pack-canonical mode, immutable packs under
+`packs/{pack-blake3}.pack` are the durable byte objects and providers verify
+their size and BLAKE3 after writes. MEGA uploads use the account pool's
 reservation ledger and bounded temporary files. The API never exposes COLD
 locations.
 
@@ -95,9 +96,10 @@ status. These surfaces omit passwords and session material.
 
 ## Physical packs and capabilities
 
-When `PACK_STORAGE_ENABLED=true`, providers also store immutable objects under
-`packs/{pack-blake3}.pack`. Pack locations are tracked separately from logical
-chunk locations. `/api/v1/storage/providers` reports whether a provider can
+When `PACK_STORAGE_ENABLED=true`, providers store immutable objects under
+`packs/{pack-blake3}.pack`. With `LAUNCHER_PACK_CANONICAL=true`, pack locations
+are the durable byte replicas and are tracked separately from legacy logical
+chunk metadata. `/api/v1/storage/providers` reports whether a provider can
 serve direct HOT pack downloads, accept ranges, refresh URLs, and the
 recommended object size/concurrency. `launcher-admin storage probe` is the
 operator-facing capability check.

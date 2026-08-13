@@ -1,13 +1,14 @@
 # Cold restoration
 
-Cold objects are never returned as client download URLs. When a published
-chunk has cold coverage but no verified hot location, the resolver enqueues a
-deduplicated `restore_jobs` row and returns:
+Cold objects are never returned as client download URLs. In pack-canonical
+mode, the physical pack is the restore unit. When a requested pack has COLD
+coverage but no verified HOT source, the resolver enqueues a deduplicated
+`pack_restore_jobs` row and returns:
 
 ```json
 {
   "code": "restore_pending",
-  "message": "the chunk is in cold storage and a hot restore has been queued"
+  "message": "the requested pack is in COLD storage and a HOT restore has been queued"
 }
 ```
 
@@ -16,9 +17,9 @@ protocol simple: retry resolution, then download from a normal HOT URL.
 
 The compatibility worker restore path claims jobs with a lease, ranks enabled
 source pools by class and priority, tries each available verified source,
-verifies BLAKE3, writes to a selected HOT pool, records the verified HOT
-object/location, and marks the job `DONE`. Logs include the selected source
-pool and failure domain.
+verifies BLAKE3 and pack structure, writes the pack to a selected HOT pool,
+records the verified HOT pack location, and marks the job `DONE`. Logs include
+the selected source pool and failure domain.
 Failures are recorded with attempts and a retry state; expired leases are
 recoverable by another worker. `ON_DEMAND` is the development default.
 `PROACTIVE` is suitable for staging after a cold pool has been validated and

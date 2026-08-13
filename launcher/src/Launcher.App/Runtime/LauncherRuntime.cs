@@ -71,6 +71,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly LauncherApiClient _apiClient;
     private readonly LocalStateStore _stateStore;
     private readonly ChunkCache _chunkCache;
+    private readonly PackCache _packCache;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private IReadOnlyList<GameCatalogItem> _catalog = [];
     private LauncherRuntimeSnapshot _snapshot = new([], [], false, "Offline-ready", null);
@@ -88,6 +89,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
         _apiClient = new LauncherApiClient(_httpClient, ParseBaseUri(settings.ApiBaseUrl));
         _stateStore = new LocalStateStore(_paths.DatabasePath);
         _chunkCache = new ChunkCache(_paths.CachePath, Math.Max(1, settings.CacheSizeBytes));
+        var packCacheBytes = Math.Clamp(settings.CacheSizeBytes / 2, 512L * 1024 * 1024, 2L * 1024 * 1024 * 1024);
+        _packCache = new PackCache(Path.Combine(_paths.Root, "pack-cache"), packCacheBytes);
     }
 
     public LauncherRuntimeSnapshot Snapshot => _snapshot;
@@ -199,7 +202,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 _apiClient,
                 _chunkCache,
                 Math.Clamp(_settings.ConcurrentDownloads, 1, 32),
-                _stateStore);
+                _stateStore,
+                packCache: _packCache);
             var trackedProgress = new Progress<DownloadProgress>(value =>
             {
                 ProgressChanged?.Invoke(value);
