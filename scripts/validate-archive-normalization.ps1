@@ -1,11 +1,14 @@
 [CmdletBinding()]
 param(
     [string]$RarArchive,
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$RepoRoot,
     [switch]$KeepArtifacts
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = Split-Path -Parent $PSScriptRoot
+}
 $repoRootFull = [IO.Path]::GetFullPath($RepoRoot)
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $repoRootFull 'artifacts\archive-validation'))
 $releaseAdmin = Join-Path $repoRootFull 'server\target\release\launcher-admin.exe'

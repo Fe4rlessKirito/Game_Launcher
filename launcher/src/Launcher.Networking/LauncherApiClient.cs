@@ -85,18 +85,13 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
     public async Task<IReadOnlyList<ResolvedPack>> ResolvePacksAsync(string buildId, IReadOnlyCollection<string> encodedHashes, CancellationToken cancellationToken = default)
     {
         var endpoint = new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/packs/resolve");
-        for (var attempt = 0; ; attempt++)
-        {
-            using var response = await httpClient.PostAsJsonAsync(endpoint, new PackResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.ServiceUnavailable || response.Headers.RetryAfter is null || attempt >= MaxRestorePolls - 1)
-            {
-                response.EnsureSuccessStatusCode();
-                return await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
-            }
-
-            var delay = response.Headers.RetryAfter?.Delta ?? DefaultRestorePollDelay;
-            await Task.Delay(TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 1, 30)), cancellationToken).ConfigureAwait(false);
-        }
+        // Physical packs are an optional acceleration path. A deployment may
+        // legitimately have pack storage disabled, so do not interpret every
+        // 503/Retry-After response as a cold restore. The caller catches this
+        // failure and immediately falls back to logical chunk resolution.
+        using var response = await httpClient.PostAsJsonAsync(endpoint, new PackResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
     private sealed record CatalogResponse([property: JsonPropertyName("items")] IReadOnlyList<GameCatalogItem> Items, [property: JsonPropertyName("next_cursor")] string? NextCursor);

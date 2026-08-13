@@ -58,7 +58,6 @@ if ($LASTEXITCODE -eq 0) { throw "Mutated Rust-signed manifest was accepted by t
 Run-Checked $admin (@("ingest", (Join-Path $fixtureRoot "B"), "--output", $packageB, "--game-id", "synthetic-game", "--build-id", "build-b", "--display-version", "B", "--executable", "SyntheticGame.exe") + $commonPackagerArgs)
 Run-Checked $admin @("manifest-sign", (Join-Path $packageB "manifest.json"), "--output", (Join-Path $packageB "manifest.sig.json"), "--key-id", "local-e2e-key")
 Run-Checked $admin @("publish", $packageA, "--catalog-root", $catalogRoot, "--storage-root", $storageRoot)
-Run-Checked $admin @("publish", $packageB, "--catalog-root", $catalogRoot, "--storage-root", $storageRoot)
 
 $env:LAUNCHER_STORAGE_ROOT = $storageRoot
 $env:LAUNCHER_CATALOG_ROOT = $catalogRoot
@@ -68,15 +67,31 @@ $env:RUST_LOG = "info"
 Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
 if (Test-Path -LiteralPath $apiLog) { Remove-Item -LiteralPath $apiLog -Force }
 if (Test-Path -LiteralPath $apiErrorLog) { Remove-Item -LiteralPath $apiErrorLog -Force }
-$apiProcess = Start-Process -FilePath $apiBinary -WorkingDirectory $repoRoot -PassThru -RedirectStandardOutput $apiLog -RedirectStandardError $apiErrorLog -WindowStyle Hidden
-try {
-    $apiStartupStopwatch = [Diagnostics.Stopwatch]::StartNew()
-    $healthy = $false
+
+function Start-LocalApi([string]$OutputLog, [string]$ErrorLog) {
+    $process = Start-Process -FilePath $apiBinary -WorkingDirectory $repoRoot -PassThru -RedirectStandardOutput $OutputLog -RedirectStandardError $ErrorLog -WindowStyle Hidden
     for ($attempt = 0; $attempt -lt 50; $attempt++) {
         Start-Sleep -Milliseconds 200
-        try { if ((Invoke-RestMethod "http://127.0.0.1:18081/health").status -eq "ok") { $healthy = $true; break } } catch { }
+        try {
+            if ((Invoke-RestMethod "http://127.0.0.1:18081/health").status -eq "ok") { return $process }
+        }
+        catch { }
+        if ($process.HasExited) { throw "Local API exited during startup. See $ErrorLog" }
     }
-    if (-not $healthy) { throw "Local API did not become healthy. See $apiErrorLog" }
+    throw "Local API did not become healthy. See $ErrorLog"
+}
+
+function Stop-LocalApi($process) {
+    if ($process -and -not $process.HasExited) {
+        Stop-Process -Id $process.Id -Force
+        $process.WaitForExit()
+    }
+}
+
+$apiProcess = $null
+try {
+    $apiStartupStopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $apiProcess = Start-LocalApi $apiLog $apiErrorLog
     $apiStartupStopwatch.Stop()
 
     $runner = Join-Path $repoRoot "launcher\src\Launcher.E2E\bin\Release\net10.0\Launcher.E2E.dll"
@@ -88,9 +103,9 @@ try {
         $env:LAUNCHER_E2E_SOURCE = $Source
         if ([String]::IsNullOrEmpty($BuildId)) { Remove-Item Env:LAUNCHER_E2E_BUILD_ID -ErrorAction SilentlyContinue } else { $env:LAUNCHER_E2E_BUILD_ID = $BuildId }
         $phaseStopwatch = [Diagnostics.Stopwatch]::StartNew()
-        $lines = & $dotnet $runner
+        $lines = @(& $dotnet $runner 2>&1 | ForEach-Object { $_.ToString() })
         $phaseStopwatch.Stop()
-        if ($LASTEXITCODE -ne 0) { throw "Launcher E2E phase $Mode failed" }
+        if ($LASTEXITCODE -ne 0) { throw "Launcher E2E phase $Mode failed:`n$($lines -join [Environment]::NewLine)" }
         $json = $lines | Where-Object { $_ -match '^\s*\{' } | Select-Object -Last 1
         if ([String]::IsNullOrWhiteSpace($json)) { throw "Launcher E2E phase $Mode emitted no JSON result" }
         $result = $json | ConvertFrom-Json
@@ -100,6 +115,11 @@ try {
 
     $installMetrics = Run-E2E "install" (Join-Path $fixtureRoot "A") "build-a"
     if (-not (Test-Path -LiteralPath (Join-Path $installRoot "launched.txt"))) { throw "Synthetic game did not launch" }
+
+    Stop-LocalApi $apiProcess
+    $apiProcess = $null
+    Run-Checked $admin @("publish", $packageB, "--catalog-root", $catalogRoot, "--storage-root", $storageRoot)
+    $apiProcess = Start-LocalApi (Join-Path $runRoot "api-update.log") (Join-Path $runRoot "api-update.error.log")
     $updateMetrics = Run-E2E "update" (Join-Path $fixtureRoot "B")
 
     $changedPath = Join-Path $installRoot "Data\changed.txt"
@@ -182,7 +202,7 @@ try {
     $metrics | ConvertTo-Json -Depth 4
 }
 finally {
-    if ($apiProcess -and -not $apiProcess.HasExited) { Stop-Process -Id $apiProcess.Id -Force }
+    Stop-LocalApi $apiProcess
     Remove-Item Env:LAUNCHER_E2E_MODE -ErrorAction SilentlyContinue
     Remove-Item Env:LAUNCHER_E2E_API -ErrorAction SilentlyContinue
     Remove-Item Env:LAUNCHER_E2E_STATE_ROOT -ErrorAction SilentlyContinue
