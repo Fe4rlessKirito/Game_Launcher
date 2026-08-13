@@ -1,0 +1,81 @@
+services:
+  api:
+    env_file:
+      - ../secrets/telegram.env
+    environment:
+      LAUNCHER_STORAGE_PROVIDERS: local,telegram
+      TELEGRAM_COLD_ENABLED: "true"
+      TELEGRAM_BOT_API_BASE_URL: http://telegram-bot-api-proxy:8081
+      TELEGRAM_COLD_MAX_UPLOAD_BYTES: "536870912"
+      TELEGRAM_COLD_STATE_FILE: /var/lib/launcher/storage/telegram-cold-state.json
+      PACK_STORAGE_ENABLED: "true"
+      LAUNCHER_PACK_COLD_ONLY: "true"
+    depends_on:
+      telegram-bot-api-proxy:
+        condition: service_started
+
+  worker:
+    env_file:
+      - ../secrets/telegram.env
+    build:
+      context: ..
+      dockerfile: deploy/worker.Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      LAUNCHER_STORAGE_ROOT: /var/lib/launcher/storage
+      LAUNCHER_STORAGE_PROVIDERS: local,telegram
+      LAUNCHER_LOCAL_TIER: HOT
+      LAUNCHER_AUTO_MIGRATE: "0"
+      TELEGRAM_COLD_ENABLED: "true"
+      TELEGRAM_BOT_API_BASE_URL: http://telegram-bot-api-proxy:8081
+      TELEGRAM_COLD_MAX_UPLOAD_BYTES: "536870912"
+      TELEGRAM_COLD_STATE_FILE: /var/lib/launcher/storage/telegram-cold-state.json
+      PACK_STORAGE_ENABLED: "true"
+      LAUNCHER_PACK_COLD_ONLY: "true"
+    command: ["storage", "worker", "--poll-seconds", "15", "--storage-root", "/var/lib/launcher/storage"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      telegram-bot-api-proxy:
+        condition: service_started
+    volumes:
+      - launcher-storage:/var/lib/launcher/storage
+
+  telegram-bot-api:
+    build:
+      context: ..
+      dockerfile: deploy/telegram-bot-api-local.Dockerfile
+      args:
+        TELEGRAM_BOT_API_BUILD_PARALLELISM: "2"
+    restart: unless-stopped
+    env_file:
+      - ../secrets/telegram-api.env
+    environment:
+      PORT: "8081"
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    tmpfs:
+      - /tmp/telegram-bot-api:size=2g,mode=1777
+
+  telegram-bot-api-proxy:
+    build:
+      context: ..
+      dockerfile: deploy/telegram-bot-api-file-proxy-local.Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: "8081"
+      TELEGRAM_BOT_API_UPSTREAM_HOST: telegram-bot-api
+      TELEGRAM_LOCAL_API_PORT: "8081"
+    depends_on:
+      telegram-bot-api:
+        condition: service_started
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
+
+  caddy:
+    volumes:
+      - ./VpsCaddyfile:/etc/caddy/Caddyfile:ro
+
+volumes:
+  telegram-bot-api-data:

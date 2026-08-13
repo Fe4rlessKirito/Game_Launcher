@@ -27,4 +27,5 @@ trap cleanup INT TERM EXIT
 
 exec python3 /usr/local/bin/telegram-bot-api-file-proxy.py \
     --listen="$public_port" \
+    --upstream-host="${TELEGRAM_BOT_API_UPSTREAM_HOST:-127.0.0.1}" \
     --upstream="$local_api_port"

@@ -87,7 +87,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def forward(self, parsed) -> None:
         content_length = int(self.headers.get("Content-Length", "0"))
-        upstream = http.client.HTTPConnection("127.0.0.1", self.server.upstream_port, timeout=300)
+        upstream = http.client.HTTPConnection(
+            self.server.upstream_host,
+            self.server.upstream_port,
+            timeout=300,
+        )
         try:
             headers = {
                 key: value
@@ -134,17 +138,27 @@ class ProxyServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, handler, upstream_port: int):
+    def __init__(self, address, handler, upstream_host: str, upstream_port: int):
         super().__init__(address, handler)
+        self.upstream_host = upstream_host
         self.upstream_port = upstream_port
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--listen", type=int, required=True)
+    parser.add_argument(
+        "--upstream-host",
+        default=os.environ.get("TELEGRAM_BOT_API_UPSTREAM_HOST", "127.0.0.1"),
+    )
     parser.add_argument("--upstream", type=int, required=True)
     args = parser.parse_args()
-    server = ProxyServer(("0.0.0.0", args.listen), ProxyHandler, args.upstream)
+    server = ProxyServer(
+        ("0.0.0.0", args.listen),
+        ProxyHandler,
+        args.upstream_host,
+        args.upstream,
+    )
     server.serve_forever(poll_interval=0.5)
 
 
