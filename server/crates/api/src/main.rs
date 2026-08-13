@@ -32,6 +32,8 @@ use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer, trace::TraceLaye
 use tracing::{info, warn};
 use uuid::Uuid;
 
+const MIN_OPERATOR_TOKEN_BYTES: usize = 32;
+
 #[derive(Clone)]
 struct AppState {
     database: Option<Database>,
@@ -210,6 +212,11 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(|value| Arc::new(value.trim().to_owned()));
+    if let Some(token) = operator_token.as_ref()
+        && token.len() < MIN_OPERATOR_TOKEN_BYTES
+    {
+        anyhow::bail!("LAUNCHER_OPERATOR_TOKEN must be at least {MIN_OPERATOR_TOKEN_BYTES} bytes");
+    }
     let operator_auth_required = env_bool("LAUNCHER_OPERATOR_AUTH_REQUIRED", false);
     let max_request_bytes = env::var("LAUNCHER_MAX_REQUEST_BYTES")
         .ok()
@@ -812,10 +819,25 @@ fn require_operator(state: &AppState, headers: &HeaderMap) -> Result<(), ApiResp
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim);
-    if supplied != Some(expected.as_str()) {
+    if supplied.is_none_or(|supplied| !constant_time_token_eq(supplied, expected)) {
         return Err(ApiResponseError::unauthorized());
     }
     Ok(())
+}
+
+fn constant_time_token_eq(supplied: &str, expected: &str) -> bool {
+    let supplied = supplied.as_bytes();
+    let expected = expected.as_bytes();
+    let max_len = supplied.len().max(expected.len());
+    let mut difference = supplied.len() ^ expected.len();
+
+    for index in 0..max_len {
+        let supplied_byte = supplied.get(index).copied().unwrap_or_default();
+        let expected_byte = expected.get(index).copied().unwrap_or_default();
+        difference |= usize::from(supplied_byte ^ expected_byte);
+    }
+
+    difference == 0
 }
 
 fn metric_label(value: &str) -> String {
@@ -1755,6 +1777,17 @@ impl IntoResponse for ApiResponseError {
 mod tests {
     use super::*;
     use launcher_common::{ChunkRef, ChunkingConfig, EncodingConfig, FileRecipe, LaunchProfile};
+
+    #[test]
+    fn operator_token_comparison_requires_exact_bytes() {
+        assert!(constant_time_token_eq("operator-token", "operator-token"));
+        assert!(!constant_time_token_eq("operator-token", "operator-toke"));
+        assert!(!constant_time_token_eq(
+            "operator-token",
+            "operator-token-extra"
+        ));
+        assert!(!constant_time_token_eq("", "operator-token"));
+    }
 
     #[tokio::test]
     async fn resolve_chunks_returns_provider_and_independent_mirror_locations() {
