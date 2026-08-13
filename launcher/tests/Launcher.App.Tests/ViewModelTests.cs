@@ -1,4 +1,6 @@
 using Launcher.App.ViewModels;
+using Launcher.App.Runtime;
+using Launcher.Core;
 
 namespace Launcher.App.Tests;
 
@@ -91,5 +93,31 @@ public class ViewModelTests
 
         shell.ToggleReadyToPlayCommand.Execute(null);
         Assert.Equal(4, favorites.VisibleGames.Count);
+    }
+
+    [Fact]
+    public void LibrarySearchFiltersMainLibraryAndSidebarTogether()
+    {
+        var shell = new ShellViewModel();
+        var library = Assert.IsType<LibraryViewModel>(shell.CurrentPage);
+        library.ApplyRuntimeGames(
+        [
+            new RuntimeGame("synthetic", "synthetic", "Synthetic Game", "", "SG", "build-synthetic", "1.0.0", 90, GameState.Launchable, "", null, null),
+            new RuntimeGame("build", "build", "Build Playground", "", "BP", "build-playground", "1.0.0", 90, GameState.NotInstalled, "", null, null)
+        ]);
+
+        shell.SearchQuery = "build";
+
+        Assert.Single(library.Games);
+        Assert.Equal("Build Playground", library.Games[0].Title);
+        Assert.Single(library.RecentlyPlayed);
+        Assert.Equal("Build Playground", library.RecentlyPlayed[0].Title);
+        Assert.Single(shell.SidebarCategories[0].VisibleGames);
+        Assert.Equal("Build Playground", shell.SidebarCategories[0].VisibleGames[0].Title);
+
+        shell.ClearSearchCommand.Execute(null);
+
+        Assert.Equal(2, library.Games.Count);
+        Assert.Equal(4, shell.SidebarCategories[0].VisibleGames.Count);
     }
 }

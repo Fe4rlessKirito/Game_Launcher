@@ -7,6 +7,10 @@ namespace Launcher.App.ViewModels;
 
 public partial class LibraryViewModel : ObservableObject
 {
+    private IReadOnlyList<GameTile> _allGames = [];
+    private IReadOnlyList<HomeGame> _allRecentlyPlayed = [];
+    private IReadOnlyList<HomeGame> _allPlayNext = [];
+
     public ObservableCollection<HomeGame> RecentlyPlayed { get; } = [];
     public ObservableCollection<GameTile> Games { get; } = [];
     public ObservableCollection<HomeGame> PlayNext { get; } = [];
@@ -15,22 +19,47 @@ public partial class LibraryViewModel : ObservableObject
 
     public void ApplyRuntimeGames(IReadOnlyList<RuntimeGame> games)
     {
-        Games.Clear();
-        RecentlyPlayed.Clear();
-        PlayNext.Clear();
+        _allGames = games
+            .Select(game => new GameTile(game.Title, game.StatusText, game.DisplayVersion, game.Monogram, game.State, game.Id))
+            .ToArray();
+        _allRecentlyPlayed = games
+            .Select(game => new HomeGame(game.Title, game.StatusText, game.Monogram, game.IsInstalled ? "Play" : "Explore"))
+            .ToArray();
+        _allPlayNext = games
+            .Where(game => !game.IsInstalled || game.State == GameState.UpdateAvailable)
+            .Take(4)
+            .Select(game => new HomeGame(
+                game.Title,
+                game.State == GameState.UpdateAvailable ? "An update is ready" : "A verified build is waiting",
+                game.Monogram,
+                game.State == GameState.UpdateAvailable ? "Update" : "Install"))
+            .ToArray();
 
-        foreach (var game in games)
-        {
-            Games.Add(new GameTile(game.Title, game.StatusText, game.DisplayVersion, game.Monogram, game.State, game.Id));
-            RecentlyPlayed.Add(new HomeGame(game.Title, game.StatusText, game.Monogram, game.IsInstalled ? "Play" : "Explore"));
-        }
+        ApplySearch(string.Empty);
+    }
 
-        foreach (var game in games.Where(game => !game.IsInstalled || game.State == GameState.UpdateAvailable).Take(4))
-        {
-            PlayNext.Add(new HomeGame(game.Title, game.State == GameState.UpdateAvailable ? "An update is ready" : "A verified build is waiting", game.Monogram, game.State == GameState.UpdateAvailable ? "Update" : "Install"));
-        }
-
+    public void ApplySearch(string? query)
+    {
+        var filter = query?.Trim() ?? string.Empty;
+        Games.ReplaceWith(_allGames.Where(game => Matches(game.Title, filter)));
+        RecentlyPlayed.ReplaceWith(_allRecentlyPlayed.Where(game => Matches(game.Title, filter)));
+        PlayNext.ReplaceWith(_allPlayNext.Where(game => Matches(game.Title, filter)));
         OnPropertyChanged(nameof(GameCountDisplay));
+    }
+
+    private static bool Matches(string title, string filter) =>
+        filter.Length == 0 || title.Contains(filter, StringComparison.OrdinalIgnoreCase);
+}
+
+internal static class ObservableCollectionExtensions
+{
+    public static void ReplaceWith<T>(this ObservableCollection<T> collection, IEnumerable<T> items)
+    {
+        collection.Clear();
+        foreach (var item in items)
+        {
+            collection.Add(item);
+        }
     }
 }
 

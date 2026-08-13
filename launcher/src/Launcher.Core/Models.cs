@@ -121,7 +121,7 @@ public sealed record LauncherSettings(
     long CacheSizeBytes = 20L * 1024 * 1024 * 1024,
     string DefaultGameDirectory = "",
     bool ReducedMotion = false,
-    string ApiBaseUrl = "http://5.231.32.191",
+    string ApiBaseUrl = "https://vaultnode.pp.ua",
     IReadOnlyDictionary<string, string>? TrustedManifestKeysPem = null);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

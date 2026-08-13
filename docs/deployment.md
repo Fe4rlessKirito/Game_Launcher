@@ -58,9 +58,10 @@ concurrency limit by default. Keep both limits enabled in production; adjust
 the deployment has been measured and the values are set in the secret-managed
 environment.
 
-The launcher uses the current Mantle IP only as a development fallback. A
-release build must set `LAUNCHER_API_BASE_URL` or ship a local settings file
-with the HTTPS hostname.
+The launcher defaults to `https://vaultnode.pp.ua` and migrates the historical
+Mantle IP/local URLs to that HTTPS endpoint. During DNS cutover, set
+`LAUNCHER_API_BASE_URL` or the local settings file to the final HTTPS hostname;
+do not ship an IP or HTTP API URL in a release build.
 
 ## Historical Railway API deployment
 

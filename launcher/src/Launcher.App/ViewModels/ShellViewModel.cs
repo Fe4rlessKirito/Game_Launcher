@@ -177,6 +177,8 @@ public partial class ShellViewModel : ObservableObject
             category.ApplyFilter(value);
         }
 
+        _libraryPage.ApplySearch(value);
+
         OnPropertyChanged(nameof(HasSearchQuery));
     }
 

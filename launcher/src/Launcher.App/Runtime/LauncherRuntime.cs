@@ -62,9 +62,10 @@ public sealed record LauncherRuntimeSnapshot(
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
-    // Mantle is the active deployment. Set LAUNCHER_API_BASE_URL (or the local
-    // settings file) to the eventual HTTPS hostname before public release.
-    private const string DefaultMantleApiBaseUrl = "http://5.231.32.191";
+    // The public release endpoint must be HTTPS. Operators can override it
+    // with LAUNCHER_API_BASE_URL or the local settings file during cutover.
+    private const string DefaultMantleApiBaseUrl = "https://vaultnode.pp.ua";
+    private const string LegacyMantleIpBaseUrl = "http://5.231.32.191";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
     private readonly LauncherSettings _settings;
     private readonly LauncherPaths _paths;
@@ -123,7 +124,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
         }
 
         if (string.IsNullOrWhiteSpace(settings.ApiBaseUrl)
-            || settings.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase))
+            || settings.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
+            || settings.ApiBaseUrl.Equals(LegacyMantleIpBaseUrl, StringComparison.OrdinalIgnoreCase))
         {
             settings = settings with { ApiBaseUrl = DefaultMantleApiBaseUrl };
         }
