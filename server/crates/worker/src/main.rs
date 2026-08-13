@@ -2839,6 +2839,7 @@ async fn publish_physical_packs(
             .and_then(|value| value.to_str())
             .context("pack filename is not valid UTF-8")?;
         let bytes = std::fs::read(&path)?;
+        let pack_size = bytes.len();
         let actual_hash = blake3::hash(&bytes).to_hex().to_string();
         if actual_hash != pack_hash {
             anyhow::bail!(
@@ -2853,18 +2854,21 @@ async fn publish_physical_packs(
         reader
             .verify_pack_hash(pack_hash)
             .map_err(|error| anyhow::anyhow!("pack identity verification failed: {error}"))?;
+        let entries = reader.entries().to_vec();
+        drop(reader);
+        drop(bytes);
         database
             .upsert_physical_pack(
                 pack_hash,
                 1,
-                i64::try_from(bytes.len())?,
-                i64::try_from(reader.entries().len())?,
+                i64::try_from(pack_size)?,
+                i64::try_from(entries.len())?,
                 i64::try_from(pack_config.target_bytes)?,
                 "UPLOADING",
             )
             .await?;
         database.attach_build_pack(build_id, pack_hash).await?;
-        for entry in reader.entries() {
+        for entry in &entries {
             database
                 .add_pack_chunk(
                     pack_hash,
@@ -2878,7 +2882,7 @@ async fn publish_physical_packs(
                 )
                 .await?;
         }
-        let plan = placement_engine.plan_with_pools(bytes.len() as u64, &[], &placement_pools);
+        let plan = placement_engine.plan_with_pools(pack_size as u64, &[], &placement_pools);
         if !plan.policy_satisfied {
             anyhow::bail!(
                 "storage policy cannot be satisfied for pack {}: {}",
@@ -2892,7 +2896,7 @@ async fn publish_physical_packs(
                 anyhow::anyhow!("storage provider {} is not configured", action.provider_id)
             })?;
             provider
-                .put_pack(pack_hash, &bytes)
+                .put_pack_file(pack_hash, &path)
                 .await
                 .with_context(|| {
                     format!(
@@ -2924,8 +2928,8 @@ async fn publish_physical_packs(
             .upsert_physical_pack(
                 pack_hash,
                 1,
-                i64::try_from(bytes.len())?,
-                i64::try_from(reader.entries().len())?,
+                i64::try_from(pack_size)?,
+                i64::try_from(entries.len())?,
                 i64::try_from(pack_config.target_bytes)?,
                 "VERIFIED",
             )

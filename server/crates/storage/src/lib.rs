@@ -214,6 +214,14 @@ pub trait StorageProvider: Send + Sync {
             "physical pack uploads are not supported by this provider".to_owned(),
         ))
     }
+    /// Upload a physical pack from a file without requiring the provider to
+    /// clone the complete pack in memory. Providers that can stream a file
+    /// should override this; the default keeps compatibility with providers
+    /// that only expose the byte-slice API.
+    async fn put_pack_file(&self, pack_hash: &str, path: &Path) -> Result<(), StorageError> {
+        let bytes = tokio::fs::read(path).await?;
+        self.put_pack(pack_hash, &bytes).await
+    }
     async fn read_pack(&self, pack_hash: &str) -> Result<Vec<u8>, StorageError> {
         let _ = pack_hash;
         Err(StorageError::Provider(

@@ -3,13 +3,15 @@ use super::{
     StorageProviderCapabilities, StorageTier,
 };
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use futures_util::{StreamExt, stream};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -258,6 +260,66 @@ impl TelegramColdStorageProvider {
         chat
     }
 
+    async fn upload_file(
+        &self,
+        hash: &str,
+        path: &Path,
+        size: u64,
+        extension: &str,
+    ) -> Result<(), StorageError> {
+        self.ensure_state_loaded().await?;
+        if size > self.config.max_upload_bytes {
+            return Err(StorageError::Configuration(format!(
+                "Telegram COLD object exceeds configured upload limit of {} bytes",
+                self.config.max_upload_bytes
+            )));
+        }
+        super::validate_hash(hash)?;
+        let file = tokio::fs::File::open(path).await?;
+        let body_stream =
+            stream::unfold(Some((file, vec![0_u8; 1024 * 1024])), |state| async move {
+                let (mut file, mut buffer) = state?;
+                match file.read(&mut buffer).await {
+                    Ok(0) => None,
+                    Ok(read) => Some((
+                        Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
+                        Some((file, buffer)),
+                    )),
+                    Err(error) => Some((Err(error), None)),
+                }
+            });
+        let chat_id = self.target_chat().await;
+        let document = Part::stream(reqwest::Body::wrap_stream(body_stream))
+            .file_name(format!("{hash}{extension}"));
+        let form = Form::new()
+            .text("chat_id", chat_id.to_string())
+            .text("caption", format!("launcher-object:{hash}"))
+            .part("document", document);
+        let message: TelegramMessage = self
+            .call(
+                "sendDocument",
+                self.client
+                    .post(self.endpoint("sendDocument"))
+                    .multipart(form),
+            )
+            .await?;
+        let document = message.document.ok_or_else(|| {
+            StorageError::Provider("Telegram did not return a document reference".to_owned())
+        })?;
+        self.state.lock().await.objects.insert(
+            hash.to_owned(),
+            TelegramObjectRef {
+                chat_id,
+                message_id: message.message_id,
+                file_id: document.file_id,
+                file_unique_id: document.file_unique_id,
+                size,
+                updated_at: Utc::now(),
+            },
+        );
+        self.save_state().await
+    }
+
     async fn upload(&self, hash: &str, bytes: &[u8], extension: &str) -> Result<(), StorageError> {
         self.ensure_state_loaded().await?;
         if bytes.len() as u64 > self.config.max_upload_bytes {
@@ -482,6 +544,10 @@ impl StorageProvider for TelegramColdStorageProvider {
     async fn put_pack(&self, pack_hash: &str, bytes: &[u8]) -> Result<(), StorageError> {
         super::verify_pack_bytes(pack_hash, bytes)?;
         self.upload(pack_hash, bytes, ".pack").await
+    }
+    async fn put_pack_file(&self, pack_hash: &str, path: &Path) -> Result<(), StorageError> {
+        let size = tokio::fs::metadata(path).await?.len();
+        self.upload_file(pack_hash, path, size, ".pack").await
     }
     async fn read_pack(&self, pack_hash: &str) -> Result<Vec<u8>, StorageError> {
         let bytes = self.read(pack_hash).await?;
