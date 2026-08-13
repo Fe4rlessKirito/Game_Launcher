@@ -7,7 +7,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-launcher}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # PostgreSQL 18 stores data below a versioned subdirectory under this
+      # parent mount, which also keeps pg_upgrade usable across major versions.
+      - postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
