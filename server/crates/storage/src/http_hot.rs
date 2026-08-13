@@ -777,12 +777,15 @@ impl HttpHotStorage {
             )));
         }
         let reference = self.state_reference(hash, pack)?;
-        let remote_id = reference.remote_id.ok_or_else(|| {
-            StorageError::Provider(format!(
-                "{} object has no remote ID",
-                self.kind.provider_type()
-            ))
-        })?;
+        let remote_id = reference
+            .remote_id
+            .or_else(|| infer_filemirage_remote_id(&reference.url))
+            .ok_or_else(|| {
+                StorageError::Provider(format!(
+                    "{} object has no remote ID",
+                    self.kind.provider_type()
+                ))
+            })?;
         let _slot = self.acquire_slot().await?;
         let response = self
             .auth(self.client.delete(format!(
@@ -1013,6 +1016,21 @@ fn extract_filemirage_direct_url(html: &str) -> Option<String> {
     let end = remainder.find('"')?;
     let url = &remainder[..end];
     (url.starts_with("http://") || url.starts_with("https://")).then(|| url.to_owned())
+}
+
+fn infer_filemirage_remote_id(url: &str) -> Option<String> {
+    let candidate = url.rsplit('/').next()?.trim();
+    let bytes = candidate.as_bytes();
+    let hyphens = [8_usize, 13, 18, 23];
+    let valid_shape = bytes.len() == 36
+        && hyphens
+            .into_iter()
+            .all(|index| bytes.get(index) == Some(&b'-'))
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| hyphens.contains(&index) || byte.is_ascii_hexdigit());
+    valid_shape.then(|| candidate.to_owned())
 }
 
 fn extract_url(body: &[u8], server: &str) -> Option<String> {
