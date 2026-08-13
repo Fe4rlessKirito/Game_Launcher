@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$BuildId,
-    [Parameter(Mandatory = $true)][string]$EncodedHash,
+    [string]$EncodedHash,
+    [string]$PackHash,
     [string]$WorkerService = "worker",
     [string]$StorageRoot = "/var/lib/launcher/storage",
     [string]$LocalStorageRoot = "artifacts\staging-storage",
@@ -21,19 +22,36 @@ if (-not $Confirm) {
 if (-not $BuildId.StartsWith("staging-", [StringComparison]::OrdinalIgnoreCase)) {
     throw "Cold restore test only accepts build IDs beginning with staging-"
 }
-if ($EncodedHash -cnotmatch "^[0-9a-f]{64}$") {
+if ([string]::IsNullOrWhiteSpace($EncodedHash) -eq [string]::IsNullOrWhiteSpace($PackHash)) {
+    throw "Provide exactly one of -EncodedHash (legacy logical-object smoke) or -PackHash (physical-pack smoke)"
+}
+if ($EncodedHash -and $EncodedHash -cnotmatch "^[0-9a-f]{64}$") {
     throw "EncodedHash must be a 64-character lowercase BLAKE3 hash"
+}
+if ($PackHash -and $PackHash -cnotmatch "^[0-9a-f]{64}$") {
+    throw "PackHash must be a 64-character lowercase BLAKE3 hash"
 }
 if ($Mantle -and $Local) { throw "Choose -Mantle or -Local, not both" }
 if (-not $Mantle -and -not $Local) { $Local = $true }
 
-$arguments = @(
-    "storage", "cold-restore-smoke",
-    "--build-id", $BuildId,
-    "--encoded-hash", $EncodedHash,
-    "--confirm",
-    "--storage-root", $StorageRoot
-)
+$arguments = if ($PackHash) {
+    @(
+        "storage", "cold-pack-restore-smoke",
+        "--build-id", $BuildId,
+        "--pack-hash", $PackHash,
+        "--confirm",
+        "--storage-root", $StorageRoot
+    )
+}
+else {
+    @(
+        "storage", "cold-restore-smoke",
+        "--build-id", $BuildId,
+        "--encoded-hash", $EncodedHash,
+        "--confirm",
+        "--storage-root", $StorageRoot
+    )
+}
 if ($Mantle) {
     if ([string]::IsNullOrWhiteSpace($RemoteHost)) {
         throw "-RemoteHost is required with -Mantle"
@@ -47,12 +65,9 @@ if ($Mantle) {
 }
 else {
     $localArguments = @(
-        "storage", "cold-restore-smoke",
-        "--build-id", $BuildId,
-        "--encoded-hash", $EncodedHash,
-        "--confirm",
-        "--storage-root", (Resolve-StagingPath $LocalStorageRoot)
+        $arguments
     )
+    $localArguments[-1] = (Resolve-StagingPath $LocalStorageRoot)
     Invoke-LauncherAdmin $localArguments
 }
 

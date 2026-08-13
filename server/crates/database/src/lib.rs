@@ -1721,6 +1721,19 @@ impl Database {
         Ok(())
     }
 
+    pub async fn delete_pack_locations_for_provider(
+        &self,
+        pack_hash: &str,
+        provider: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query("DELETE FROM pack_locations WHERE pack_hash=$1 AND provider=$2")
+            .bind(pack_hash)
+            .bind(provider)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn enqueue_restore_job(
         &self,
         encoded_hash: &str,

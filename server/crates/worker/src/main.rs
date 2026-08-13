@@ -303,6 +303,18 @@ enum StorageCommands {
         #[arg(long, default_value = "storage")]
         storage_root: PathBuf,
     },
+    ColdPackRestoreSmoke {
+        #[arg(long)]
+        build_id: String,
+        #[arg(long)]
+        pack_hash: String,
+        #[arg(long, default_value = "filemirage")]
+        target_provider: String,
+        #[arg(long)]
+        confirm: bool,
+        #[arg(long, default_value = "storage")]
+        storage_root: PathBuf,
+    },
     Gc {
         #[arg(long)]
         dry_run: bool,
@@ -1357,6 +1369,22 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             )
             .await?;
         }
+        StorageCommands::ColdPackRestoreSmoke {
+            build_id,
+            pack_hash,
+            target_provider,
+            confirm,
+            storage_root,
+        } => {
+            run_cold_pack_restore_smoke(
+                &build_id,
+                &pack_hash,
+                &target_provider,
+                confirm,
+                &storage_root,
+            )
+            .await?;
+        }
         StorageCommands::Gc { dry_run, limit } => {
             let database = command_database().await?;
             let objects = database.list_unreachable_storage_objects(limit).await?;
@@ -1738,6 +1766,86 @@ async fn run_cold_restore_smoke(
         job.id,
         hot.provider_id(),
         restored_size
+    );
+    Ok(())
+}
+
+async fn run_cold_pack_restore_smoke(
+    build_id: &str,
+    pack_hash: &str,
+    target_provider: &str,
+    confirm: bool,
+    storage_root: &Path,
+) -> Result<()> {
+    if !confirm {
+        anyhow::bail!(
+            "cold pack restore smoke deletes one HOT physical pack; pass --confirm after selecting a staging-only build"
+        );
+    }
+    if !build_id.starts_with("staging-") {
+        anyhow::bail!("cold pack restore smoke only accepts build IDs beginning with staging-");
+    }
+    if pack_hash.len() != 64 || !pack_hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("pack hash must be a 64-character hexadecimal BLAKE3 digest");
+    }
+
+    let database = command_database().await?;
+    if !database
+        .cold_pack_available_for_build(build_id, pack_hash)
+        .await?
+    {
+        anyhow::bail!(
+            "physical pack {pack_hash} is not a verified COLD location for build {build_id}"
+        );
+    }
+    let (storage, _) = storage_command_context(storage_root).await?;
+    let hot = select_provider(&storage, target_provider, StorageTier::Hot)?;
+    let cold = storage
+        .restore_sources(StorageClass::Cold)
+        .into_iter()
+        .next()
+        .context("no COLD provider is configured")?;
+
+    let original = hot
+        .read_pack(pack_hash)
+        .await
+        .context("selected HOT physical pack is already missing or unreadable")?;
+    launcher_packs::PackReader::parse(&original)?.verify_pack_hash(pack_hash)?;
+    let cold_copy = cold
+        .read_pack(pack_hash)
+        .await
+        .context("selected COLD physical pack is missing or unreadable")?;
+    launcher_packs::PackReader::parse(&cold_copy)?.verify_pack_hash(pack_hash)?;
+    println!(
+        "cold_pack_restore=SELECTED build={build_id} pack_hash={pack_hash} hot_provider={} cold_provider={} bytes={}",
+        hot.provider_id(),
+        cold.provider_id(),
+        original.len()
+    );
+
+    hot.delete_pack(pack_hash).await?;
+    database
+        .delete_pack_locations_for_provider(pack_hash, hot.provider_id())
+        .await?;
+    if hot.read_pack(pack_hash).await.is_ok() {
+        anyhow::bail!("HOT physical pack remained readable after deliberate deletion");
+    }
+
+    let job = database
+        .enqueue_pack_restore_job(pack_hash, hot.provider_id())
+        .await?;
+    process_pack_restore_job(&database, &storage, &job).await?;
+    let restored = hot
+        .read_pack(pack_hash)
+        .await
+        .context("pack restore completed without a HOT physical pack")?;
+    launcher_packs::PackReader::parse(&restored)?.verify_pack_hash(pack_hash)?;
+    println!(
+        "cold_pack_restore=PASS job={} source_provider={} restored_provider={} restored_bytes={} blake3={pack_hash}",
+        job.id,
+        cold.provider_id(),
+        hot.provider_id(),
+        restored.len()
     );
     Ok(())
 }
