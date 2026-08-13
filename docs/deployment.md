@@ -52,6 +52,12 @@ LAUNCHER_OPERATOR_TOKEN=<random-long-secret>
 LAUNCHER_OPERATOR_AUTH_REQUIRED=true
 ```
 
+The API also applies a 50 MiB request-body limit and a 256-request global
+concurrency limit by default. Keep both limits enabled in production; adjust
+`LAUNCHER_MAX_REQUEST_BYTES` and `LAUNCHER_MAX_CONCURRENT_REQUESTS` only when
+the deployment has been measured and the values are set in the secret-managed
+environment.
+
 The launcher uses the current Mantle IP only as a development fallback. A
 release build must set `LAUNCHER_API_BASE_URL` or ship a local settings file
 with the HTTPS hostname.

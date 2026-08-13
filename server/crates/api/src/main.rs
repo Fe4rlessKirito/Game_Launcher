@@ -27,7 +27,8 @@ use launcher_storage::{
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower::limit::ConcurrencyLimitLayer;
+use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -210,6 +211,16 @@ async fn main() -> anyhow::Result<()> {
         .filter(|value| !value.trim().is_empty())
         .map(|value| Arc::new(value.trim().to_owned()));
     let operator_auth_required = env_bool("LAUNCHER_OPERATOR_AUTH_REQUIRED", false);
+    let max_request_bytes = env::var("LAUNCHER_MAX_REQUEST_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(50 * 1024 * 1024)
+        .clamp(1024, 50 * 1024 * 1024);
+    let max_concurrent_requests = env::var("LAUNCHER_MAX_CONCURRENT_REQUESTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(256)
+        .clamp(8, 4096);
     let cors = match env::var("LAUNCHER_CORS_ALLOW_ORIGIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -286,6 +297,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/packs/{pack_hash}", get(get_pack))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(RequestBodyLimitLayer::new(max_request_bytes))
+        .layer(ConcurrencyLimitLayer::new(max_concurrent_requests))
         .with_state(state);
     let address: SocketAddr = env::var("LAUNCHER_BIND")
         .or_else(|_| env::var("PORT").map(|port| format!("0.0.0.0:{port}")))
