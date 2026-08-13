@@ -289,7 +289,7 @@ impl TelegramColdStorageProvider {
                 }
             });
         let chat_id = self.target_chat().await;
-        let document = Part::stream(reqwest::Body::wrap_stream(body_stream))
+        let document = Part::stream_with_length(reqwest::Body::wrap_stream(body_stream), size)
             .file_name(format!("{hash}{extension}"));
         let form = Form::new()
             .text("chat_id", chat_id.to_string())
