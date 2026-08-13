@@ -107,3 +107,77 @@ function Invoke-RailwayAdmin {
         (($Arguments | ForEach-Object { "'" + ($_ -replace "'", "'\''") + "'" }) -join " ")
     Invoke-Checked -File "railway" -Arguments @("ssh", "--service", $Service, "--", "sh", "-lc", $commandLine)
 }
+
+function Get-MantleIdentityFile {
+    param([Parameter(Mandatory = $true)][string]$IdentityFile)
+
+    $resolvedIdentity = [IO.Path]::GetFullPath($IdentityFile)
+    if (-not (Test-Path -LiteralPath $resolvedIdentity -PathType Leaf)) {
+        throw "SSH identity file was not found: $resolvedIdentity"
+    }
+    return $resolvedIdentity
+}
+
+function Invoke-MantleShell {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemoteHost,
+        [Parameter(Mandatory = $true)][string]$IdentityFile,
+        [Parameter(Mandatory = $true)][string]$Command,
+        [string]$RemoteUser = "debian"
+    )
+
+    $resolvedIdentity = Get-MantleIdentityFile $IdentityFile
+    Invoke-Checked -File "ssh" -Arguments @(
+        "-i", $resolvedIdentity,
+        "-o", "BatchMode=yes",
+        "$RemoteUser@$RemoteHost",
+        "sh", "-lc", $Command
+    )
+}
+
+function Copy-MantleDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$LocalPath,
+        [Parameter(Mandatory = $true)][string]$RemoteHost,
+        [Parameter(Mandatory = $true)][string]$IdentityFile,
+        [Parameter(Mandatory = $true)][string]$RemotePath,
+        [string]$RemoteUser = "debian"
+    )
+
+    $resolvedIdentity = Get-MantleIdentityFile $IdentityFile
+    $resolvedLocalPath = [IO.Path]::GetFullPath($LocalPath)
+    if (-not (Test-Path -LiteralPath $resolvedLocalPath -PathType Container)) {
+        throw "Local package directory was not found: $resolvedLocalPath"
+    }
+    Invoke-Checked -File "scp" -Arguments @(
+        "-r",
+        "-i", $resolvedIdentity,
+        "-o", "BatchMode=yes",
+        $resolvedLocalPath,
+        "$RemoteUser@${RemoteHost}:$RemotePath"
+    )
+}
+
+function Invoke-MantleAdmin {
+    param(
+        [Parameter(Mandatory = $true)][string]$RemoteHost,
+        [Parameter(Mandatory = $true)][string]$IdentityFile,
+        [string]$RemoteUser = "debian",
+        [string]$RemoteDirectory = "/home/debian/vaultnode",
+        [string]$Service = "worker",
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $quoteRemote = {
+        param([string]$Value)
+        return "'" + ($Value -replace "'", "'\\''") + "'"
+    }
+    $adminArguments = (($Arguments | ForEach-Object { & $quoteRemote ([string]$_) }) -join " ")
+    $remoteCommand = "cd " + (& $quoteRemote $RemoteDirectory) +
+        " && docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T " +
+        (& $quoteRemote $Service) +
+        " /usr/local/bin/launcher-admin " + $adminArguments
+
+    Invoke-MantleShell -RemoteHost $RemoteHost -IdentityFile $IdentityFile `
+        -RemoteUser $RemoteUser -Command $remoteCommand
+}

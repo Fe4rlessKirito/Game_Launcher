@@ -1,12 +1,12 @@
 # Staging provisioning runbook
 
-This is a controlled staging procedure. It does not claim that Railway,
-Cloudflare, or MEGA is currently connected.
+This is a controlled staging procedure for the Mantle VPS. It does not claim
+that Mantle, Cloudflare, or MEGA is currently connected.
 
 1. Apply the forward migration with `launcher-admin db migrate`; verify
    `launcher-admin db status` reports the provisioning tables.
 2. Configure `PROVISIONING_ENABLED=true`, the non-secret domain
-   `vaultnode.pp.ua`, a random HMAC secret in Railway, the same secret in the
+   `vaultnode.pp.ua`, a random HMAC secret in the Mantle deployment, the same secret in the
    Cloudflare Worker, and the size/skew/alias TTL settings. Keep the secret
    out of Git, chat, logs, and email.
 3. Deploy the API and the private provisioning/restore worker from the same
@@ -33,7 +33,7 @@ Cloudflare, or MEGA is currently connected.
    capacity.
 
 Record these checks for a real provider separately; this repository's automated
-suite does not claim live MEGA, Cloudflare, or Railway validation:
+suite does not claim live MEGA, Cloudflare, or Mantle validation:
 
 ```text
 MEGA network:     PASS

@@ -56,7 +56,7 @@ services:
   telegram-bot-api:
     build:
       context: ..
-      dockerfile: deploy/telegram-bot-api-local.Dockerfile
+      dockerfile: deploy/telegram-bot-api.Dockerfile
       args:
         TELEGRAM_BOT_API_BUILD_PARALLELISM: "2"
     restart: unless-stopped

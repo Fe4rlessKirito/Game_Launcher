@@ -1,23 +1,32 @@
 param(
-    [string]$WorkerService = "launcher-restore-worker",
+    [string]$WorkerService = "worker",
     [string]$StorageRoot = "/var/lib/launcher/storage",
     [int]$Bytes = 1048576,
-    [switch]$Railway,
-    [switch]$Local
+    [switch]$Mantle,
+    [switch]$Local,
+    [string]$RemoteHost,
+    [string]$RemoteUser = "debian",
+    [string]$IdentityFile,
+    [string]$RemoteDirectory = "/home/debian/vaultnode"
 )
 
 . (Join-Path $PSScriptRoot "common.ps1")
 
-if ($Railway -and $Local) { throw "Choose -Railway or -Local, not both" }
-if (-not $Railway -and -not $Local) {
+if ($Mantle -and $Local) { throw "Choose -Mantle or -Local, not both" }
+if (-not $Mantle -and -not $Local) {
     $Local = $true
 }
 
-if ($Railway) {
-    if (-not (Get-Command railway -ErrorAction SilentlyContinue)) {
-        throw "Railway CLI is required for -Railway; use the Railway UI shell if it is unavailable"
+if ($Mantle) {
+    if ([string]::IsNullOrWhiteSpace($RemoteHost)) {
+        throw "-RemoteHost is required with -Mantle"
     }
-    Invoke-RailwayAdmin -Service $WorkerService -Arguments @(
+    if ([string]::IsNullOrWhiteSpace($IdentityFile)) {
+        throw "-IdentityFile is required with -Mantle"
+    }
+    Invoke-MantleAdmin -RemoteHost $RemoteHost -RemoteUser $RemoteUser `
+        -IdentityFile $IdentityFile -RemoteDirectory $RemoteDirectory `
+        -Service $WorkerService -Arguments @(
         "storage", "telegram-smoke",
         "--storage-root", $StorageRoot,
         "--bytes", $Bytes

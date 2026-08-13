@@ -33,7 +33,7 @@ Write-Output "staging_setup=READY"
 Write-Output "staging_key_id=$KeyId"
 Write-Output "staging_public_key=$publicKey"
 Write-Output "staging_private_key=$privateKey"
-Write-Output "private_key_action=store directly in the Railway secret; never commit or send it"
+Write-Output "private_key_action=store in the Mantle deployment secret/configuration; never commit or send it"
 if (-not $SkipFixture) {
     Write-Output "synthetic_fixture=$fixtureRoot"
 }

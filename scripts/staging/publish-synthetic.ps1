@@ -2,16 +2,25 @@ param(
     [string]$FixtureRoot = "artifacts\staging-fixture",
     [string]$PackageRoot = "artifacts\staging-packages",
     [string]$PrivateKeyPath = "artifacts\staging-keys\staging-2026-01.private.pem",
-    [string]$WorkerService = "launcher-restore-worker",
+    [string]$WorkerService = "worker",
     [string]$BuildAId = "staging-a",
     [string]$BuildBId = "staging-b",
-    [switch]$KeepRemotePackages
+    [switch]$KeepRemotePackages,
+    [switch]$Mantle,
+    [switch]$Local,
+    [string]$RemoteHost,
+    [string]$RemoteUser = "debian",
+    [string]$IdentityFile,
+    [string]$RemoteDirectory = "/home/debian/vaultnode"
 )
 
 . (Join-Path $PSScriptRoot "common.ps1")
 
-if (-not (Get-Command railway -ErrorAction SilentlyContinue)) {
-    throw "Railway CLI is required to upload packages and run the private worker publish command"
+if ($Mantle -and $Local) { throw "Choose -Mantle or -Local, not both" }
+if (-not $Mantle -and -not $Local) { $Local = $true }
+if ($Mantle) {
+    if ([string]::IsNullOrWhiteSpace($RemoteHost)) { throw "-RemoteHost is required with -Mantle" }
+    if ([string]::IsNullOrWhiteSpace($IdentityFile)) { throw "-IdentityFile is required with -Mantle" }
 }
 $fixture = Resolve-StagingPath $FixtureRoot
 $packageDirectory = Assert-ArtifactPath (Resolve-StagingPath $PackageRoot)
@@ -64,39 +73,48 @@ function Sign-Package([string]$Package, [string]$KeyPath) {
 Sign-Package $packageA $privateKey
 Sign-Package $packageB $privateKey
 
-$remoteRoot = "/var/lib/launcher/staging-publish"
-$remoteA = "$remoteRoot/A"
-$remoteB = "$remoteRoot/B"
-
-# Railway CLI 5.x resolves service-scoped filesystem commands from the
-# currently linked service instead of accepting --service on this subcommand.
-Invoke-Checked -File "railway" -Arguments @("service", "link", $WorkerService)
-Invoke-Checked -File "railway" -Arguments @(
-    "service", "files", "upload",
-    $packageA, $remoteA,
-    "--overwrite"
-)
-Invoke-Checked -File "railway" -Arguments @(
-    "service", "files", "upload",
-    $packageB, $remoteB,
-    "--overwrite"
-)
-
-$publishCommand = @(
-    "set -eu",
-    "chown -R launcher:launcher '$remoteRoot'",
-    "export HOME=/var/lib/launcher/megacmd",
-    "gosu launcher /usr/local/bin/launcher-admin publish '$remoteA' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage",
-    "gosu launcher /usr/local/bin/launcher-admin publish '$remoteB' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage"
-)
-if (-not $KeepRemotePackages) {
-    $publishCommand += "rm -rf '$remoteRoot'"
+if ($Local) {
+    $catalogRoot = Resolve-StagingPath "artifacts\staging-catalog"
+    $storageRoot = Resolve-StagingPath "artifacts\staging-storage"
+    New-Item -ItemType Directory -Force -Path $catalogRoot, $storageRoot | Out-Null
+    foreach ($package in @($packageA, $packageB)) {
+        Invoke-LauncherAdmin @(
+            "publish", $package,
+            "--catalog-root", $catalogRoot,
+            "--storage-root", $storageRoot
+        )
+    }
+    $remoteRoot = $null
 }
-$remoteScript = $publishCommand -join "; "
-Invoke-Checked -File "railway" -Arguments @(
-    "ssh", "--service", $WorkerService,
-    "--", "sh", "-lc", $remoteScript
-)
+else {
+    $remoteHostRoot = "$RemoteDirectory/.staging/staging-publish"
+    $remoteContainerRoot = "/var/lib/launcher/staging-publish"
+    $remoteA = "$remoteHostRoot/A"
+    $remoteB = "$remoteHostRoot/B"
+
+    Invoke-MantleShell -RemoteHost $RemoteHost -RemoteUser $RemoteUser `
+        -IdentityFile $IdentityFile -Command "mkdir -p '$remoteHostRoot'"
+    Copy-MantleDirectory -LocalPath $packageA -RemoteHost $RemoteHost `
+        -RemoteUser $RemoteUser -IdentityFile $IdentityFile -RemotePath $remoteA
+    Copy-MantleDirectory -LocalPath $packageB -RemoteHost $RemoteHost `
+        -RemoteUser $RemoteUser -IdentityFile $IdentityFile -RemotePath $remoteB
+
+    $remoteCommands = @(
+        "set -eu",
+        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteA' '$WorkerService`:$remoteContainerRoot/A'",
+        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteB' '$WorkerService`:$remoteContainerRoot/B'",
+        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' chown -R launcher:launcher '$remoteContainerRoot'",
+        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/A' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage",
+        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/B' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage"
+    )
+    if (-not $KeepRemotePackages) {
+        $remoteCommands += "rm -rf '$remoteHostRoot'"
+        $remoteCommands += "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' rm -rf '$remoteContainerRoot'"
+    }
+    Invoke-MantleShell -RemoteHost $RemoteHost -RemoteUser $RemoteUser `
+        -IdentityFile $IdentityFile -Command ($remoteCommands -join "; ")
+    $remoteRoot = $remoteContainerRoot
+}
 
 Write-Output "synthetic_publish=PASS"
 Write-Output "build_a_id=$BuildAId"

@@ -1,12 +1,16 @@
 param(
     [Parameter(Mandatory = $true)][string]$BuildId,
     [Parameter(Mandatory = $true)][string]$EncodedHash,
-    [string]$WorkerService = "launcher-restore-worker",
+    [string]$WorkerService = "worker",
     [string]$StorageRoot = "/var/lib/launcher/storage",
     [string]$LocalStorageRoot = "artifacts\staging-storage",
-    [switch]$Railway,
+    [switch]$Mantle,
     [switch]$Local,
-    [switch]$Confirm
+    [switch]$Confirm,
+    [string]$RemoteHost,
+    [string]$RemoteUser = "debian",
+    [string]$IdentityFile,
+    [string]$RemoteDirectory = "/home/debian/vaultnode"
 )
 
 . (Join-Path $PSScriptRoot "common.ps1")
@@ -20,8 +24,8 @@ if (-not $BuildId.StartsWith("staging-", [StringComparison]::OrdinalIgnoreCase))
 if ($EncodedHash -cnotmatch "^[0-9a-f]{64}$") {
     throw "EncodedHash must be a 64-character lowercase BLAKE3 hash"
 }
-if ($Railway -and $Local) { throw "Choose -Railway or -Local, not both" }
-if (-not $Railway -and -not $Local) { $Railway = $true }
+if ($Mantle -and $Local) { throw "Choose -Mantle or -Local, not both" }
+if (-not $Mantle -and -not $Local) { $Local = $true }
 
 $arguments = @(
     "storage", "cold-restore-smoke",
@@ -30,11 +34,16 @@ $arguments = @(
     "--confirm",
     "--storage-root", $StorageRoot
 )
-if ($Railway) {
-    if (-not (Get-Command railway -ErrorAction SilentlyContinue)) {
-        throw "Railway CLI is required for -Railway; use the Railway SSH command from the dashboard"
+if ($Mantle) {
+    if ([string]::IsNullOrWhiteSpace($RemoteHost)) {
+        throw "-RemoteHost is required with -Mantle"
     }
-    Invoke-RailwayAdmin -Service $WorkerService -Arguments $arguments
+    if ([string]::IsNullOrWhiteSpace($IdentityFile)) {
+        throw "-IdentityFile is required with -Mantle"
+    }
+    Invoke-MantleAdmin -RemoteHost $RemoteHost -RemoteUser $RemoteUser `
+        -IdentityFile $IdentityFile -RemoteDirectory $RemoteDirectory `
+        -Service $WorkerService -Arguments $arguments
 }
 else {
     $localArguments = @(
