@@ -2876,6 +2876,14 @@ async fn process_pack_restore_job(
             .await?;
         return Err(error.into());
     }
+    read_verified_pack_with_retry(&hot_provider, &job.pack_hash)
+        .await
+        .with_context(|| {
+            format!(
+                "restored HOT physical pack {} could not be read back and verified",
+                job.pack_hash
+            )
+        })?;
     let object_key = format!("packs/{}.pack", job.pack_hash);
     let location = hot_provider
         .download_pack_location(&job.pack_hash)
@@ -2907,6 +2915,37 @@ async fn process_pack_restore_job(
     );
     database.complete_pack_restore_job(job.id).await?;
     Ok(())
+}
+
+async fn read_verified_pack_with_retry(
+    provider: &Arc<dyn StorageProvider>,
+    pack_hash: &str,
+) -> Result<Vec<u8>> {
+    let mut last_error = None;
+    for attempt in 0..4 {
+        match provider.read_pack(pack_hash).await {
+            Ok(bytes) => {
+                if blake3::hash(&bytes).to_hex().as_str() != pack_hash {
+                    last_error = Some(anyhow::anyhow!(
+                        "HOT physical pack BLAKE3 verification failed"
+                    ));
+                } else if let Err(error) = launcher_packs::PackReader::parse(&bytes)
+                    .and_then(|reader| reader.verify_pack_hash(pack_hash).map(|_| reader))
+                {
+                    last_error = Some(anyhow::anyhow!(
+                        "HOT physical pack structure verification failed: {error}"
+                    ));
+                } else {
+                    return Ok(bytes);
+                }
+            }
+            Err(error) => last_error = Some(anyhow::anyhow!(error.to_string())),
+        }
+        if attempt < 3 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("HOT physical pack read failed")))
 }
 
 async fn publish_verified_build(

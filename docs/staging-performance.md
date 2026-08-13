@@ -1,80 +1,86 @@
 # Staging performance record
 
-This document is a measurement sheet, not a result claim. Fill it from the
-same Railway staging environment after the live validation gate is approved.
-Do not substitute local mock-provider or localhost numbers for remote results.
+Validation run: 2026-08-13 on Mantle staging. These are observed staging
+measurements, not production capacity promises.
 
-## Environment record
+## Environment
 
-Record:
+- API and restore worker: Mantle VPS, private Docker network
+- PostgreSQL: Mantle Docker service
+- HOT: FileMirage direct URLs
+- COLD: Telegram through the private Bot API service and restore worker
+- physical-pack target/max: 512 MiB
+- logical HOT replicas: 1
+- required COLD replicas: 1
+- restore mode: ON_DEMAND
 
-- Railway region and environment name
-- API deployment ID and git commit
-- API/worker CPU and memory limits
-- PostgreSQL plan, version, connection pool size
-- Railway Bucket region, URL style, and object prefix
-- Telegram Local Bot API version/mode and worker state-volume size
-- launcher build, OS, network path, and client concurrency
-- synthetic A/B manifest IDs, encoded bytes, raw bytes, chunk count, and cache state
+## Telegram 512 MiB smoke
 
-Do not record credentials, session tokens, private keys, or full presigned URLs.
+The requested 512 MiB probe used a 534,786,242-byte pack and verified the
+same BLAKE3 digest after download.
 
-## Required measurements
+| Concurrency | Elapsed | Throughput |
+| ---: | ---: | ---: |
+| 1 | 503 ms | 1013.35 MiB/s |
+| 2 | 591 ms | 1723.61 MiB/s |
+| 4 | 914 ms | 2231.49 MiB/s |
+| 8 | 1810 ms | 2253.27 MiB/s |
+| 16 | 3609 ms | 2260.68 MiB/s |
 
-Measure each case at least three times and report median and p95:
+These numbers include the local Bot API path on the Mantle host and are not
+internet-client throughput measurements.
 
-1. API liveness, readiness, catalog, resolve, and storage-status latency.
-2. Direct HOT bucket download throughput from the launcher. The API must not
-   proxy chunk bytes; capture the resolved host and status code without saving
-   the query string.
-3. First install of synthetic build A: total encoded bytes, network bytes,
-   elapsed time, chunks downloaded, and reconstructed hash.
-4. Update A to B: reused installed bytes, reconstructed bytes, network bytes,
-   elapsed time, and byte-identical output.
-5. Resume after an interruption: partial file length, Range request offset,
-   206 response, final hash, and bytes transferred after resume.
-6. Presigned URL expiry: wait for expiry on one chunk, confirm chunk-level
-   resolve refresh, and record the new expiry without logging the URL.
-7. Cold Telegram pack upload, verify, download, test deletion, and
-   worker-to-HOT restore
-   throughput. Record bounded temporary storage peak.
-8. Restore-pending latency: API response with Retry-After, worker claim,
-   restore completion, and the next successful launcher resolve.
+## Remote synthetic A to B
 
-The launcher already records A/B savings as:
+| Phase | Result |
+| --- | --- |
+| A install | PASS; 8,478,699 network bytes; physical-pack amplification 1.000401x |
+| B update | PASS; 9,527,646 network bytes; physical-pack amplification 1.000377x |
+| byte identity | PASS |
+| current-build data plane | PASS; direct host was `filemirage.com` |
+| historical-build data plane | PASS; source was the private API cold-stream route |
 
-    savings = (total_encoded_bytes - network_bytes) / total_encoded_bytes
+The remote runner also reported `reused_installed_bytes=4,357,397` and
+`reconstructed_bytes=5,261,688` during A to B. Its network-savings field is
+zero in pack-canonical mode because the physical pack is the measured unit;
+the amplification values above are the relevant traffic metric.
 
-The earlier local synthetic baseline was approximately 85.34% savings. That is
-not remote Railway evidence and must not be copied into the remote result.
+## Cold to HOT recovery
 
-## Failure and concurrency measurements
+Build `staging-b` pack
+`8f3485af29067447da1339e080d0ac563b790084bc170377f62ebd4b6ff0ab71`:
 
-Run one failure at a time:
+```text
+HOT_REFERENCE_EVICTED: PASS (remote_delete=NOT_RUN)
+Telegram COLD source:  PASS
+BLAKE3 verification:  PASS
+FileMirage re-upload: PASS
+HOT read-back verify: PASS
+restore job 33:       DONE
+```
 
-- bad secondary mirror, then Railway HOT primary;
-- Railway HOT failure, then bad secondary mirror;
-- an interrupted multipart upload and orphan cleanup;
-- API, worker, and PostgreSQL restart/reconnect;
-- Telegram Local Bot API and worker restart/reconnect;
-- cold outbound network/auth failures without credential retry loops.
+The worker now retries and verifies the HOT read-back before completing a
+pack restore, so a transient provider 500 cannot be recorded as success.
 
-Repeat the small synthetic smoke at normal launcher concurrency. Record API
-requests per second, active downloads, worker jobs, PostgreSQL connections,
-bucket operations, CPU, memory, and disk/volume usage. Confirm that concurrent
-jobs remain bounded and that temporary chunk storage returns to its baseline.
+## Restart and readiness
 
-## Result table
+```text
+/v1/health: PASS 200
+/v1/ready:  PASS 200
+storage status: PASS 200; HOT healthy=1; COLD healthy=1
+staging verify: PASS
+worker after restart: RUNNING; cold stream LISTENING; pending pack restores=0
+```
 
-| Case | Runs | Median | P95 | Evidence | Status |
-| --- | ---: | ---: | ---: | --- | --- |
-| API /v1/health | pending | pending | pending | HTTP status | NOT RUN |
-| API /v1/ready | pending | pending | pending | DB SELECT 1 | NOT RUN |
-| HOT direct download | pending | pending | pending | client-to-bucket trace | NOT RUN |
-| A first install | pending | pending | pending | hashes and bytes | NOT RUN |
-| A to B update | pending | pending | pending | savings and hashes | NOT RUN |
-| Resume/range | pending | pending | pending | Range/206 trace | NOT RUN |
-| Presign refresh | pending | pending | pending | two resolves | NOT RUN |
-| Telegram 512 MiB smoke | pending | pending | pending | operator log | NOT RUN |
-| Cold restore | pending | pending | pending | job + hot hash | NOT RUN |
-| Restart/reconnect | pending | pending | pending | deployment logs | NOT RUN |
+## Not applicable / remaining provider gates
+
+- Presigned URL expiry/refresh is not applicable to the active FileMirage
+  direct-URL capability record: `expires_at` is null and no presigned URL was
+  observed. The presign-specific test is intentionally not reported as a
+  pass.
+- Buzzheavier upload succeeded, but direct download and range/resume were not
+  proven, so it remains disabled.
+- The isolated local no-database E2E harness was not used as staging evidence;
+  its legacy pack resolver returns 503 when physical-pack storage is disabled.
+- No authorized real commercial game was uploaded. The remote evidence uses
+  the checked-in synthetic A/B fixture.

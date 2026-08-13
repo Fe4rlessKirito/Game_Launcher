@@ -98,14 +98,37 @@ function Invoke-LauncherE2EPhase {
 $installResult = Invoke-LauncherE2EPhase -Mode "install" -Source $sourceAPath -BuildId $BuildAId
 $updateResult = Invoke-LauncherE2EPhase -Mode "update" -Source $sourceBPath -BuildId $BuildBId
 
+# Deliberately damage the installed B build, then let the launcher repair it
+# from the verified manifest. This stays inside the staging artifact root.
+$repairTarget = Join-Path $installPath "Data\changed.txt"
+Set-Content -LiteralPath $repairTarget -Value "staging-corruption" -NoNewline -Encoding UTF8
+Remove-Item -LiteralPath (Join-Path $installPath "Data\added.bin") -Force
+$truncateTarget = Join-Path $installPath "Data\inserted.bin"
+$truncateStream = [IO.File]::Open($truncateTarget, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try { $truncateStream.SetLength(1024) } finally { $truncateStream.Dispose() }
+$repairResult = Invoke-LauncherE2EPhase -Mode "repair" -Source $sourceBPath -BuildId $BuildBId
+
 $baseUri = [Uri]($ApiUrl.TrimEnd("/") + "/")
 $escapedBuild = [Uri]::EscapeDataString($BuildBId)
 $manifest = Invoke-RestMethod -Uri ([Uri]::new($baseUri, "api/v1/builds/$escapedBuild/manifest"))
 $firstChunk = @($manifest.files | ForEach-Object { $_.chunks } | Select-Object -First 1)
 if ($null -eq $firstChunk -or $firstChunk.Count -eq 0) { throw "Build B manifest did not contain a chunk" }
 $resolveBody = @{ encoded_hashes = @($firstChunk[0].encoded_hash) } | ConvertTo-Json -Compress
-$resolved = Invoke-RestMethod -Method Post -Uri ([Uri]::new($baseUri, "api/v1/builds/$escapedBuild/resolve")) -ContentType "application/json" -Body $resolveBody
-$directUrl = ([Uri](@($resolved)[0].urls[0]))
+$packResolved = Invoke-RestMethod -Method Post -Uri ([Uri]::new($baseUri, "api/v1/builds/$escapedBuild/packs/resolve")) -ContentType "application/json" -Body $resolveBody
+$directUrl = $null
+foreach ($pack in @($packResolved)) {
+    foreach ($source in @($pack.sources)) {
+        if (-not [string]::IsNullOrWhiteSpace($source.url)) {
+            $directUrl = [Uri]$source.url
+            break
+        }
+    }
+    if ($null -ne $directUrl) { break }
+}
+if ($null -eq $directUrl) {
+    $legacyResolved = Invoke-RestMethod -Method Post -Uri ([Uri]::new($baseUri, "api/v1/builds/$escapedBuild/resolve")) -ContentType "application/json" -Body $resolveBody
+    $directUrl = ([Uri](@($legacyResolved)[0].urls[0]))
+}
 if ($directUrl.Host -eq $baseUri.Host) {
     throw "Resolved chunk URL uses the API host; staging data-plane routing is not direct-to-bucket"
 }
@@ -119,4 +142,6 @@ Write-Output "build_b_encoded_bytes=$([int64]$updateResult.total_encoded_bytes)"
 Write-Output "network_downloaded_bytes=$([int64]$updateResult.network_bytes)"
 Write-Output "local_cache_reuse_bytes=$([int64]$updateResult.reused_cache_bytes)"
 Write-Output "savings_percent=$([Math]::Round([double]$updateResult.network_savings * 100, 4))"
+Write-Output "repair_network_bytes=$([int64]$repairResult.network_bytes)"
 Write-Output "byte_identity=PASS"
+Write-Output "repair_byte_identity=PASS"

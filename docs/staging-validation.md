@@ -1,98 +1,45 @@
-# Live staging validation checklist
+# Live Mantle staging validation
 
-This checklist is the completion gate for the Railway phase. A check is only
-PASS when its evidence was captured from the live staging environment. The
-repository currently provides the commands and test fixtures, but does not
-contain Railway credentials or claim that these live checks have run.
+Validation date: 2026-08-13. This checklist records the current Mantle
+deployment, not the retired Railway setup.
 
-## Deployment and security
+## PASS
 
-- [ ] API service builds from deploy/api.Dockerfile and starts launcher-api.
-- [ ] API listens on Railway PORT and /v1/health passes without a database
-      or storage scan.
-- [ ] /v1/ready passes only after the staging PostgreSQL connection answers
-      SELECT 1.
-- [ ] PostgreSQL and Restore Worker have no public domains.
-- [ ] API has exactly one intended public HTTPS domain; TLS certificate
-      validation is enforced by the launcher and operator workstation.
-- [ ] Railway Bucket is private, uses separate staging credentials, and is
-      wired through Railway variable references.
-- [ ] No secret, password, session token, private key, or resolved presigned
-      URL appears in logs, source, client binaries, or committed files.
-- [ ] Admin actions remain operator-only and authenticated by the deployment
-      boundary; no unauthenticated admin API was added.
+- API, Caddy, PostgreSQL, Telegram Bot API, and private restore worker are up.
+- `/v1/health` and `/v1/ready` return HTTP 200.
+- `launcher-admin staging verify --require-cold` passes liveness, readiness,
+  storage status, metrics, policy, and staging signature checks.
+- HOT is FileMirage and COLD is Telegram; the API reports both healthy and
+  the policy requires one verified copy in each tier.
+- Real Telegram 512 MiB physical-pack upload, download, BLAKE3 verification,
+  concurrency measurements, and smoke-object deletion pass.
+- Current build B downloads directly from FileMirage; historical build A is
+  streamed Telegram -> private worker -> API -> launcher.
+- Remote synthetic A install and A -> B update pass with byte identity.
+- Deliberate HOT reference eviction followed by Telegram -> worker ->
+  FileMirage restore passes BLAKE3/read-back verification.
+- API and worker restart/reconnect checks recover with health/readiness 200 and
+  zero pending pack restores.
+- No remote provider deletion is used for the recovery test. Old HOT links are
+  retired from Vaultnode and their provider-side objects are left to natural
+  provider expiry.
 
-## Database and storage
+## NOT ENABLED
 
-- [ ] launcher-admin db status reports CONNECTED and schema_ready.
-- [ ] API storage is generic S3 HOT; no Railway-specific provider branch exists.
-- [ ] HOT PUT, HEAD, GET, DELETE, multipart upload, abort, and presigned GET
-      work against the real Bucket.
-- [ ] Bucket download traffic goes directly from the launcher to HOT, not
-      through the API byte proxy.
-- [ ] The worker has the same PostgreSQL/HOT references and private Telegram
-      Local Bot API references; no Telegram credential reaches the launcher.
-- [ ] Telegram Local Bot API state survives a worker/service restart on its
-      small persistent volume.
-- [ ] A real 512 MiB physical-pack Telegram smoke passes network,
-      authentication, upload, download, BLAKE3 integrity, and test deletion.
-- [ ] Telegram network/auth failures are surfaced without credential retry
-      loops, and the COLD message remains retained for real builds.
-- [ ] COLD pack placement, reservations, and stale-hold cleanup remain visible
-      through PostgreSQL/operator status without credentials.
+- Buzzheavier: upload was observed, but direct download/range/resume were not.
+- GoFile: free-tier direct HOT download was not observed.
+- MEGA: not part of the current plan.
+- Presigned URL expiry/refresh: not applicable to FileMirage's observed direct
+  URLs, which had no expiry.
 
-## Launcher protocol and recovery
+## Remaining limitations
 
-- [ ] An A/B synthetic remote smoke completes through API, PostgreSQL, Bucket,
-      presigned URL, download, hash verification, reconstruct, and install.
-- [ ] The remote A-to-B update reproduces the expected approximate savings only
-      after measuring it; output files are byte-identical.
-- [ ] Interrupted download resumes with a Range request and 206 response, with
-      captured offsets and final hash.
-- [ ] A presigned URL expiry refreshes at chunk level through a new resolve.
-- [ ] Bad secondary mirror then HOT and HOT failure then bad secondary both
-      exercise retry/fallback without corrupting the cache.
-- [ ] Cold-only resolution returns restore_pending and Retry-After.
-- [ ] Worker reads Telegram COLD, verifies BLAKE3, writes HOT, records the
-      restored location, and the launcher downloads the restored object without
-      seeing Telegram credentials or message IDs.
-- [ ] Other chunks continue while one chunk is restore_pending; retry/backoff
-      eventually completes the install.
+- The remote run is an authorized synthetic game fixture, not a commercial
+  game archive.
+- A full 16-provider/real-client network benchmark is not implied by the
+  small provider probes.
+- The local no-database E2E helper still assumes the legacy logical resolver;
+  the Mantle pack-canonical runner is the authoritative remote test.
 
-## Reliability and operations
-
-- [ ] API, worker, and PostgreSQL restart/reconnect tests pass.
-- [ ] Resource measurements cover API, worker, PostgreSQL, bucket traffic,
-      Telegram Local Bot API, memory, CPU, network, volume, and bounded
-      temporary storage.
-- [ ] Normal launcher concurrency does not create an unbounded worker,
-      PostgreSQL, bucket, or temporary-file explosion.
-- [ ] Signing uses explicit key ID staging-2026-01, with the private key only
-      in staging secret storage and the public key in the staging launcher
-      trust configuration.
-- [ ] Production trust configuration does not contain the staging key or
-      staging endpoint override.
-- [ ] The evidence and latency results are recorded in
-      docs/staging-performance.md.
-
-## Operator commands
-
-Read-only checks:
-
-    launcher-admin db status
-    launcher-admin storage policy
-    launcher-admin storage health
-    launcher-admin storage accounts list
-    launcher-admin staging verify --api-url $env:LAUNCHER_STAGING_API_URL --require-cold
-
-The last command checks liveness, readiness, redacted storage status, metrics,
-policy, HOT/COLD availability, and optional manifest/signature trust. It does
-not publish, restore, delete, or mutate bucket contents.
-
-## Evidence packet
-
-Attach only redacted evidence: deployment IDs, commit, timestamps, status
-codes, byte counters, hashes, latency summaries, resource graphs, and
-operator-approved Telegram smoke output. Omit URLs with query strings, all
-credentials, session paths if sensitive, private keys, and account email
-addresses.
+See `docs/staging-performance.md` and `docs/provider-capability-records.md`
+for the measured values and capability decisions.

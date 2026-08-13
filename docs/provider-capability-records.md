@@ -1,76 +1,66 @@
 # Provider capability records
 
-Validation run: 2026-08-13. These are observed results from small, isolated
-operator-authorized probes. They are not provider guarantees. FileMirage and
-Buzzheavier are accepted by the storage registry, but runtime capability flags
-still control whether a provider can appear in client-facing resolver output.
-GoFile remains out of `LAUNCHER_STORAGE_PROVIDERS`.
+Validation run: 2026-08-13 on the Mantle staging deployment. These are
+observed results from operator-authorized probes, not provider guarantees.
+Only capabilities marked `true` are used by the runtime resolver.
 
-## FileMirage
+## FileMirage HOT
 
 | Capability | Observed result |
 | --- | --- |
-| `upload_api` | `true` — public client chunk upload returned success for a small physical pack. |
-| `direct_download` | `true` — resolved direct URL downloaded the exact source bytes. |
-| `range` | `true` — `206` with `Content-Range` and `Accept-Ranges: bytes`. |
-| `resume` | `true` — two-part byte-range download matched the source exactly. |
-| `stable_url` | `false` — not proven; repeated page fetches produced different direct backend URLs. |
+| `upload_api` | `true` - physical-pack PUT succeeded. |
+| `direct_download` | `true` - direct URL returned the exact source bytes. |
+| `range` | `true` - 206 with Content-Range was observed. |
+| `resume` | `true` - a two-part byte-range download matched the source. |
+| `stable_url` | `false` - not proven; renewed uploads produced new URLs. |
 | `cookies_required` | `false` for the observed direct GET. |
-| `HEAD` | `false` — the resolved direct path returned `405`. |
-| `delete` | `false` — no authenticated delete contract was observed. |
-| `observed_speed` | Approximately `0.15–0.20 MiB/s` aggregate for a `865 KiB` object at 4/8/16 concurrent GETs; too small for sizing. |
-| `safe_concurrency` | `unproven`; 4, 8, and 16 completed byte-for-byte, but this is not a production limit. |
+| `HEAD` | `false` - the direct path returned 405. |
+| `delete` | `false` - no authenticated delete contract was observed. |
+| `observed_speed` | Measured on small objects only; not a pack-sizing guarantee. |
+| `safe_concurrency` | `unproven`; 4, 8, and 16 completed byte-for-byte in the small probe. |
 
-## Buzzheavier
+FileMirage is the active HOT provider. Its URLs are used directly by the
+launcher; the API does not proxy current-build HOT bytes.
+
+## Buzzheavier HOT candidate
 
 | Capability | Observed result |
 | --- | --- |
-| `upload_api` | `true` — anonymous `PUT` returned `201` for a small object. |
-| `direct_download` | `false`/unproven — the public download route was not a usable direct object response in the probe. |
+| `upload_api` | `true` - anonymous PUT returned 201 for a small object. |
+| `direct_download` | `false`/unproven - no usable direct object response was observed. |
 | `range` | unproven |
 | `resume` | unproven |
 | `stable_url` | unproven |
 | `cookies_required` | unproven |
 | `HEAD` | unproven |
-| `delete` | `false`/unproven — the anonymous test object could not be removed through the observed unauthenticated API. |
+| `delete` | `false`/unproven |
 | `observed_speed` | unmeasured |
 | `safe_concurrency` | unproven |
+
+Buzzheavier remains disabled for HOT reads. Upload-only behavior is not
+enough to expose it to the launcher.
 
 ## GoFile free tier
 
-| Capability | Observed result |
-| --- | --- |
-| `upload_api` | `true` — anonymous upload returned a guest content record. |
-| `direct_download` | `false` — free guest direct-link creation returned `401`; the documented direct-link path is Premium. |
-| `range` | unproven |
-| `resume` | unproven |
-| `stable_url` | `false` for HOT use — only a download page was available in the free probe. |
-| `cookies_required` | unproven |
-| `HEAD` | unproven |
-| `delete` | `true` — the guest content record was deleted through the guest-token API. |
-| `observed_speed` | unmeasured |
-| `safe_concurrency` | unproven |
+The earlier free-tier probe observed upload and guest-token deletion, but no
+usable direct HOT download link. GoFile is not enabled.
 
 ## Telegram COLD
 
-The 512 MiB real-account probe is not PASS yet. No bot token, chat ID, or
-private Local Bot API endpoint is present in this environment. The public
-[Telegram Bot API](https://core.telegram.org/bots/api) is limited to 50 MB
-bot uploads and 20 MB `getFile` downloads, so the requested 512 MiB test must
-run through the official [Local Bot API Server](https://github.com/tdlib/telegram-bot-api)
-in private `--local` mode. The fake-provider suite passes upload, restore,
-BLAKE3 verification, and delete, but it is not a real Telegram network test.
-
-Until the real run is completed, the only honest status is:
+The real 512 MiB pack smoke ran through the private Telegram Bot API service:
 
 ```text
-Telegram network:  NOT RUN
-Authentication:    NOT RUN
-Upload:            NOT RUN
-Download:          NOT RUN
-Integrity:         NOT RUN
-Delete:            NOT RUN
-Cold pool:         NOT READY
+network:   PASS
+authentication: PASS
+upload:    PASS
+download:  PASS
+integrity: PASS
+delete:    PASS (smoke object only)
+cold pool: READY
 ```
 
-The provider is therefore not enabled for the 512 MiB staging gate.
+The smoke object was deleted after verification. Real game packs are not
+deleted by routine retention or recovery operations. When a build becomes
+historical, its HOT reference is retired from Vaultnode while the last
+provider copy is left to expire naturally; Telegram remains the retained COLD
+copy.
