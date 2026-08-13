@@ -656,6 +656,19 @@ async fn storage_metrics(
     } else {
         Vec::new()
     };
+    let renewal_days = env::var("LAUNCHER_HOT_RENEWAL_DAYS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(18)
+        .clamp(1, 30);
+    let pack_metrics = if let Some(database) = &state.database {
+        database
+            .storage_pack_metrics(Utc::now() - chrono::Duration::days(renewal_days))
+            .await
+            .map_err(ApiResponseError::from)?
+    } else {
+        Vec::new()
+    };
     let mut body = String::new();
     body.push_str(&format!(
         "launcher_storage_policy_min_hot_replicas {}\nlauncher_storage_policy_min_cold_replicas {}\nlauncher_storage_policy_min_archive_replicas {}\nlauncher_storage_policy_min_hot_failure_domains {}\nlauncher_storage_policy_min_cold_failure_domains {}\nlauncher_storage_policy_min_archive_failure_domains {}\nlauncher_storage_restore_pending {}\n",
@@ -676,6 +689,24 @@ async fn storage_metrics(
             0
         },
     ));
+    body.push_str(&format!(
+        "launcher_storage_hot_pack_renewal_window_seconds {}\n",
+        renewal_days * 24 * 60 * 60
+    ));
+    for metric in &pack_metrics {
+        let provider = metric_label(&metric.provider);
+        let storage_class = metric.storage_class.as_str();
+        body.push_str(&format!(
+            "launcher_storage_pack_locations{{provider=\"{provider}\",storage_class=\"{storage_class}\"}} {}\n",
+            metric.verified_locations
+        ));
+        if metric.storage_class == StorageTier::Hot {
+            body.push_str(&format!(
+                "launcher_storage_hot_pack_renewal_due{{provider=\"{provider}\"}} {}\n",
+                metric.renewal_due
+            ));
+        }
+    }
     for status in [
         ProvisioningStatus::Created,
         ProvisioningStatus::Starting,

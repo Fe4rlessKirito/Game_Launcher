@@ -53,3 +53,13 @@ URL, and removes stale database links only after the new link is usable. A
 provider's old remote object may remain temporarily when its delete capability
 is not proven; it is no longer addressable by the launcher and should expire
 under the provider's own inactivity policy.
+
+The authenticated `/metrics` endpoint exposes the operational gauges used to
+monitor this process:
+
+- `launcher_storage_hot_pack_renewal_window_seconds` — configured renewal
+  window;
+- `launcher_storage_pack_locations{provider,storage_class}` — verified pack
+  locations currently recorded by tier;
+- `launcher_storage_hot_pack_renewal_due{provider}` — HOT locations older than
+  the renewal window and eligible for the next worker batch.

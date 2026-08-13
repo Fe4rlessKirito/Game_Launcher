@@ -124,6 +124,14 @@ pub struct PackLocationRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoragePackMetric {
+    pub provider: String,
+    pub storage_class: StorageClass,
+    pub verified_locations: i64,
+    pub renewal_due: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackChunkRecord {
     pub pack_hash: String,
     pub encoded_hash: String,
@@ -1660,6 +1668,40 @@ impl Database {
                     priority: row.try_get("priority")?,
                     verified_at: row.try_get("verified_at")?,
                     expires_at: row.try_get("expires_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn storage_pack_metrics(
+        &self,
+        renewal_before: DateTime<Utc>,
+    ) -> Result<Vec<StoragePackMetric>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT provider, storage_class,
+                    COUNT(*)::BIGINT AS verified_locations,
+                    COUNT(*) FILTER (
+                        WHERE storage_class='HOT'
+                          AND last_uploaded_at <= $1
+                          AND renewal_attempt_after <= now()
+                    )::BIGINT AS renewal_due
+             FROM pack_locations
+             WHERE verified_at IS NOT NULL
+             GROUP BY provider, storage_class
+             ORDER BY provider, storage_class",
+        )
+        .bind(renewal_before)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(StoragePackMetric {
+                    provider: row.try_get("provider")?,
+                    storage_class: row.try_get::<String, _>("storage_class")?.parse().map_err(
+                        |error: StorageError| DatabaseError::Manifest(error.to_string()),
+                    )?,
+                    verified_locations: row.try_get("verified_locations")?,
+                    renewal_due: row.try_get("renewal_due")?,
                 })
             })
             .collect()
