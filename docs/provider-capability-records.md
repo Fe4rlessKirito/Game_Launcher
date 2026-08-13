@@ -1,10 +1,10 @@
 # Provider capability records
 
-Validation run: 2026-08-11. These are observed results from small, isolated
-operator-authorized probes. They are not provider guarantees, and they do not
-enable a provider. Only `local` and the configured S3-compatible HOT provider
-are currently accepted by the storage registry; FileMirage, Buzzheavier, and
-GoFile remain out of `LAUNCHER_STORAGE_PROVIDERS`.
+Validation run: 2026-08-13. These are observed results from small, isolated
+operator-authorized probes. They are not provider guarantees. FileMirage and
+Buzzheavier are accepted by the storage registry, but runtime capability flags
+still control whether a provider can appear in client-facing resolver output.
+GoFile remains out of `LAUNCHER_STORAGE_PROVIDERS`.
 
 ## FileMirage
 

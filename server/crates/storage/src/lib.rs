@@ -23,11 +23,15 @@ use std::{collections::HashMap, env};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 
+mod http_hot;
 mod mantle;
 mod reconcile;
 mod telegram;
 mod tiering;
 
+pub use http_hot::{
+    BuzzheavierStorage, BuzzheavierStorageConfig, FileMirageStorage, FileMirageStorageConfig,
+};
 pub use mantle::{
     MantleCache, MantleCacheConfig, MantleCacheEntry, MantleEviction, MantleReservation,
 };
@@ -458,7 +462,9 @@ impl StorageRegistry {
                 continue;
             };
             let health = provider.health_check().await;
-            let healthy = health.is_ok();
+            let direct_hot_ready =
+                pool.storage_class != StorageClass::Hot || provider.capabilities().direct_download;
+            let healthy = health.is_ok() && direct_hot_ready;
             let status = if !pool.enabled {
                 StoragePoolStatus::Disabled
             } else if healthy {
@@ -1732,6 +1738,16 @@ pub fn storage_from_env(
                     S3CompatibleStorageConfig::from_env()?,
                 )?));
             }
+            "filemirage" => {
+                providers.push(Arc::new(FileMirageStorage::new(
+                    FileMirageStorageConfig::from_env(&storage_root)?,
+                )?));
+            }
+            "buzzheavier" | "buzz" => {
+                providers.push(Arc::new(BuzzheavierStorage::new(
+                    BuzzheavierStorageConfig::from_env(&storage_root)?,
+                )?));
+            }
             "telegram" => {
                 if !env_bool("TELEGRAM_COLD_ENABLED", false) {
                     return Err(StorageError::Configuration(
@@ -1743,7 +1759,7 @@ pub fn storage_from_env(
             }
             unknown => {
                 return Err(StorageError::Configuration(format!(
-                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, telegram, or mega (use the async factory for mega)"
+                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, filemirage, buzzheavier, telegram, or mega (use the async factory for mega)"
                 )));
             }
         }
@@ -1782,6 +1798,16 @@ pub async fn storage_from_env_with_reservation_store(
                     S3CompatibleStorageConfig::from_env()?,
                 )?));
             }
+            "filemirage" => {
+                providers.push(Arc::new(FileMirageStorage::new(
+                    FileMirageStorageConfig::from_env(&storage_root)?,
+                )?));
+            }
+            "buzzheavier" | "buzz" => {
+                providers.push(Arc::new(BuzzheavierStorage::new(
+                    BuzzheavierStorageConfig::from_env(&storage_root)?,
+                )?));
+            }
             "mega" => {
                 let path = env::var("LAUNCHER_MEGA_ACCOUNTS_FILE").map_err(|_| {
                     StorageError::Configuration(
@@ -1804,7 +1830,7 @@ pub async fn storage_from_env_with_reservation_store(
             }
             unknown => {
                 return Err(StorageError::Configuration(format!(
-                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, telegram, or mega"
+                    "unsupported LAUNCHER_STORAGE_PROVIDERS entry {unknown:?}; expected local, s3, filemirage, buzzheavier, telegram, or mega"
                 )));
             }
         }
@@ -2027,6 +2053,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upload_only_hot_provider_is_not_placement_ready() {
+        let registry = StorageRegistry::new(vec![Arc::new(UploadOnlyProvider)]).unwrap();
+        let pools = registry.placement_pools().await;
+        assert_eq!(pools.len(), 1);
+        assert!(!pools[0].healthy);
+        assert_eq!(pools[0].status, StoragePoolStatus::Unavailable);
+    }
+
+    #[tokio::test]
     async fn restore_source_selection_falls_back_by_pool_priority() {
         let root = std::env::temp_dir().join(format!("launcher-restore-fallback-{}", uuid_like()));
         let fallback =
@@ -2074,6 +2109,57 @@ mod tests {
     }
 
     struct UnavailableProvider;
+
+    struct UploadOnlyProvider;
+
+    #[async_trait::async_trait]
+    impl StorageProvider for UploadOnlyProvider {
+        fn provider_id(&self) -> &str {
+            "buzzheavier"
+        }
+
+        fn tier(&self) -> StorageTier {
+            StorageTier::Hot
+        }
+
+        fn capabilities(&self) -> StorageProviderCapabilities {
+            StorageProviderCapabilities {
+                upload: true,
+                delete: false,
+                direct_download: false,
+                range_requests: false,
+                stable_urls: false,
+                expiring_urls: false,
+                url_refresh: false,
+                requires_authentication: false,
+                max_object_size_bytes: None,
+                preferred_pack_size_bytes: Some(512 * 1024 * 1024),
+                recommended_concurrency: 2,
+            }
+        }
+
+        async fn put_encoded(&self, _: &str, _: &[u8]) -> Result<(), StorageError> {
+            Ok(())
+        }
+
+        async fn read_encoded(&self, _: &str) -> Result<Vec<u8>, StorageError> {
+            Err(StorageError::Unavailable("upload-only".to_owned()))
+        }
+
+        async fn delete_encoded(&self, _: &str) -> Result<(), StorageError> {
+            Err(StorageError::Provider("delete unavailable".to_owned()))
+        }
+
+        async fn download_location(&self, _: &str) -> Result<DownloadLocation, StorageError> {
+            Err(StorageError::Unavailable(
+                "direct download unavailable".to_owned(),
+            ))
+        }
+
+        async fn health_check(&self) -> Result<(), StorageError> {
+            Ok(())
+        }
+    }
 
     struct ColdUnavailableProvider;
 

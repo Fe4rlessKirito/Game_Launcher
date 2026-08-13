@@ -236,6 +236,8 @@ enum StorageCommands {
         bytes: usize,
         #[arg(long)]
         skip_download_url: bool,
+        #[arg(long)]
+        upload_only: bool,
     },
     MegaSmoke {
         #[arg(long, default_value = "storage")]
@@ -1052,6 +1054,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             storage_root,
             bytes,
             skip_download_url,
+            upload_only,
         } => {
             let (storage, _) = storage_command_context(&storage_root).await?;
             let provider = select_provider(&storage, &provider, StorageTier::Hot)?;
@@ -1060,7 +1063,14 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                     "storage smoke requires a HOT provider; use storage mega-smoke for COLD"
                 )
             }
-            run_storage_smoke(provider, bytes, !skip_download_url, "HOT").await?;
+            run_storage_smoke(
+                provider,
+                bytes,
+                !skip_download_url && !upload_only,
+                upload_only,
+                "HOT",
+            )
+            .await?;
         }
         StorageCommands::MegaSmoke {
             storage_root,
@@ -1072,7 +1082,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                 .into_iter()
                 .next()
                 .context("no COLD provider is configured")?;
-            if let Err(error) = run_storage_smoke(provider, bytes, false, "COLD").await {
+            if let Err(error) = run_storage_smoke(provider, bytes, false, false, "COLD").await {
                 println!("diagnostic={}", mega_diagnostic(&error));
                 return Err(error);
             }
@@ -1378,6 +1388,7 @@ async fn run_storage_smoke(
     provider: Arc<dyn StorageProvider>,
     requested_bytes: usize,
     fetch_download_url: bool,
+    upload_only: bool,
     tier_label: &str,
 ) -> Result<()> {
     let byte_count = requested_bytes.clamp(1, 4 * 1024 * 1024);
@@ -1385,6 +1396,7 @@ async fn run_storage_smoke(
     OsRng.fill_bytes(&mut bytes);
     let encoded_hash = blake3::hash(&bytes).to_hex().to_string();
     let provider_id = provider.provider_id().to_owned();
+    let delete_supported = provider.capabilities().delete;
     let result = async {
         provider.health_check().await?;
         println!("check={tier_label}_health status=PASS provider={provider_id}");
@@ -1393,22 +1405,27 @@ async fn run_storage_smoke(
             "check={tier_label}_put status=PASS bytes={} hash={encoded_hash}",
             bytes.len()
         );
-        let head_size = provider
-            .head_encoded(&encoded_hash)
-            .await?
-            .context("smoke object was not found after upload")?;
-        if head_size != bytes.len() as u64 {
-            anyhow::bail!(
-                "smoke HEAD size mismatch: expected {}, got {head_size}",
-                bytes.len()
-            );
+        if upload_only {
+            println!("check={tier_label}_head status=SKIP reason=upload_only_provider_capability");
+            println!("check={tier_label}_get status=SKIP reason=upload_only_provider_capability");
+        } else {
+            let head_size = provider
+                .head_encoded(&encoded_hash)
+                .await?
+                .context("smoke object was not found after upload")?;
+            if head_size != bytes.len() as u64 {
+                anyhow::bail!(
+                    "smoke HEAD size mismatch: expected {}, got {head_size}",
+                    bytes.len()
+                );
+            }
+            println!("check={tier_label}_head status=PASS size={head_size}");
+            let downloaded = provider.read_encoded(&encoded_hash).await?;
+            if downloaded != bytes {
+                anyhow::bail!("smoke GET bytes did not match uploaded bytes");
+            }
+            println!("check={tier_label}_get status=PASS blake3={encoded_hash}");
         }
-        println!("check={tier_label}_head status=PASS size={head_size}");
-        let downloaded = provider.read_encoded(&encoded_hash).await?;
-        if downloaded != bytes {
-            anyhow::bail!("smoke GET bytes did not match uploaded bytes");
-        }
-        println!("check={tier_label}_get status=PASS blake3={encoded_hash}");
         if fetch_download_url {
             let location = provider.download_location(&encoded_hash).await?;
             let response = reqwest::Client::builder()
@@ -1438,14 +1455,22 @@ async fn run_storage_smoke(
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let cleanup = provider.delete_encoded(&encoded_hash).await;
+    let cleanup = if delete_supported {
+        Some(provider.delete_encoded(&encoded_hash).await)
+    } else {
+        None
+    };
     match result {
         Ok(()) => {
-            cleanup?;
-            if provider.head_encoded(&encoded_hash).await?.is_some() {
-                anyhow::bail!("smoke DELETE did not remove the temporary object");
+            if let Some(cleanup) = cleanup {
+                cleanup?;
+                if provider.head_encoded(&encoded_hash).await?.is_some() {
+                    anyhow::bail!("smoke DELETE did not remove the temporary object");
+                }
+                println!("check={tier_label}_delete status=PASS");
+            } else {
+                println!("check={tier_label}_delete status=SKIP reason=provider_capability_false");
             }
-            println!("check={tier_label}_delete status=PASS");
             println!(
                 "storage_smoke=PASS provider={provider_id} bytes={}",
                 bytes.len()
@@ -1453,7 +1478,9 @@ async fn run_storage_smoke(
             Ok(())
         }
         Err(error) => {
-            let _ = cleanup;
+            if let Some(cleanup) = cleanup {
+                let _ = cleanup;
+            }
             Err(error)
         }
     }

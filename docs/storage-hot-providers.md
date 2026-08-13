@@ -11,9 +11,11 @@ compatible provider exposes stable public URLs when configured, otherwise
 short-lived presigned URLs with resolver refresh. Runtime provider URLs are
 preferred over stored URLs so expired presigned locations are not reused.
 
-FileMirage, Buzzheavier, and GoFile remain intentionally unconfigured. The
-staging capability record in [provider-capability-records.md](provider-capability-records.md)
-lists only behavior observed in controlled small-object probes; an upload
+FileMirage and Buzzheavier are implemented, but their capability flags are
+deliberately conservative. FileMirage may serve direct HOT URLs using the
+observed upload/range behavior; it does not advertise stable URLs or delete.
+Buzzheavier remains upload-only until a real server-side direct-download,
+range, and cleanup probe passes. GoFile remains unimplemented. An upload
 success alone never enables direct HOT traffic. A provider without a proven
 direct-download, range, URL-refresh, and cleanup contract remains a
 server-side restore source, never a client URL.

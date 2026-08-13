@@ -10,6 +10,8 @@ The built-in providers are:
 
 - `local`: content-addressed files under `LAUNCHER_STORAGE_ROOT/chunks/encoded`, exposed through `/objects/{hash}`.
 - `s3`: an S3-compatible endpoint configured by `LAUNCHER_S3_*`. It uses bounded retries, in-flight operations, and multipart uploads.
+- `filemirage`: FileMirage's public chunked upload API with persisted remote references and direct download URLs. Its observed contract does not include deletion or stable URLs.
+- `buzzheavier`: Buzzheavier's HTTP PUT upload API. It is upload-only by default until a server-side direct-download and cleanup probe passes.
 - `mega`: an operator-managed COLD pool backed by MEGAcmd sessions and PostgreSQL reservations.
 
 ## Configuration
@@ -35,6 +37,30 @@ S3 settings:
 | `LAUNCHER_S3_MAX_ATTEMPTS` | SDK request attempts | `4` |
 | `LAUNCHER_S3_MAX_CONCURRENT_REQUESTS` | bounded provider operations | `4` |
 | `LAUNCHER_S3_FORCE_PATH_STYLE` | use path-style addressing | `true` |
+
+FileMirage settings:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `LAUNCHER_FILEMIRAGE_BASE_URL` | FileMirage API base URL | `https://filemirage.com` |
+| `LAUNCHER_FILEMIRAGE_UPLOAD_SERVER_URL` | optional upload server override | server selected by `/api/servers` |
+| `LAUNCHER_FILEMIRAGE_API_TOKEN` | optional server-only API token | empty |
+| `LAUNCHER_FILEMIRAGE_STATE_FILE` | persisted hash-to-URL state | `${LAUNCHER_STORAGE_ROOT}/filemirage-state.json` |
+| `LAUNCHER_FILEMIRAGE_UPLOAD_CHUNK_BYTES` | bounded upload chunk size | `103809024` (99 MiB) |
+| `LAUNCHER_FILEMIRAGE_MAX_CONCURRENT_REQUESTS` | upload/download request bound | `4` |
+
+Buzzheavier settings:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `LAUNCHER_BUZZHEAVIER_UPLOAD_BASE_URL` | anonymous or account PUT endpoint | `https://w.buzzheavier.com` |
+| `LAUNCHER_BUZZHEAVIER_DOWNLOAD_BASE_URL` | public API/download host | `https://buzzheavier.com` |
+| `LAUNCHER_BUZZHEAVIER_ACCOUNT_ID` | optional server-only account credential | empty |
+| `LAUNCHER_BUZZHEAVIER_STATE_FILE` | persisted hash-to-file-ID state | `${LAUNCHER_STORAGE_ROOT}/buzzheavier-state.json` |
+| `LAUNCHER_BUZZHEAVIER_MAX_CONCURRENT_REQUESTS` | upload/download request bound | `2` |
+| `LAUNCHER_BUZZHEAVIER_DIRECT_DOWNLOAD_PROVEN` | enable resolver URLs only after a real probe | `false` |
+| `LAUNCHER_BUZZHEAVIER_RANGE_REQUESTS_PROVEN` | enable range capability only after a real probe | `false` |
+| `LAUNCHER_BUZZHEAVIER_DELETE_PROVEN` | enable deletion only after an authenticated probe | `false` |
 
 ## Pool metadata
 
@@ -82,6 +108,7 @@ is private to the restore worker. The 512 MiB staging target additionally
 requires the official [Local Bot API Server](https://github.com/tdlib/telegram-bot-api)
 in private `--local` mode. Buzzheavier's documented HTTP API is at
 [Buzzheavier Developers](https://buzzheavier.com/developers), and GoFile's
-documented API is at [GoFile API](https://gofile.io/api). The current
-FileMirage/Buzzheavier/GoFile capability record is observational only; none of
-those providers is enabled in `LAUNCHER_STORAGE_PROVIDERS`.
+documented API is at [GoFile API](https://gofile.io/api). FileMirage and
+Buzzheavier can now be selected in `LAUNCHER_STORAGE_PROVIDERS`; capability
+flags still gate client-facing behavior, so enabling Buzzheavier does not make
+it a download source until direct download is explicitly proven.
