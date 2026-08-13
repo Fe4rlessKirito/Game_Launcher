@@ -41,22 +41,55 @@ $commonPackagerArgs = @(
 )
 $packageA = Join-Path $packageDirectory "A"
 $packageB = Join-Path $packageDirectory "B"
-Invoke-LauncherAdmin (@(
-    "ingest", (Join-Path $fixture "A"),
-    "--output", $packageA,
-    "--game-id", "synthetic-game",
-    "--build-id", $BuildAId,
-    "--display-version", "A",
-    "--executable", "SyntheticGame.exe"
-) + $commonPackagerArgs)
-Invoke-LauncherAdmin (@(
-    "ingest", (Join-Path $fixture "B"),
-    "--output", $packageB,
-    "--game-id", "synthetic-game",
-    "--build-id", $BuildBId,
-    "--display-version", "B",
-    "--executable", "SyntheticGame.exe"
-) + $commonPackagerArgs)
+$packEnvironmentNames = @(
+    "PACK_STORAGE_ENABLED",
+    "LAUNCHER_PACK_CANONICAL",
+    "LAUNCHER_PACK_COLD_ONLY",
+    "LAUNCHER_PACK_TARGET_BYTES",
+    "LAUNCHER_PACK_MIN_BYTES",
+    "LAUNCHER_PACK_MAX_BYTES"
+)
+$previousPackEnvironment = @{}
+foreach ($name in $packEnvironmentNames) {
+    $previousPackEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
+}
+if ($Mantle) {
+    $env:PACK_STORAGE_ENABLED = "true"
+    $env:LAUNCHER_PACK_CANONICAL = "true"
+    $env:LAUNCHER_PACK_COLD_ONLY = "true"
+    $env:LAUNCHER_PACK_TARGET_BYTES = "536870912"
+    $env:LAUNCHER_PACK_MIN_BYTES = "1"
+    $env:LAUNCHER_PACK_MAX_BYTES = "536870912"
+}
+try {
+    Invoke-LauncherAdmin (@(
+        "ingest", (Join-Path $fixture "A"),
+        "--output", $packageA,
+        "--game-id", "synthetic-game",
+        "--build-id", $BuildAId,
+        "--display-version", "A",
+        "--executable", "SyntheticGame.exe"
+    ) + $commonPackagerArgs)
+    Invoke-LauncherAdmin (@(
+        "ingest", (Join-Path $fixture "B"),
+        "--output", $packageB,
+        "--game-id", "synthetic-game",
+        "--build-id", $BuildBId,
+        "--display-version", "B",
+        "--executable", "SyntheticGame.exe"
+    ) + $commonPackagerArgs)
+}
+finally {
+    foreach ($name in $packEnvironmentNames) {
+        $value = $previousPackEnvironment[$name]
+        if ($null -eq $value) {
+            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+        }
+        else {
+            Set-Item "Env:$name" $value
+        }
+    }
+}
 
 function Sign-Package([string]$Package, [string]$KeyPath) {
     $arguments = @(
