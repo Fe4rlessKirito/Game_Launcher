@@ -244,6 +244,15 @@ pub trait StorageProvider: Send + Sync {
             "physical pack deletion is not supported by this provider".to_owned(),
         ))
     }
+    /// Remove the provider's local reference to a pack without deleting the
+    /// remote object. This is only a staging fault-injection hook for testing
+    /// restore behavior when a HOT location becomes unavailable.
+    async fn forget_pack_reference(&self, pack_hash: &str) -> Result<(), StorageError> {
+        let _ = pack_hash;
+        Err(StorageError::Provider(
+            "provider reference eviction is not supported".to_owned(),
+        ))
+    }
     async fn download_pack_location(
         &self,
         pack_hash: &str,

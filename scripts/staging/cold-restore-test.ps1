@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)][string]$BuildId,
     [string]$EncodedHash,
     [string]$PackHash,
+    [switch]$MetadataOnly,
     [string]$WorkerService = "worker",
     [string]$StorageRoot = "/var/lib/launcher/storage",
     [string]$LocalStorageRoot = "artifacts\staging-storage",
@@ -31,6 +32,9 @@ if ($EncodedHash -and $EncodedHash -cnotmatch "^[0-9a-f]{64}$") {
 if ($PackHash -and $PackHash -cnotmatch "^[0-9a-f]{64}$") {
     throw "PackHash must be a 64-character lowercase BLAKE3 hash"
 }
+if ($MetadataOnly -and -not $PackHash) {
+    throw "-MetadataOnly is only valid with -PackHash"
+}
 if ($Mantle -and $Local) { throw "Choose -Mantle or -Local, not both" }
 if (-not $Mantle -and -not $Local) { $Local = $true }
 
@@ -40,6 +44,7 @@ $arguments = if ($PackHash) {
         "--build-id", $BuildId,
         "--pack-hash", $PackHash,
         "--confirm",
+        $(if ($MetadataOnly) { "--metadata-only" } else { $null }),
         "--storage-root", $StorageRoot
     )
 }

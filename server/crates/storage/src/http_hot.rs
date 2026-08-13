@@ -460,6 +460,38 @@ impl HttpHotStorage {
         Ok(())
     }
 
+    async fn forget_reference(&self, hash: &str, pack: bool) -> Result<(), StorageError> {
+        let _write_guard = self.state_write.lock().await;
+        let snapshot = {
+            let mut state = self.state.lock().map_err(|_| {
+                StorageError::Provider(format!("{} state lock poisoned", self.kind.provider_type()))
+            })?;
+            if pack {
+                state.packs.remove(hash);
+            } else {
+                state.objects.remove(hash);
+            }
+            serde_json::to_vec_pretty(&*state)?
+        };
+        if let Some(parent) = self.state_file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let temporary = self.state_file.with_file_name(format!(
+            "{}.{}.part",
+            self.state_file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("state.json"),
+            unique_suffix()
+        ));
+        tokio::fs::write(&temporary, snapshot).await?;
+        if let Err(error) = tokio::fs::rename(&temporary, &self.state_file).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
     async fn upload_filemirage_bytes(
         &self,
         hash: &str,
@@ -932,6 +964,10 @@ impl StorageProvider for FileMirageStorage {
     }
     async fn delete_pack(&self, hash: &str) -> Result<(), StorageError> {
         self.inner.delete_remote(hash, true).await
+    }
+    async fn forget_pack_reference(&self, hash: &str) -> Result<(), StorageError> {
+        validate_pack_hash(hash)?;
+        self.inner.forget_reference(hash, true).await
     }
     async fn download_pack_location(&self, hash: &str) -> Result<DownloadLocation, StorageError> {
         self.inner.download_location_for(hash, true).await

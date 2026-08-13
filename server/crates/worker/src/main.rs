@@ -312,6 +312,8 @@ enum StorageCommands {
         target_provider: String,
         #[arg(long)]
         confirm: bool,
+        #[arg(long)]
+        metadata_only: bool,
         #[arg(long, default_value = "storage")]
         storage_root: PathBuf,
     },
@@ -1374,6 +1376,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             pack_hash,
             target_provider,
             confirm,
+            metadata_only,
             storage_root,
         } => {
             run_cold_pack_restore_smoke(
@@ -1381,6 +1384,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                 &pack_hash,
                 &target_provider,
                 confirm,
+                metadata_only,
                 &storage_root,
             )
             .await?;
@@ -1775,6 +1779,7 @@ async fn run_cold_pack_restore_smoke(
     pack_hash: &str,
     target_provider: &str,
     confirm: bool,
+    metadata_only: bool,
     storage_root: &Path,
 ) -> Result<()> {
     if !confirm {
@@ -1823,7 +1828,15 @@ async fn run_cold_pack_restore_smoke(
         original.len()
     );
 
-    hot.delete_pack(pack_hash).await?;
+    if metadata_only {
+        hot.forget_pack_reference(pack_hash).await?;
+        println!(
+            "cold_pack_restore=HOT_REFERENCE_EVICTED provider={} remote_delete=NOT_RUN reason=provider_delete_not_proven",
+            hot.provider_id()
+        );
+    } else {
+        hot.delete_pack(pack_hash).await?;
+    }
     database
         .delete_pack_locations_for_provider(pack_hash, hot.provider_id())
         .await?;
