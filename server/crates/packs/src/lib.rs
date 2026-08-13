@@ -6,6 +6,9 @@
 //! makes the format safe to copy between providers.
 
 use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::{BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 const HEADER_MAGIC: &[u8; 8] = b"LGRPACK1";
@@ -23,6 +26,8 @@ const MAX_DECLARED_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum PackError {
+    #[error("pack file I/O failed: {0}")]
+    Io(String),
     #[error("pack configuration is invalid: {0}")]
     Configuration(String),
     #[error("pack is truncated or too small")]
@@ -110,6 +115,46 @@ pub struct PackInput {
     pub raw_hash: String,
     pub raw_size: u64,
     pub encoded_bytes: Vec<u8>,
+}
+
+/// Metadata for an encoded chunk that is already present on disk.
+///
+/// This is intentionally separate from [`PackInput`].  `PackInput` is useful
+/// for small in-memory callers and tests, while the production packager uses
+/// this file-backed form so a multi-gigabyte build never has to be loaded into
+/// RAM before its physical packs are written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackFileInput {
+    pub encoded_hash: String,
+    pub raw_hash: String,
+    pub raw_size: u64,
+    pub encoded_size: u64,
+    pub encoded_path: PathBuf,
+}
+
+impl PackFileInput {
+    pub fn new(
+        encoded_hash: impl Into<String>,
+        raw_hash: impl Into<String>,
+        raw_size: u64,
+        encoded_size: u64,
+        encoded_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            encoded_hash: encoded_hash.into(),
+            raw_hash: raw_hash.into(),
+            raw_size,
+            encoded_size,
+            encoded_path: encoded_path.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackFileArtifact {
+    pub pack_hash: String,
+    pub encoded_size: u64,
+    pub entries: Vec<PackEntry>,
 }
 
 impl PackInput {
@@ -241,6 +286,232 @@ where
         builder.push(input)?;
     }
     builder.build()
+}
+
+/// Write deterministic physical packs from encoded chunk files without
+/// accumulating all chunk bytes in memory.
+///
+/// Inputs are sorted by encoded hash, matching [`build_packs`].  Each output
+/// pack is streamed once: a small in-memory index is retained, while encoded
+/// chunk data is copied directly from its source file to the pack.  The pack
+/// hash is calculated over the exact bytes written and the temporary file is
+/// renamed atomically after the footer has been written.
+pub fn write_packs_from_files<I, P>(
+    inputs: I,
+    config: PackConfig,
+    destination: P,
+) -> Result<Vec<PackFileArtifact>, PackError>
+where
+    I: IntoIterator<Item = PackFileInput>,
+    P: AsRef<Path>,
+{
+    config.validate()?;
+    let mut inputs = inputs.into_iter().collect::<Vec<_>>();
+    for input in &inputs {
+        validate_hash("encoded", &input.encoded_hash)?;
+        validate_hash("raw", &input.raw_hash)?;
+        if input.raw_size > MAX_DECLARED_CHUNK_BYTES
+            || input.encoded_size > MAX_DECLARED_CHUNK_BYTES
+        {
+            return Err(PackError::Configuration(
+                "chunk exceeds the maximum declared size".to_owned(),
+            ));
+        }
+        if input.encoded_size > config.max_bytes {
+            return Err(PackError::Configuration(format!(
+                "chunk {} is larger than the maximum pack size",
+                input.encoded_hash
+            )));
+        }
+        let metadata = fs::metadata(&input.encoded_path).map_err(io_error)?;
+        if !metadata.is_file() {
+            return Err(PackError::Io(format!(
+                "encoded chunk path is not a file: {}",
+                input.encoded_path.display()
+            )));
+        }
+        if metadata.len() != input.encoded_size {
+            return Err(PackError::InvalidIndex(format!(
+                "encoded chunk {} has size {}, expected {}",
+                input.encoded_hash,
+                metadata.len(),
+                input.encoded_size
+            )));
+        }
+    }
+    inputs.sort_by(|left, right| left.encoded_hash.cmp(&right.encoded_hash));
+    for pair in inputs.windows(2) {
+        if pair[0].encoded_hash == pair[1].encoded_hash {
+            return Err(PackError::InvalidIndex(format!(
+                "duplicate encoded hash {}",
+                pair[0].encoded_hash
+            )));
+        }
+    }
+
+    let destination = destination.as_ref();
+    fs::create_dir_all(destination).map_err(io_error)?;
+    let mut groups = Vec::<Vec<PackFileInput>>::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0_u64;
+    for input in inputs {
+        let should_flush = !current.is_empty()
+            && (current_bytes.saturating_add(input.encoded_size) > config.max_bytes
+                || (current_bytes >= config.min_bytes
+                    && current_bytes.saturating_add(input.encoded_size) > config.target_bytes));
+        if should_flush {
+            groups.push(std::mem::take(&mut current));
+            current_bytes = 0;
+        }
+        current_bytes = current_bytes.saturating_add(input.encoded_size);
+        current.push(input);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, group)| write_file_pack(group, destination, ordinal))
+        .collect()
+}
+
+fn write_file_pack(
+    inputs: Vec<PackFileInput>,
+    destination: &Path,
+    ordinal: usize,
+) -> Result<PackFileArtifact, PackError> {
+    let data_length = inputs.iter().try_fold(0_u64, |total, input| {
+        total
+            .checked_add(input.encoded_size)
+            .ok_or_else(|| PackError::InvalidHeader("data length overflows".to_owned()))
+    })?;
+    let index_offset = (HEADER_SIZE as u64)
+        .checked_add(data_length)
+        .ok_or_else(|| PackError::InvalidHeader("index offset overflows".to_owned()))?;
+    let index_length = (inputs.len() as u64)
+        .checked_mul(ENTRY_SIZE as u64)
+        .ok_or_else(|| PackError::InvalidHeader("index length overflows".to_owned()))?;
+    let total_length = index_offset
+        .checked_add(index_length)
+        .and_then(|length| length.checked_add(FOOTER_SIZE as u64))
+        .ok_or_else(|| PackError::InvalidHeader("pack length overflows".to_owned()))?;
+    if total_length > MAX_PACK_BYTES {
+        return Err(PackError::Configuration(
+            "pack exceeds the format size limit".to_owned(),
+        ));
+    }
+
+    let temporary = destination.join(format!(".pack-{ordinal}.pack.part"));
+    let result = (|| {
+        let mut output = File::create(&temporary).map_err(io_error)?;
+        let mut pack_hasher = blake3::Hasher::new();
+        let mut header = [0_u8; HEADER_SIZE];
+        header[0..8].copy_from_slice(HEADER_MAGIC);
+        header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        header[12..16].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+        header[16..24].copy_from_slice(&(inputs.len() as u64).to_le_bytes());
+        header[24..32].copy_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
+        header[32..40].copy_from_slice(&index_offset.to_le_bytes());
+        header[40..48].copy_from_slice(&index_length.to_le_bytes());
+        write_hashed(&mut output, &mut pack_hasher, &header)?;
+
+        let mut entries = Vec::with_capacity(inputs.len());
+        let mut offset = HEADER_SIZE as u64;
+        let mut buffer = vec![0_u8; 1024 * 1024];
+        for input in &inputs {
+            let mut source = BufReader::new(File::open(&input.encoded_path).map_err(io_error)?);
+            let mut chunk_hasher = blake3::Hasher::new();
+            let mut copied = 0_u64;
+            loop {
+                let read = source.read(&mut buffer).map_err(io_error)?;
+                if read == 0 {
+                    break;
+                }
+                chunk_hasher.update(&buffer[..read]);
+                write_hashed(&mut output, &mut pack_hasher, &buffer[..read])?;
+                copied = copied
+                    .checked_add(read as u64)
+                    .ok_or_else(|| PackError::InvalidHeader("chunk size overflows".to_owned()))?;
+            }
+            if copied != input.encoded_size {
+                return Err(PackError::InvalidIndex(format!(
+                    "encoded chunk {} changed size while packing",
+                    input.encoded_hash
+                )));
+            }
+            let actual = chunk_hasher.finalize().to_hex().to_string();
+            if actual != input.encoded_hash {
+                return Err(PackError::ChunkHashMismatch {
+                    expected: input.encoded_hash.clone(),
+                    actual,
+                });
+            }
+            entries.push(PackEntry {
+                encoded_hash: input.encoded_hash.clone(),
+                raw_hash: input.raw_hash.clone(),
+                offset,
+                encoded_length: input.encoded_size,
+                raw_length: input.raw_size,
+                compression: COMPRESSION_ZSTD,
+                flags: 0,
+            });
+            offset = offset
+                .checked_add(input.encoded_size)
+                .ok_or_else(|| PackError::InvalidHeader("chunk offset overflows".to_owned()))?;
+        }
+
+        let mut index = Vec::with_capacity(index_length as usize);
+        for entry in &entries {
+            write_hash(&mut index, &entry.encoded_hash)?;
+            write_hash(&mut index, &entry.raw_hash)?;
+            index.extend_from_slice(&entry.offset.to_le_bytes());
+            index.extend_from_slice(&entry.encoded_length.to_le_bytes());
+            index.extend_from_slice(&entry.raw_length.to_le_bytes());
+            index.extend_from_slice(&entry.compression.to_le_bytes());
+            index.extend_from_slice(&entry.flags.to_le_bytes());
+        }
+        let index_hash = blake3::hash(&index);
+        write_hashed(&mut output, &mut pack_hasher, &index)?;
+
+        let mut footer = [0_u8; FOOTER_SIZE];
+        footer[0..8].copy_from_slice(FOOTER_MAGIC);
+        footer[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        footer[12..20].copy_from_slice(&index_offset.to_le_bytes());
+        footer[20..28].copy_from_slice(&index_length.to_le_bytes());
+        footer[28..36].copy_from_slice(&(entries.len() as u64).to_le_bytes());
+        footer[40..72].copy_from_slice(index_hash.as_bytes());
+        write_hashed(&mut output, &mut pack_hasher, &footer)?;
+        output.flush().map_err(io_error)?;
+
+        let pack_hash = pack_hasher.finalize().to_hex().to_string();
+        let final_path = destination.join(format!("{pack_hash}.pack"));
+        fs::rename(&temporary, &final_path).map_err(io_error)?;
+        Ok(PackFileArtifact {
+            pack_hash,
+            encoded_size: total_length,
+            entries,
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn write_hashed(
+    output: &mut File,
+    hasher: &mut blake3::Hasher,
+    bytes: &[u8],
+) -> Result<(), PackError> {
+    output.write_all(bytes).map_err(io_error)?;
+    hasher.update(bytes);
+    Ok(())
+}
+
+fn io_error(error: std::io::Error) -> PackError {
+    PackError::Io(error.to_string())
 }
 
 fn build_artifact(inputs: Vec<PackInput>) -> Result<PackArtifact, PackError> {
@@ -626,6 +897,7 @@ fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn input(raw: &[u8], _salt: u8) -> PackInput {
         let encoded = zstd::bulk::compress(raw, 3).unwrap();
@@ -657,6 +929,49 @@ mod tests {
         assert_eq!(reader.entries().len(), 2);
         assert_eq!(reader.read_raw(&first.encoded_hash).unwrap(), b"hello");
         assert_eq!(reader.read_raw(&second.encoded_hash).unwrap(), b"world");
+    }
+
+    #[test]
+    fn streams_file_backed_packs_and_verifies_the_written_bytes() {
+        let root = std::env::temp_dir().join(format!("launcher-packs-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let mut inputs = Vec::new();
+        for raw in [b"hello".as_slice(), b"world".as_slice()] {
+            let encoded = zstd::bulk::compress(raw, 3).unwrap();
+            let encoded_hash = blake3::hash(&encoded).to_hex().to_string();
+            let encoded_path = root.join(format!("{encoded_hash}.bin"));
+            fs::write(&encoded_path, &encoded).unwrap();
+            inputs.push(PackFileInput::new(
+                encoded_hash,
+                blake3::hash(raw).to_hex().to_string(),
+                raw.len() as u64,
+                encoded.len() as u64,
+                encoded_path,
+            ));
+        }
+
+        let artifacts = write_packs_from_files(
+            inputs,
+            PackConfig {
+                target_bytes: 1024,
+                min_bytes: 1,
+                max_bytes: 1024 * 1024,
+            },
+            root.join("packs"),
+        )
+        .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        let artifact = &artifacts[0];
+        let bytes = fs::read(
+            root.join("packs")
+                .join(format!("{}.pack", artifact.pack_hash)),
+        )
+        .unwrap();
+        let reader = PackReader::parse(&bytes).unwrap();
+        reader.verify_pack_hash(&artifact.pack_hash).unwrap();
+        assert_eq!(reader.entries().len(), 2);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

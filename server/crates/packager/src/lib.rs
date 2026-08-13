@@ -5,7 +5,7 @@ use launcher_common::{
     ChunkRef, ChunkingConfig, EncodingConfig, FileRecipe, LaunchProfile, MANIFEST_SCHEMA_VERSION,
     Manifest,
 };
-use launcher_packs::{PackConfig, PackInput, build_packs};
+use launcher_packs::{PackConfig, PackFileInput, write_packs_from_files};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -260,42 +260,37 @@ pub fn package_directory(
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
 
     let (packs, packed_bytes) = if let Some(pack_config) = &options.pack_config {
-        let mut unique_inputs = BTreeMap::<String, PackInput>::new();
+        let mut unique_inputs = BTreeMap::<String, PackFileInput>::new();
         for file in &manifest.files {
             for chunk in &file.chunks {
                 if unique_inputs.contains_key(&chunk.encoded_hash) {
                     continue;
                 }
                 let chunk_path = output.join(&chunk.object_key);
-                let encoded_bytes = fs::read(&chunk_path).with_context(|| {
-                    format!("could not read {} for pack output", chunk_path.display())
-                })?;
                 unique_inputs.insert(
                     chunk.encoded_hash.clone(),
-                    PackInput::new(
+                    PackFileInput::new(
                         chunk.encoded_hash.clone(),
                         chunk.raw_hash.clone(),
                         chunk.raw_size,
-                        encoded_bytes,
+                        chunk.encoded_size,
+                        chunk_path,
                     ),
                 );
             }
         }
-        let artifacts = build_packs(unique_inputs.into_values(), pack_config.clone())?;
-        fs::create_dir_all(output.join("packs"))?;
+        let artifacts = write_packs_from_files(
+            unique_inputs.into_values(),
+            pack_config.clone(),
+            output.join("packs"),
+        )?;
         let mut index = Vec::with_capacity(artifacts.len());
         let mut total_bytes = 0_u64;
         for artifact in artifacts {
-            let path = output
-                .join("packs")
-                .join(format!("{}.pack", artifact.pack_hash));
-            let temporary = path.with_extension("pack.part");
-            fs::write(&temporary, &artifact.bytes)?;
-            fs::rename(temporary, path)?;
-            total_bytes = total_bytes.saturating_add(artifact.bytes.len() as u64);
+            total_bytes = total_bytes.saturating_add(artifact.encoded_size);
             index.push(serde_json::json!({
                 "pack_hash": artifact.pack_hash,
-                "encoded_size": artifact.bytes.len(),
+                "encoded_size": artifact.encoded_size,
                 "chunk_hashes": artifact.entries.iter().map(|entry| entry.encoded_hash.clone()).collect::<Vec<_>>(),
             }));
         }
