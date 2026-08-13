@@ -22,7 +22,11 @@
       </Grid>
     </Border>
 
-    <TextBlock Text="{Binding LastActionMessage}" Classes="Caption" Margin="0,14,0,0" />
+    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,14,0,0">
+      <TextBlock Text="{Binding LastActionMessage}" Classes="Caption" VerticalAlignment="Center" />
+      <Button Content="Pause" Classes="SmallSecondary" Command="{Binding PauseActiveDownloadCommand}" />
+      <Button Content="Resume" Classes="SmallSecondary" Command="{Binding ResumeActiveDownloadCommand}" />
+    </StackPanel>
 
     <StackPanel Margin="0,28,0,0" Spacing="12">
       <Grid ColumnDefinitions="*,Auto"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Up Next" Classes="SectionHeading" /><TextBlock Text="{Binding UpNextCount}" Classes="Caption" VerticalAlignment="Center" /></StackPanel><TextBlock Grid.Column="1" Text="There are no downloads in the queue" Classes="Caption" /></Grid>

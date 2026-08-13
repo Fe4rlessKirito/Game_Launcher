@@ -40,16 +40,7 @@ public partial class ShellViewModel : ObservableObject
     [ObservableProperty] private string _connectionStatus = "Offline-ready";
     [ObservableProperty] private string _runtimeError = string.Empty;
 
-    public ObservableCollection<SidebarCategory> SidebarCategories { get; } =
-    [
-        new SidebarCategory("FAVORITES", false, new[]
-        {
-            new SidebarGame("Synthetic Game", "SG", "Installed", 4),
-            new SidebarGame("Build Playground", "BP", "Ready to install", 3),
-            new SidebarGame("Asterfall", "AF", "Not installed", 2),
-            new SidebarGame("Northstar", "NS", "Not installed", 1)
-        })
-    ];
+    public ObservableCollection<SidebarCategory> SidebarCategories { get; }
 
     public ObservableCollection<SidebarCategory> VisibleSidebarCategories { get; } = new();
     public SidebarCategory? SelectedCollection { get; private set; }
@@ -67,8 +58,18 @@ public partial class ShellViewModel : ObservableObject
     public bool HasSearchQuery => !string.IsNullOrWhiteSpace(SearchQuery);
     public string ReadyToPlayFilterTip => ShowOnlyReadyToPlay ? "Show all games" : "Show only ready to play games";
 
-    public ShellViewModel(LauncherRuntime? runtime = null)
+    public ShellViewModel(LauncherRuntime? runtime = null, bool seedDemoData = true)
     {
+        SidebarCategories =
+        [
+            new SidebarCategory("FAVORITES", false, seedDemoData ? new[]
+            {
+                new SidebarGame("Synthetic Game", "SG", "Installed", 4),
+                new SidebarGame("Build Playground", "BP", "Ready to install", 3),
+                new SidebarGame("Asterfall", "AF", "Not installed", 2),
+                new SidebarGame("Northstar", "NS", "Not installed", 1)
+            } : [])
+        ];
         _collectionsPage = new CollectionsViewModel(SidebarCategories);
         _currentPage = _libraryPage;
         foreach (var category in SidebarCategories)

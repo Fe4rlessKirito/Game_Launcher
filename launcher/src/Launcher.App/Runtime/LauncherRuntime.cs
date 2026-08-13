@@ -75,6 +75,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly ChunkCache _chunkCache;
     private readonly PackCache _packCache;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly object _downloaderGate = new();
+    private DownloadManager? _activeDownloader;
     private IReadOnlyList<GameCatalogItem> _catalog = [];
     private LauncherRuntimeSnapshot _snapshot = new([], [], false, "Offline-ready", null);
     private bool _initialized;
@@ -183,6 +185,16 @@ public sealed class LauncherRuntime : IAsyncDisposable
             || string.Equals(game.Title, idOrTitle, StringComparison.OrdinalIgnoreCase));
     }
 
+    public void PauseActiveDownload()
+    {
+        lock (_downloaderGate) _activeDownloader?.Pause();
+    }
+
+    public void ResumeActiveDownload()
+    {
+        lock (_downloaderGate) _activeDownloader?.Resume();
+    }
+
     public async Task InstallAsync(string gameId, IProgress<DownloadProgress>? progress = null, CancellationToken cancellationToken = default)
     {
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -206,6 +218,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 Math.Clamp(_settings.ConcurrentDownloads, 1, 32),
                 _stateStore,
                 packCache: _packCache);
+            lock (_downloaderGate) _activeDownloader = downloader;
             var trackedProgress = new Progress<DownloadProgress>(value =>
             {
                 ProgressChanged?.Invoke(value);
@@ -229,6 +242,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         }
         finally
         {
+            lock (_downloaderGate) _activeDownloader = null;
             _operationGate.Release();
         }
     }

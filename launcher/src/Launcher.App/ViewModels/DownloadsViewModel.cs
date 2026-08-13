@@ -122,6 +122,20 @@ public partial class DownloadsViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private void PauseActiveDownload()
+    {
+        _runtime?.PauseActiveDownload();
+        LastActionMessage = "Download paused.";
+    }
+
+    [RelayCommand]
+    private void ResumeActiveDownload()
+    {
+        _runtime?.ResumeActiveDownload();
+        LastActionMessage = "Download resumed.";
+    }
+
+    [RelayCommand]
     private void ClearCompleted()
     {
         Completed.Clear();

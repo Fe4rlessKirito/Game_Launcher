@@ -19,7 +19,7 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            var shell = new ShellViewModel();
+            var shell = new ShellViewModel(seedDemoData: false);
             desktop.MainWindow = new MainWindow { DataContext = shell };
             desktop.Exit += OnDesktopExit;
             _ = InitializeRuntimeAsync(shell);
