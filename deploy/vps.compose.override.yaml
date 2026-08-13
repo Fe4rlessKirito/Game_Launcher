@@ -3,7 +3,9 @@ services:
     env_file:
       - ../secrets/telegram.env
     environment:
-      LAUNCHER_STORAGE_PROVIDERS: local,telegram
+      LAUNCHER_STORAGE_PROVIDERS: filemirage,telegram
+      LAUNCHER_FILEMIRAGE_STATE_FILE: /var/lib/launcher/storage/filemirage-state.json
+      LAUNCHER_RESTORE_TARGET_PROVIDER: filemirage
       TELEGRAM_COLD_ENABLED: "true"
       TELEGRAM_BOT_API_BASE_URL: http://telegram-bot-api-proxy:8081
       TELEGRAM_COLD_MAX_UPLOAD_BYTES: "536870912"
@@ -24,8 +26,9 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       LAUNCHER_STORAGE_ROOT: /var/lib/launcher/storage
-      LAUNCHER_STORAGE_PROVIDERS: local,telegram
-      LAUNCHER_LOCAL_TIER: HOT
+      LAUNCHER_STORAGE_PROVIDERS: filemirage,telegram
+      LAUNCHER_FILEMIRAGE_STATE_FILE: /var/lib/launcher/storage/filemirage-state.json
+      LAUNCHER_RESTORE_TARGET_PROVIDER: filemirage
       LAUNCHER_AUTO_MIGRATE: "0"
       TELEGRAM_COLD_ENABLED: "true"
       TELEGRAM_BOT_API_BASE_URL: http://telegram-bot-api-proxy:8081
