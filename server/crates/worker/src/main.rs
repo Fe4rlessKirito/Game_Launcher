@@ -253,6 +253,8 @@ enum StorageCommands {
         storage_root: PathBuf,
         #[arg(long, default_value_t = 1024 * 1024)]
         bytes: usize,
+        #[arg(long, value_delimiter = ',', default_value = "1,2,4,8,16")]
+        concurrency: Vec<usize>,
     },
     Health {
         #[arg(long, default_value = "storage")]
@@ -1099,6 +1101,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
         StorageCommands::TelegramSmoke {
             storage_root,
             bytes,
+            concurrency,
         } => {
             let (storage, _) = storage_command_context(&storage_root).await?;
             let provider = storage
@@ -1106,7 +1109,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                 .into_iter()
                 .find(|provider| provider.provider_type().eq_ignore_ascii_case("telegram"))
                 .context("no Telegram COLD provider is configured")?;
-            run_telegram_pack_smoke(provider, bytes).await?;
+            run_telegram_pack_smoke(provider, bytes, &concurrency).await?;
         }
         StorageCommands::Health { storage_root } => {
             let (storage, database) = storage_command_context(&storage_root).await?;
@@ -1511,6 +1514,7 @@ async fn run_storage_smoke(
 async fn run_telegram_pack_smoke(
     provider: Arc<dyn StorageProvider>,
     requested_bytes: usize,
+    concurrency: &[usize],
 ) -> Result<()> {
     if !provider.provider_type().eq_ignore_ascii_case("telegram") {
         anyhow::bail!(
@@ -1518,12 +1522,14 @@ async fn run_telegram_pack_smoke(
             provider.provider_type()
         );
     }
-    let raw_size = requested_bytes.clamp(1, 8 * 1024 * 1024);
+    let requested_bytes = requested_bytes.clamp(1, 512 * 1024 * 1024);
+    let raw_size = requested_bytes.saturating_sub(2 * 1024 * 1024).max(1);
     let mut raw = vec![0_u8; raw_size];
     OsRng.fill_bytes(&mut raw);
     let encoded = zstd::bulk::compress(&raw, 3)?;
     let encoded_hash = blake3::hash(&encoded).to_hex().to_string();
     let raw_hash = blake3::hash(&raw).to_hex().to_string();
+    let pack_limit = requested_bytes.max(8 * 1024 * 1024) as u64;
     let pack = launcher_packs::build_packs(
         [launcher_packs::PackInput::new(
             encoded_hash,
@@ -1532,9 +1538,9 @@ async fn run_telegram_pack_smoke(
             encoded,
         )],
         launcher_packs::PackConfig {
-            target_bytes: 8 * 1024 * 1024,
+            target_bytes: pack_limit,
             min_bytes: 1,
-            max_bytes: 8 * 1024 * 1024,
+            max_bytes: pack_limit,
         },
     )?
     .into_iter()
@@ -1556,6 +1562,49 @@ async fn run_telegram_pack_smoke(
     launcher_packs::PackReader::parse(&restored)?.verify_pack_hash(&pack_hash)?;
     println!("check=TELEGRAM_download status=PASS");
     println!("check=TELEGRAM_integrity status=PASS blake3={pack_hash}");
+
+    let mut levels = concurrency.to_vec();
+    if levels.is_empty() {
+        levels.push(1);
+    }
+    levels.sort_unstable();
+    levels.dedup();
+    for level in levels {
+        if level == 0 || level > 16 {
+            anyhow::bail!("Telegram smoke concurrency must be between 1 and 16, got {level}");
+        }
+        let started = std::time::Instant::now();
+        let mut tasks = Vec::with_capacity(level);
+        for _ in 0..level {
+            let provider = provider.clone();
+            let expected_hash = pack_hash.clone();
+            tasks.push(tokio::spawn(async move {
+                stream_pack_hash(provider, &expected_hash).await
+            }));
+        }
+        let mut total_bytes = 0_u64;
+        for task in tasks {
+            let (bytes, hash) = task
+                .await
+                .context("Telegram restore benchmark task panicked")??;
+            if hash != pack_hash {
+                anyhow::bail!(
+                    "Telegram restore benchmark hash mismatch: expected {pack_hash}, got {hash}"
+                );
+            }
+            total_bytes = total_bytes
+                .checked_add(bytes)
+                .context("Telegram restore benchmark byte count overflow")?;
+        }
+        let elapsed = started.elapsed();
+        let seconds = elapsed.as_secs_f64().max(f64::EPSILON);
+        let throughput_mbps = total_bytes as f64 / seconds / 1024.0 / 1024.0;
+        println!(
+            "telegram_restore_benchmark concurrency={level} requests={level} bytes={total_bytes} elapsed_ms={} throughput_mib_s={throughput_mbps:.2}",
+            elapsed.as_millis()
+        );
+    }
+
     provider.delete_pack(&pack_hash).await?;
     if provider.read_pack(&pack_hash).await.is_ok() {
         anyhow::bail!("Telegram smoke delete left the temporary pack readable");
@@ -1563,6 +1612,23 @@ async fn run_telegram_pack_smoke(
     println!("check=TELEGRAM_delete status=PASS");
     println!("telegram_smoke=PASS pack_bytes={}", pack_bytes.len());
     Ok(())
+}
+
+async fn stream_pack_hash(
+    provider: Arc<dyn StorageProvider>,
+    pack_hash: &str,
+) -> Result<(u64, String)> {
+    let mut stream = provider.read_pack_stream(pack_hash).await?;
+    let mut hasher = blake3::Hasher::new();
+    let mut total = 0_u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        total = total
+            .checked_add(chunk.len() as u64)
+            .context("Telegram restore stream byte count overflow")?;
+        hasher.update(&chunk);
+    }
+    Ok((total, hasher.finalize().to_hex().to_string()))
 }
 
 fn mega_diagnostic(error: &anyhow::Error) -> &'static str {
