@@ -1,0 +1,4 @@
+services:
+  caddy:
+    volumes:
+      - ./VpsCaddyfile.https.example:/etc/caddy/Caddyfile:ro

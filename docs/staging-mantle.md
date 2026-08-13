@@ -8,6 +8,9 @@ The checked-in `deploy/VpsCaddyfile` deliberately keeps the current IP-only
 staging endpoint on HTTP. Once DNS is pointed at the VPS, replace it with
 `deploy/VpsCaddyfile.https.example`, set `SITE_HOST` to the real hostname, and
 recreate Caddy so ACME can issue the certificate.
+The checked-in `deploy/vps.compose.https.yaml` is the reproducible switch for
+that cutover; it mounts the HTTPS Caddyfile without editing the base compose
+files. The health-check script rejects HTTP by default after the cutover.
 The production-shaped override requires `LAUNCHER_OPERATOR_TOKEN` for storage
 diagnostics and Prometheus metrics. Keep that token in the VPS `.env`; it is
 never included in the launcher or returned by the API.
@@ -41,6 +44,17 @@ curl -fsS https://<public-api-host>/v1/ready
 curl -fsS -H "Authorization: Bearer $LAUNCHER_OPERATOR_TOKEN" https://<public-api-host>/metrics
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T worker launcher-admin storage health
 ```
+
+For the temporary IP-only smoke endpoint, explicitly opt into the exception:
+
+```text
+LAUNCHER_ALLOW_HTTP_HEALTHCHECK=true \
+LAUNCHER_PUBLIC_BASE_URL=http://<mantle-ip> \
+LAUNCHER_OPERATOR_TOKEN=<secret> \
+scripts/mantle-healthcheck.sh
+```
+
+Do not use that exception for a public release.
 
 From the workstation, the Mantle-aware scripts use SSH and never require a
 Railway CLI:
