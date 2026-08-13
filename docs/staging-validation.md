@@ -30,15 +30,16 @@ contain Railway credentials or claim that these live checks have run.
       work against the real Bucket.
 - [ ] Bucket download traffic goes directly from the launcher to HOT, not
       through the API byte proxy.
-- [ ] The worker has the same PostgreSQL/HOT references and one pre-authenticated
-      operator MEGA account; account creation and password automation are absent.
-- [ ] MEGAcmd state survives a worker restart on its small persistent volume.
-- [ ] MEGA upload, size/hash verification, download, hash verification, and
-      delete pass for one synthetic chunk.
-- [ ] Outbound MEGA failures are classified as MEGA_NETWORK_UNAVAILABLE or
-      MEGA_AUTH_FAILED, with no credential retry loop.
-- [ ] Account capacity, safety margin, reservations, and stale-hold cleanup
-      remain visible through PostgreSQL/operator status without credentials.
+- [ ] The worker has the same PostgreSQL/HOT references and private Telegram
+      Local Bot API references; no Telegram credential reaches the launcher.
+- [ ] Telegram Local Bot API state survives a worker/service restart on its
+      small persistent volume.
+- [ ] A real 512 MiB physical-pack Telegram smoke passes network,
+      authentication, upload, download, BLAKE3 integrity, and test deletion.
+- [ ] Telegram network/auth failures are surfaced without credential retry
+      loops, and the COLD message remains retained for real builds.
+- [ ] COLD pack placement, reservations, and stale-hold cleanup remain visible
+      through PostgreSQL/operator status without credentials.
 
 ## Launcher protocol and recovery
 
@@ -52,9 +53,9 @@ contain Railway credentials or claim that these live checks have run.
 - [ ] Bad secondary mirror then HOT and HOT failure then bad secondary both
       exercise retry/fallback without corrupting the cache.
 - [ ] Cold-only resolution returns restore_pending and Retry-After.
-- [ ] Worker reads MEGA, verifies BLAKE3, writes HOT, records the restored
-      location, and the launcher downloads the restored object without seeing
-      MEGA credentials.
+- [ ] Worker reads Telegram COLD, verifies BLAKE3, writes HOT, records the
+      restored location, and the launcher downloads the restored object without
+      seeing Telegram credentials or message IDs.
 - [ ] Other chunks continue while one chunk is restore_pending; retry/backoff
       eventually completes the install.
 
@@ -62,7 +63,8 @@ contain Railway credentials or claim that these live checks have run.
 
 - [ ] API, worker, and PostgreSQL restart/reconnect tests pass.
 - [ ] Resource measurements cover API, worker, PostgreSQL, bucket traffic,
-      MEGAcmd, memory, CPU, network, volume, and bounded temporary storage.
+      Telegram Local Bot API, memory, CPU, network, volume, and bounded
+      temporary storage.
 - [ ] Normal launcher concurrency does not create an unbounded worker,
       PostgreSQL, bucket, or temporary-file explosion.
 - [ ] Signing uses explicit key ID staging-2026-01, with the private key only
@@ -91,6 +93,6 @@ not publish, restore, delete, or mutate bucket contents.
 
 Attach only redacted evidence: deployment IDs, commit, timestamps, status
 codes, byte counters, hashes, latency summaries, resource graphs, and
-operator-approved MEGA smoke output. Omit URLs with query strings, all
+operator-approved Telegram smoke output. Omit URLs with query strings, all
 credentials, session paths if sensitive, private keys, and account email
 addresses.

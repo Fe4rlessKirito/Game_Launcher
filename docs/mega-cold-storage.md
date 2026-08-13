@@ -1,6 +1,6 @@
 # MEGA cold storage
 
-The MEGA adapter uses the maintained official [MEGAcmd command-line
+The optional MEGA adapter uses the maintained official [MEGAcmd command-line
 client](https://github.com/meganz/MEGAcmd) through a bounded subprocess boundary.
 The official [MEGAcmd user guide](https://github.com/meganz/MEGAcmd/blob/master/UserGuide.md)
 documents the scriptable `mega-whoami`, `mega-df`, `mega-du`, `mega-put`,
@@ -8,7 +8,8 @@ documents the scriptable `mega-whoami`, `mega-df`, `mega-du`, `mega-put`,
 [MEGA C++ SDK](https://github.com/meganz/sdk) remains a possible future adapter,
 but is intentionally not pulled into the Rust server build.
 
-The Railway worker image pins the official Debian 12 amd64 MEGAcmd package
+When MEGA is explicitly enabled, its worker image must pin the official Debian
+12 amd64 MEGAcmd package
 `2.5.2-1.1` by SHA-256. The package is installed in the image; only the
 authenticated MEGAcmd home is persisted on the Railway volume.
 
@@ -75,6 +76,7 @@ launcher-admin storage health --storage-root C:\launcher\storage
 launcher-admin storage restore-pending
 ```
 
-Run the fake-provider tests in CI. A real MEGA smoke test must be explicitly
+Run the fake-provider tests in CI. MEGA is not part of the Telegram staging
+gate. If it is enabled later, a real MEGA smoke test must be explicitly
 credential-gated and must use an operator-provided pre-authenticated session;
 it is never a default CI or deployment step.

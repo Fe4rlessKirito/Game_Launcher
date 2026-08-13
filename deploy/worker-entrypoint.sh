@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /var/lib/launcher/storage /var/lib/launcher/megacmd /tmp/launcher-mega
-chown -R launcher:launcher /var/lib/launcher/megacmd /tmp/launcher-mega
+mkdir -p /var/lib/launcher/storage /var/lib/launcher/telegram /tmp/launcher-cold
+chown -R launcher:launcher /var/lib/launcher/telegram /tmp/launcher-cold
 
-export HOME=/var/lib/launcher/megacmd
+export HOME=/var/lib/launcher/telegram
 case ",${LAUNCHER_STORAGE_PROVIDERS:-}," in
     *,mega,*)
         if ! command -v mega-whoami >/dev/null 2>&1; then

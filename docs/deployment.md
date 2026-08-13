@@ -71,26 +71,25 @@ The intended staging topology is:
                                                ├── private PostgreSQL
                                                └── private Railway Bucket (S3 HOT)
 
- private Restore Worker ── PostgreSQL + Railway Bucket HOT + MEGAcmd COLD
+ private Restore Worker ── PostgreSQL + Railway Bucket HOT + Telegram COLD
  website service (optional) ── public API URL only
 ```
 
 The API service uses `LAUNCHER_STORAGE_PROVIDERS=s3`; the worker uses
-`s3,mega` and owns the MEGAcmd session. The API never needs MEGA credentials to
-resolve hot locations. Cold account status is recorded in PostgreSQL by the
-operator/worker commands and is visible through the redacted storage status
-endpoint. The worker has no HTTP endpoint and must not receive a public domain.
+`s3,telegram` and owns the private Telegram/Local Bot API connection. The API
+never needs Telegram credentials to resolve hot locations. COLD pack state is
+recorded in PostgreSQL by the operator/worker commands and is visible through
+the redacted storage status endpoint. The worker has no HTTP endpoint and must
+not receive a public domain.
 Use `railway.worker.toml` as the service's custom config-as-code file; Railway
 supports selecting a custom config path in service settings.
 
 Create a small persistent volume on the worker and mount it at
-`/var/lib/launcher/megacmd`. Store only MEGAcmd state and the operator-managed
-account configuration there, not game objects. The worker image sets
-`TMPDIR=/tmp/launcher-mega`; the restore path processes one bounded chunk at a
-time and removes temporary files after verification. Install the official
-MEGAcmd Linux package or a pinned operator-built image layer; the checked-in
-Rust image deliberately does not download an unpinned third-party binary.
-Pre-authenticate exactly one operator MEGA account for the first smoke test.
+`/var/lib/launcher/telegram`. Store only Telegram message/index state there,
+not game objects. The worker image sets `TMPDIR=/tmp/launcher-cold`; the restore
+path processes one bounded pack at a time and removes temporary files after
+verification. The private Local Bot API service owns its own persistent state
+volume. MEGA remains an optional adapter and is not required for staging.
 
 Railway Bucket credentials are wired through generic S3 variables, for example:
 

@@ -11,7 +11,7 @@ this runbook does not claim that staging is deployed.
 | --- | --- | --- |
 | api | One public HTTPS domain | Catalog, hot resolution, presigned URLs, restore-pending responses |
 | Postgres | Private only | Catalog, storage locations, account ledger, reservations, restore jobs |
-| Restore Worker | Private only; no domain | Cold health/capacity, restore queue, MEGAcmd transfers |
+| Restore Worker | Private only; no domain | Telegram COLD health, pack restore queue, HOT renewal |
 | Provisioning Worker | Private only; no domain | Durable capacity-job retries/expiry and operator wake-up |
 | HotBucket | Private S3 API | HOT object bytes through the generic S3 interface |
 | website | Optional public HTTPS | Static shell; calls the public API |
@@ -65,8 +65,13 @@ Railway service names:
 
 Set the same PostgreSQL and HOT references on the worker, then add:
 
-    LAUNCHER_STORAGE_PROVIDERS=s3,mega
-    LAUNCHER_MEGA_ACCOUNTS_FILE=/var/lib/launcher/megacmd/mega-accounts.json
+    LAUNCHER_STORAGE_PROVIDERS=s3,telegram
+    TELEGRAM_COLD_ENABLED=true
+    TELEGRAM_BOT_API_BASE_URL=http://<telegram-bot-api-private-host>:8080
+    TELEGRAM_BOT_TOKEN=<Railway secret>
+    TELEGRAM_COLD_CHAT_IDS=<numeric chat id>
+    TELEGRAM_COLD_MAX_UPLOAD_BYTES=536870912
+    TELEGRAM_COLD_STATE_FILE=/var/lib/launcher/telegram/telegram-cold-state.json
 
 Set these on the API and the private provisioning worker. Put the HMAC value in
 Railway's secret variable UI and Cloudflare's Worker secret UI; the blank line
@@ -81,13 +86,13 @@ below is intentional:
     PROVISIONING_DEFAULT_MODE=MANUAL
     PROVISIONING_CAPACITY_HEADROOM_BYTES=0
     PROVISIONING_SECRET_STORE_DIR=/var/lib/launcher/provisioning-secrets
-    PROVISIONING_TEMP_DIR=/tmp/launcher-mega
+    PROVISIONING_TEMP_DIR=/tmp/launcher-cold
 
 For a second service from the same repository, select the existing
 `railway.worker.toml` and `deploy/worker.Dockerfile`, keep it private, and set
 the service start command to
 `/usr/local/bin/worker-entrypoint provisioning worker`. Give it only a tiny
-volume mounted at `/var/lib/launcher/megacmd` plus a separate secret-store
+volume mounted at `/var/lib/launcher/telegram` plus a separate secret-store
 directory if the chosen secret-store implementation needs one. Do not mount
 the HOT bucket or chunks as a worker volume.
 
@@ -106,18 +111,15 @@ deploy/env.example, Git, launcher settings, or client binaries.
 3. Run launcher-admin db status with the staging DATABASE_URL. It reports
    CONNECTED, required tables, and schema_ready; it never prints the URL.
 4. Set LAUNCHER_AUTO_MIGRATE=0, redeploy, and verify /v1/ready.
-5. Create a small worker volume mounted at
-   /var/lib/launcher/megacmd. The image entrypoint initializes the
-   runtime-owned directory before dropping to the non-root launcher user.
-6. Install a pinned official MEGAcmd package or operator-built image layer.
-   Copy exactly one operator-managed account file to the volume, with a
-   pre-authenticated session home for that same account. Never automate
-   signup, password entry, CAPTCHA, or recovery.
+5. Create a small worker volume mounted at `/var/lib/launcher/telegram`. The
+   image entrypoint initializes the runtime-owned directory before dropping to
+   the non-root launcher user.
+6. Configure the private Local Bot API service and verify its persistent state
+   volume. No MEGA runtime or account is required for staging.
 
-The worker volume is for MEGAcmd session state and the account reference file,
-not game storage. HOT objects live in the bucket. Restore transfers use
-TMPDIR=/tmp/launcher-mega and remove each temporary chunk after BLAKE3
-verification.
+The worker volume is for Telegram message/index state, not game storage. HOT
+objects live in the bucket. Restore transfers use `TMPDIR=/tmp/launcher-cold`
+and remove each temporary pack after BLAKE3 verification.
 
 ## First live checks
 
@@ -132,22 +134,22 @@ metrics, and optional manifest/signature endpoints. It does not mutate storage,
 enqueue restores, or print response bodies. HTTPS is mandatory unless
 --allow-http is explicitly used for a local smoke test.
 
-The first real MEGA smoke is a separate gated operation: run health,
-upload/size verification, download/BLAKE3 verification, and delete against one
-synthetic chunk. Record a session-reuse restart test before enabling the
-restore worker. A failed outbound call must be classified as
-MEGA_NETWORK_UNAVAILABLE; an authenticated but rejected session is
-MEGA_AUTH_FAILED. Do not retry authentication by logging a password.
+The first real Telegram smoke is a separate gated operation: upload a tiny
+random physical pack through the private Local Bot API, download it, verify
+BLAKE3, delete the test message, and record the result before enabling the
+restore worker. Telegram is the required COLD staging provider; MEGA is an
+optional future adapter.
 
 ## Security boundaries
 
 The public attack surface is the API HTTPS domain. PostgreSQL, the worker,
-MEGAcmd, the worker volume, and bucket credentials remain private. Local
+Local Bot API, the worker volume, Telegram credentials, and bucket credentials
+remain private. Local
 launcher-admin commands are operator actions; do not expose them as an
 unauthenticated API. Railway TLS is the only public TLS termination in this
 topology, and clients must reject invalid certificates.
 
-Use separate staging and production buckets, database environments, MEGA
-sessions, and signing keys. The staging launcher trusts only the explicit
+Use separate staging and production buckets, database environments, Telegram
+state/credentials, and signing keys. The staging launcher trusts only the explicit
 staging-2026-01 public key and staging HTTPS endpoint. Production must not
 contain that key or endpoint override.

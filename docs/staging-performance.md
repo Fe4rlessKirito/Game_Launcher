@@ -13,7 +13,7 @@ Record:
 - API/worker CPU and memory limits
 - PostgreSQL plan, version, connection pool size
 - Railway Bucket region, URL style, and object prefix
-- MEGAcmd version, worker volume size, and one-account identifier
+- Telegram Local Bot API version/mode and worker state-volume size
 - launcher build, OS, network path, and client concurrency
 - synthetic A/B manifest IDs, encoded bytes, raw bytes, chunk count, and cache state
 
@@ -35,7 +35,8 @@ Measure each case at least three times and report median and p95:
    206 response, final hash, and bytes transferred after resume.
 6. Presigned URL expiry: wait for expiry on one chunk, confirm chunk-level
    resolve refresh, and record the new expiry without logging the URL.
-7. Cold MEGA upload, verify, download, delete, and worker-to-HOT restore
+7. Cold Telegram pack upload, verify, download, test deletion, and
+   worker-to-HOT restore
    throughput. Record bounded temporary storage peak.
 8. Restore-pending latency: API response with Retry-After, worker claim,
    restore completion, and the next successful launcher resolve.
@@ -55,9 +56,8 @@ Run one failure at a time:
 - Railway HOT failure, then bad secondary mirror;
 - an interrupted multipart upload and orphan cleanup;
 - API, worker, and PostgreSQL restart/reconnect;
-- MEGAcmd session reuse after worker restart;
-- cold outbound failure classified as MEGA_NETWORK_UNAVAILABLE versus
-  MEGA_AUTH_FAILED.
+- Telegram Local Bot API and worker restart/reconnect;
+- cold outbound network/auth failures without credential retry loops.
 
 Repeat the small synthetic smoke at normal launcher concurrency. Record API
 requests per second, active downloads, worker jobs, PostgreSQL connections,
@@ -75,6 +75,6 @@ jobs remain bounded and that temporary chunk storage returns to its baseline.
 | A to B update | pending | pending | pending | savings and hashes | NOT RUN |
 | Resume/range | pending | pending | pending | Range/206 trace | NOT RUN |
 | Presign refresh | pending | pending | pending | two resolves | NOT RUN |
-| MEGA smoke | pending | pending | pending | operator log | NOT RUN |
+| Telegram 512 MiB smoke | pending | pending | pending | operator log | NOT RUN |
 | Cold restore | pending | pending | pending | job + hot hash | NOT RUN |
 | Restart/reconnect | pending | pending | pending | deployment logs | NOT RUN |

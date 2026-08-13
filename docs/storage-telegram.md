@@ -7,10 +7,10 @@ Telegram COLD is an operator-configured, server-side provider. Set
 `TELEGRAM_COLD_MAX_UPLOAD_BYTES`. Chat IDs are supplied by the operator; the
 worker does not discover chats, create groups, or expose the bot token.
 
-MEGA restores use `LAUNCHER_COLD_TEMP_DIR` and
+Restores use `LAUNCHER_COLD_TEMP_DIR` and
 `LAUNCHER_COLD_TEMP_BYTES` to select a worker-local temporary directory and a
 process-wide byte reservation limit. The directory is for in-flight transfer
-files only; it is not the persistent MEGAcmd session volume and it is never
+files only; it is not the persistent Telegram state volume and it is never
 used as a chunk store. Each restore or upload releases its reservation after
 cleanup.
 
@@ -41,7 +41,7 @@ responses are retried with the provider's retry delay.
 For Railway deployment, use the separate private-service setup in
 [telegram-local-api-railway.md](runbooks/telegram-local-api-railway.md). The
 Local Bot API service owns its own persistent state volume; the restore worker
-only owns launcher state, MEGAcmd session state, and bounded temporary restore
-space.
+only owns launcher state, Telegram message/index state, and bounded temporary
+restore space.
 
 Official reference: [Telegram Bot API](https://core.telegram.org/bots/api).

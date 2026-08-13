@@ -59,8 +59,8 @@ LAUNCHER_COLD_STREAM_TOKEN=<same sealed secret as the API>
 # Optional; omit this and the worker binds 0.0.0.0:$PORT automatically.
 ```
 
-Create the worker volume directory used by `TELEGRAM_COLD_STATE_FILE` and
-keep its existing MEGAcmd session directory separate. The API service remains
+Create the worker volume directory used by `TELEGRAM_COLD_STATE_FILE`; keep
+Telegram message/index state separate from the API service. The API service remains
 `LAUNCHER_STORAGE_PROVIDERS=s3`; Telegram is never returned to launcher
 clients.
 

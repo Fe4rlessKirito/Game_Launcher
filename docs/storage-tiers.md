@@ -5,14 +5,14 @@ The control plane treats storage placement as a policy decision. A logical
 
 ```text
 HOT     -> Railway/S3 pool
-COLD    -> MEGA pool (accounts A, B, C)
+COLD    -> Telegram pack store (operator-owned channel)
 ARCHIVE -> reserved for a future provider
 ```
 
 A `StoragePool` has an ID, class, provider type, deterministic priority,
 failure domain, enabled flag, status, and provisioning mode. Multiple pools may
-serve the same class. MEGA accounts are capacity members of one pool; they do
-not create independent provider failure domains.
+serve the same class. Telegram is the required staging COLD pool. Other COLD
+adapters, including MEGA, remain optional and are not part of the staging gate.
 
 `StorageTier` remains a source-compatible alias for `StorageClass` while
 operators migrate scripts.
@@ -36,8 +36,8 @@ The relevant environment variables are:
 Development defaults are one hot replica and one hot failure domain, with no
 cold or archive requirement. Staging should set one hot and one cold minimum,
 one failure domain for each class, enable
-`LAUNCHER_STORAGE_COLD_BACKUP_REQUIRED`, and use `PROACTIVE` after the MEGA
-pool has been validated. Publication is rejected until every manifest chunk
+`LAUNCHER_STORAGE_COLD_BACKUP_REQUIRED`, and use `PROACTIVE` after Telegram
+pack storage has been validated. Publication is rejected until every manifest chunk
 satisfies both replica and failure-domain requirements. A build remains
 `READY` when placement fails; an operator can correct pool health/capacity and
 rerun the publish command.
