@@ -13,6 +13,9 @@ services:
       PACK_STORAGE_ENABLED: "true"
       LAUNCHER_PACK_COLD_ONLY: "true"
       LAUNCHER_PACK_CANONICAL: "true"
+      LAUNCHER_HOT_RENEWAL_DAYS: "18"
+      LAUNCHER_HOT_RENEWAL_PROVIDER_TYPES: filemirage
+      LAUNCHER_HOT_RENEWAL_BATCH: "4"
     depends_on:
       telegram-bot-api-proxy:
         condition: service_started
@@ -38,6 +41,9 @@ services:
       PACK_STORAGE_ENABLED: "true"
       LAUNCHER_PACK_COLD_ONLY: "true"
       LAUNCHER_PACK_CANONICAL: "true"
+      LAUNCHER_HOT_RENEWAL_DAYS: "18"
+      LAUNCHER_HOT_RENEWAL_PROVIDER_TYPES: filemirage
+      LAUNCHER_HOT_RENEWAL_BATCH: "4"
     command: ["storage", "worker", "--poll-seconds", "15", "--storage-root", "/var/lib/launcher/storage"]
     depends_on:
       postgres:

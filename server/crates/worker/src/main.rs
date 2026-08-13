@@ -11,6 +11,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use futures_util::StreamExt;
 use launcher_common::{ChunkRef, GameSummary, Manifest, ManifestSignature};
 use launcher_database::Database;
 use launcher_domain::BuildState;
@@ -42,6 +43,8 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -1283,6 +1286,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             loop {
                 database.recover_expired_restore_jobs().await?;
                 database.recover_expired_pack_restore_jobs().await?;
+                renew_due_hot_packs(&database, &storage, &worker_id, &storage_root).await?;
                 if let Some(job) = database.claim_pack_restore_job(&worker_id, 600).await? {
                     if let Err(error) = process_pack_restore_job(&database, &storage, &job).await {
                         eprintln!("pack_restore_job={} status=RETRY error={error}", job.id);
@@ -2343,6 +2347,201 @@ async fn process_restore_job(
             .await?;
     }
     database.complete_restore_job(job.id).await?;
+    Ok(())
+}
+
+async fn renew_due_hot_packs(
+    database: &Database,
+    storage: &StorageRegistry,
+    worker_id: &str,
+    storage_root: &Path,
+) -> Result<()> {
+    let renewal_days = env::var("LAUNCHER_HOT_RENEWAL_DAYS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(18)
+        .clamp(1, 30);
+    let batch_size = env::var("LAUNCHER_HOT_RENEWAL_BATCH")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(4)
+        .clamp(1, 32);
+    let uploaded_before = Utc::now() - chrono::Duration::days(renewal_days);
+    let renewal_root = storage_root.join("pack-renewal");
+    tokio::fs::create_dir_all(&renewal_root).await?;
+
+    // FileMirage's free retention is inactivity-based. Keep the provider
+    // list explicit so a provider with a different retention contract is not
+    // accidentally reuploaded on this schedule.
+    let renewal_provider_types = env::var("LAUNCHER_HOT_RENEWAL_PROVIDER_TYPES")
+        .unwrap_or_else(|_| "filemirage".to_owned())
+        .split(',')
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    for provider in storage.providers_for_tier(StorageTier::Hot) {
+        if !renewal_provider_types.contains(&provider.provider_type().to_ascii_lowercase())
+            || !provider.capabilities().upload
+            || !provider.capabilities().direct_download
+        {
+            continue;
+        }
+        let due = database
+            .list_due_hot_pack_renewals(provider.provider_id(), uploaded_before, batch_size)
+            .await?;
+        for location in due {
+            let Some(lease_id) = database
+                .acquire_pack_lease(&location.pack_hash, worker_id, 3600)
+                .await?
+            else {
+                continue;
+            };
+            let temporary = renewal_root.join(format!(
+                "{}.{}.pack.part",
+                location.pack_hash,
+                Uuid::new_v4()
+            ));
+            let result =
+                renew_hot_pack_location(database, storage, provider.clone(), &location, &temporary)
+                    .await;
+            let _ = database.release_pack_lease(lease_id).await;
+            let _ = tokio::fs::remove_file(&temporary).await;
+            if let Err(error) = result {
+                database
+                    .defer_hot_pack_renewal(&location.pack_hash, &location.provider, 3600)
+                    .await?;
+                eprintln!(
+                    "hot_pack_renewal pack_hash={} provider={} status=RETRY error={error}",
+                    location.pack_hash, location.provider
+                );
+            } else {
+                println!(
+                    "hot_pack_renewal pack_hash={} provider={} status=DONE renewal_days={}",
+                    location.pack_hash, location.provider, renewal_days
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn renew_hot_pack_location(
+    database: &Database,
+    storage: &StorageRegistry,
+    target_provider: Arc<dyn StorageProvider>,
+    location: &launcher_database::PackLocationRecord,
+    temporary: &Path,
+) -> Result<()> {
+    let mut source_providers = vec![target_provider.clone()];
+    source_providers.extend(
+        storage
+            .restore_sources(StorageClass::Cold)
+            .into_iter()
+            .filter(|provider| provider.provider_id() != target_provider.provider_id()),
+    );
+    let mut source_provider = None;
+    let mut last_error = None;
+    for provider in source_providers {
+        match stream_verified_pack_to_file(&provider, &location.pack_hash, temporary).await {
+            Ok(()) => {
+                source_provider = Some(provider.provider_id().to_owned());
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let Some(source_provider) = source_provider else {
+        return Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("no source was available for pack renewal")));
+    };
+
+    target_provider
+        .put_pack_file(&location.pack_hash, temporary)
+        .await
+        .with_context(|| {
+            format!(
+                "could not reupload pack {} to {}",
+                location.pack_hash,
+                target_provider.provider_id()
+            )
+        })?;
+    let runtime_location = target_provider
+        .download_pack_location(&location.pack_hash)
+        .await
+        .context("renewed HOT pack did not produce a direct download location")?;
+    if runtime_location.url.is_empty() {
+        anyhow::bail!("renewed HOT pack returned an empty direct download location");
+    }
+    let hot_pool = storage
+        .pool_for_provider(target_provider.provider_id())
+        .cloned()
+        .context("renewal provider has no HOT storage pool")?;
+    let object_key = format!("packs/{}.pack", location.pack_hash);
+    database
+        .add_pack_location(
+            &location.pack_hash,
+            target_provider.provider_id(),
+            &hot_pool.id,
+            &hot_pool.failure_domain,
+            StorageTier::Hot,
+            &object_key,
+            &runtime_location.url,
+            hot_pool.priority,
+            runtime_location.expires_at,
+        )
+        .await?;
+    // The new link is recorded before stale database links are removed. The
+    // provider's old remote object may not support deletion; if so it becomes
+    // unreachable to Vaultnode and FileMirage's own inactivity expiry removes
+    // it later.
+    database
+        .delete_pack_locations_except(
+            &location.pack_hash,
+            target_provider.provider_id(),
+            &runtime_location.url,
+        )
+        .await?;
+    println!(
+        "hot_pack_renewal_source pack_hash={} source_provider={} target_provider={}",
+        location.pack_hash,
+        source_provider,
+        target_provider.provider_id()
+    );
+    Ok(())
+}
+
+async fn stream_verified_pack_to_file(
+    provider: &Arc<dyn StorageProvider>,
+    pack_hash: &str,
+    path: &Path,
+) -> Result<()> {
+    let mut stream = provider.read_pack_stream(pack_hash).await?;
+    let mut output = tokio::fs::File::create(path).await?;
+    let mut hasher = blake3::Hasher::new();
+    let mut total = 0_u64;
+    let max_bytes = env::var("LAUNCHER_PACK_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1024 * 1024 * 1024);
+    while let Some(bytes) = stream.next().await {
+        let bytes = bytes?;
+        total = total
+            .checked_add(bytes.len() as u64)
+            .context("pack renewal size overflow")?;
+        if total > max_bytes {
+            anyhow::bail!("pack renewal exceeded LAUNCHER_PACK_MAX_BYTES");
+        }
+        hasher.update(&bytes);
+        output.write_all(&bytes).await?;
+    }
+    output.flush().await?;
+    if hasher.finalize().to_hex().as_str() != pack_hash {
+        anyhow::bail!("pack renewal BLAKE3 verification failed for {pack_hash}");
+    }
+    let bytes = tokio::fs::read(path).await?;
+    launcher_packs::PackReader::parse(&bytes)
+        .and_then(|reader| reader.verify_pack_hash(pack_hash).map(|_| reader))
+        .map_err(|error| anyhow::anyhow!("renewed pack is structurally invalid: {error}"))?;
     Ok(())
 }
 

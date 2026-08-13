@@ -276,6 +276,8 @@ impl Database {
         sqlx::raw_sql(build_pack_retention)
             .execute(&self.pool)
             .await?;
+        let hot_pack_renewal = include_str!("../../../../migrations/007_hot_pack_renewal.sql");
+        sqlx::raw_sql(hot_pack_renewal).execute(&self.pool).await?;
         Ok(())
     }
 
@@ -763,7 +765,8 @@ impl Database {
              ON CONFLICT(pack_hash, provider, direct_url) DO UPDATE SET
                 pool_id=excluded.pool_id, failure_domain=excluded.failure_domain,
                 storage_class=excluded.storage_class, object_key=excluded.object_key,
-                priority=excluded.priority, verified_at=now(), expires_at=excluded.expires_at",
+                priority=excluded.priority, verified_at=now(), expires_at=excluded.expires_at,
+                last_uploaded_at=now(), renewal_attempt_after=now()",
         )
         .bind(pack_hash)
         .bind(provider)
@@ -1617,6 +1620,87 @@ impl Database {
                 })
             })
             .collect()
+    }
+
+    pub async fn list_due_hot_pack_renewals(
+        &self,
+        provider: &str,
+        uploaded_before: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<PackLocationRecord>, DatabaseError> {
+        let rows = sqlx::query(
+            "SELECT pack_hash, provider, pool_id, failure_domain, storage_class,
+                    object_key, direct_url, priority, verified_at, expires_at
+             FROM pack_locations
+             WHERE provider=$1
+               AND storage_class='HOT'
+               AND verified_at IS NOT NULL
+               AND last_uploaded_at <= $2
+               AND renewal_attempt_after <= now()
+             ORDER BY last_uploaded_at, pack_hash
+             LIMIT $3",
+        )
+        .bind(provider)
+        .bind(uploaded_before)
+        .bind(i64::from(limit.clamp(1, 500)))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(PackLocationRecord {
+                    pack_hash: row.try_get("pack_hash")?,
+                    provider: row.try_get("provider")?,
+                    pool_id: row.try_get("pool_id")?,
+                    failure_domain: row.try_get("failure_domain")?,
+                    storage_class: parse_storage_tier(
+                        row.try_get::<String, _>("storage_class")?.as_str(),
+                    )?,
+                    object_key: row.try_get("object_key")?,
+                    direct_url: row.try_get("direct_url")?,
+                    priority: row.try_get("priority")?,
+                    verified_at: row.try_get("verified_at")?,
+                    expires_at: row.try_get("expires_at")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn defer_hot_pack_renewal(
+        &self,
+        pack_hash: &str,
+        provider: &str,
+        retry_after_seconds: i64,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE pack_locations
+             SET renewal_attempt_after=now() + ($3 * interval '1 second')
+             WHERE pack_hash=$1 AND provider=$2 AND storage_class='HOT'",
+        )
+        .bind(pack_hash)
+        .bind(provider)
+        .bind(retry_after_seconds.max(1))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_pack_locations_except(
+        &self,
+        pack_hash: &str,
+        provider: &str,
+        keep_direct_url: &str,
+    ) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "DELETE FROM pack_locations
+             WHERE pack_hash=$1 AND provider=$2 AND storage_class='HOT'
+               AND direct_url<>$3",
+        )
+        .bind(pack_hash)
+        .bind(provider)
+        .bind(keep_direct_url)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn delete_pack_location(

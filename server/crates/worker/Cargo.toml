@@ -12,6 +12,7 @@ base64.workspace = true
 blake3.workspace = true
 clap.workspace = true
 chrono.workspace = true
+futures-util.workspace = true
 launcher-common = { path = "../common" }
 launcher-database = { path = "../database" }
 launcher-domain = { path = "../domain" }

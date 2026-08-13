@@ -42,3 +42,14 @@ requires at least one COLD pack replica, so staging Telegram stores physical
 packs rather than a second copy of every logical chunk. HOT redundancy is
 carried by physical pack replicas. Set `LAUNCHER_PACK_CANONICAL=false` only
 for a migration deployment that still publishes logical HOT objects.
+
+## HOT retention renewal
+
+FileMirage's free tier expires files after a period of inactivity. The worker
+records `last_uploaded_at` for each HOT pack location and renews configured
+providers 18 days after upload by default. It verifies the existing pack (or
+falls back to a COLD source), uploads the replacement, records the new direct
+URL, and removes stale database links only after the new link is usable. A
+provider's old remote object may remain temporarily when its delete capability
+is not proven; it is no longer addressable by the launcher and should expire
+under the provider's own inactivity policy.

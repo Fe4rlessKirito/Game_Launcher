@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::stream;
+use futures_util::{StreamExt, stream};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,8 +11,9 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 
 use crate::{
-    DownloadLocation, StorageError, StorageProvider, StorageProviderCapabilities, StorageTier,
-    validate_hash, validate_pack_hash, verify_encoded_bytes, verify_pack_bytes,
+    DownloadLocation, StorageByteStream, StorageError, StorageProvider,
+    StorageProviderCapabilities, StorageTier, validate_hash, validate_pack_hash,
+    verify_encoded_bytes, verify_pack_bytes,
 };
 
 const DEFAULT_FILEMIRAGE_BASE_URL: &str = "https://filemirage.com";
@@ -822,6 +823,47 @@ impl HttpHotStorage {
             expires_at: None,
         })
     }
+
+    async fn read_remote_stream(
+        &self,
+        hash: &str,
+        pack: bool,
+    ) -> Result<StorageByteStream, StorageError> {
+        if !self.direct_download_proven {
+            return Err(StorageError::Unavailable(format!(
+                "{} direct download is not proven; provider is upload-only",
+                self.kind.provider_type()
+            )));
+        }
+        let reference = self.state_reference(hash, pack)?;
+        let url = self.resolve_filemirage_url(&reference.url).await?;
+        let _slot = self.acquire_slot().await?;
+        let response = self
+            .auth(self.client.get(url))
+            .send()
+            .await
+            .map_err(|error| {
+                StorageError::NetworkUnavailable(format!(
+                    "{} streaming download failed: {error}",
+                    self.kind.provider_type()
+                ))
+            })?;
+        if !response.status().is_success() {
+            return Err(StorageError::Provider(format!(
+                "{} streaming download returned HTTP {}",
+                self.kind.provider_type(),
+                response.status().as_u16()
+            )));
+        }
+        let provider_type = self.kind.provider_type().to_owned();
+        Ok(Box::pin(response.bytes_stream().map(move |result| {
+            result.map_err(|error| {
+                StorageError::NetworkUnavailable(format!(
+                    "{provider_type} streaming body failed: {error}"
+                ))
+            })
+        })))
+    }
 }
 
 #[async_trait]
@@ -878,6 +920,10 @@ impl StorageProvider for FileMirageStorage {
         let bytes = self.inner.read_remote(hash, true).await?;
         verify_pack_bytes(hash, &bytes)?;
         Ok(bytes)
+    }
+    async fn read_pack_stream(&self, hash: &str) -> Result<StorageByteStream, StorageError> {
+        validate_pack_hash(hash)?;
+        self.inner.read_remote_stream(hash, true).await
     }
     async fn delete_pack(&self, hash: &str) -> Result<(), StorageError> {
         self.inner.delete_remote(hash, true).await
@@ -942,6 +988,10 @@ impl StorageProvider for BuzzheavierStorage {
         let bytes = self.inner.read_remote(hash, true).await?;
         verify_pack_bytes(hash, &bytes)?;
         Ok(bytes)
+    }
+    async fn read_pack_stream(&self, hash: &str) -> Result<StorageByteStream, StorageError> {
+        validate_pack_hash(hash)?;
+        self.inner.read_remote_stream(hash, true).await
     }
     async fn delete_pack(&self, hash: &str) -> Result<(), StorageError> {
         self.inner.delete_remote(hash, true).await
