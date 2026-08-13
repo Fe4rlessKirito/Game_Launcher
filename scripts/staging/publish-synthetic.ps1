@@ -102,6 +102,7 @@ else {
     $remoteCommands = @(
         "set -eu",
         "cd '$RemoteDirectory'",
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' mkdir -p '$remoteContainerRoot'",
         "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteA' '$WorkerService`:$remoteContainerRoot/A'",
         "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteB' '$WorkerService`:$remoteContainerRoot/B'",
         "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' chown -R launcher:launcher '$remoteContainerRoot'",
