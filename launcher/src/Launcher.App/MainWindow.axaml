@@ -188,7 +188,7 @@
         <Button Grid.Column="1" Command="{Binding NavigateCommand}" CommandParameter="Downloads" Classes="DownloadCenter" HorizontalAlignment="Center">
           <StackPanel Orientation="Horizontal" Spacing="9">
             <Path Width="14" Height="14" Stretch="Uniform" Fill="{DynamicResource AccentPrimary}" Data="M5,20 L19,20 L19,18 L5,18 Z M19,9 L15,9 L15,3 L9,3 L9,9 L5,9 L12,16 Z" />
-            <TextBlock Text="Downloads - 1 of 1 items Complete" Classes="Caption" />
+            <TextBlock Text="{Binding DownloadStatus}" Classes="Caption" />
           </StackPanel>
         </Button>
         <Button Grid.Column="2" Content="Friends and Chat" Classes="AddGame" HorizontalContentAlignment="Right" />

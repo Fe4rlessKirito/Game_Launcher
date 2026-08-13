@@ -27,23 +27,12 @@ public partial class DownloadsViewModel : ObservableObject
     public int ScheduledCount => Scheduled.Count;
     public int CompletedCount => Completed.Count;
 
-    public ObservableCollection<DownloadEntry> Scheduled { get; } =
-    [
-        new("Build Playground", "2.2 KB", "Friday 3:50 AM", "BP", "Install")
-    ];
+    public ObservableCollection<DownloadEntry> Scheduled { get; } = [];
 
-    public ObservableCollection<DownloadEntry> Completed { get; } =
-    [
-        new("Synthetic Game", "90 B / 90 B downloaded", "Completed: today 12:36 AM", "SG", "Play")
-    ];
+    public ObservableCollection<DownloadEntry> Completed { get; } = [];
 
     [ObservableProperty]
     private string _lastActionMessage = "No active downloads.";
-
-    public IReadOnlyList<DownloadTile> Jobs { get; } =
-    [
-        new("No active downloads", "Verified chunks and installation jobs will appear here.", 0)
-    ];
 
     public DownloadsViewModel()
     {
