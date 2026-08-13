@@ -121,7 +121,7 @@ public sealed record LauncherSettings(
     long CacheSizeBytes = 20L * 1024 * 1024 * 1024,
     string DefaultGameDirectory = "",
     bool ReducedMotion = false,
-    string ApiBaseUrl = "https://gamelauncher-production.up.railway.app",
+    string ApiBaseUrl = "http://5.231.32.191",
     IReadOnlyDictionary<string, string>? TrustedManifestKeysPem = null);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

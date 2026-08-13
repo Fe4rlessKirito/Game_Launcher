@@ -62,7 +62,9 @@ public sealed record LauncherRuntimeSnapshot(
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
-    private const string DefaultRailwayApiBaseUrl = "https://gamelauncher-production.up.railway.app";
+    // Mantle is the active deployment. Set LAUNCHER_API_BASE_URL (or the local
+    // settings file) to the eventual HTTPS hostname before public release.
+    private const string DefaultMantleApiBaseUrl = "http://5.231.32.191";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
     private readonly LauncherSettings _settings;
     private readonly LauncherPaths _paths;
@@ -121,7 +123,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(settings.ApiBaseUrl)
             || settings.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase))
         {
-            settings = settings with { ApiBaseUrl = DefaultRailwayApiBaseUrl };
+            settings = settings with { ApiBaseUrl = DefaultMantleApiBaseUrl };
         }
 
         var apiOverride = Environment.GetEnvironmentVariable("LAUNCHER_API_BASE_URL");

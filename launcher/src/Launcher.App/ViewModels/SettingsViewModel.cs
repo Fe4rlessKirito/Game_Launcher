@@ -7,7 +7,7 @@ namespace Launcher.App.ViewModels;
 
 public partial class SettingsViewModel : ObservableObject
 {
-    private const string DefaultApiBaseUrl = "https://gamelauncher-production.up.railway.app";
+    private const string DefaultApiBaseUrl = "http://5.231.32.191";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly JsonSerializerOptions ReadOptions = new(JsonSerializerDefaults.Web);

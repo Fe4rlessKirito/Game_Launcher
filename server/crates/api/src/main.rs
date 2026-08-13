@@ -3,7 +3,7 @@ use axum::{
     Json, Router,
     body::{Body, to_bytes},
     extract::{Path, Query, Request, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -53,6 +53,8 @@ struct AppState {
     cold_stream_worker_url: Option<String>,
     cold_stream_token: Option<Arc<String>>,
     cold_stream_client: reqwest::Client,
+    operator_token: Option<Arc<String>>,
+    operator_auth_required: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +85,7 @@ struct ReadinessResponse {
     storage_configured: bool,
     provisioning_email_configured: bool,
     provisioning_enabled: bool,
+    operator_auth_configured: bool,
     utc: chrono::DateTime<Utc>,
 }
 
@@ -202,6 +205,22 @@ async fn main() -> anyhow::Result<()> {
     let cold_stream_client = reqwest::Client::builder()
         .build()
         .context("could not create cold stream client")?;
+    let operator_token = env::var("LAUNCHER_OPERATOR_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| Arc::new(value.trim().to_owned()));
+    let operator_auth_required = env_bool("LAUNCHER_OPERATOR_AUTH_REQUIRED", false);
+    let cors = match env::var("LAUNCHER_CORS_ALLOW_ORIGIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(origin) => CorsLayer::new().allow_origin(
+            origin
+                .parse::<HeaderValue>()
+                .context("LAUNCHER_CORS_ALLOW_ORIGIN must be a valid origin")?,
+        ),
+        None => CorsLayer::new(),
+    };
     let reservation_store: Arc<dyn CapacityReservationStore> = database
         .as_ref()
         .map(|database| Arc::new(database.clone()) as Arc<dyn CapacityReservationStore>)
@@ -241,6 +260,8 @@ async fn main() -> anyhow::Result<()> {
         cold_stream_worker_url,
         cold_stream_token,
         cold_stream_client,
+        operator_token,
+        operator_auth_required,
     };
     let app = Router::new()
         .route("/health", get(health))
@@ -263,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/objects/{encoded_hash}", get(get_object))
         .route("/packs/{pack_hash}", get(get_pack))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
     let address: SocketAddr = env::var("LAUNCHER_BIND")
@@ -485,7 +506,12 @@ async fn readiness(
     let provisioning_email_configured = !state.provisioning_enabled
         || (!state.provisioning_email_domain.trim().is_empty()
             && state.provisioning_email_hmac_secret.is_some());
-    if !database_ready || !storage_configured || !provisioning_email_configured {
+    let operator_auth_configured = !state.operator_auth_required || state.operator_token.is_some();
+    if !database_ready
+        || !storage_configured
+        || !provisioning_email_configured
+        || !operator_auth_configured
+    {
         return Err(ApiResponseError::temporary(
             "not_ready",
             if !database_ready {
@@ -493,7 +519,7 @@ async fn readiness(
             } else if !storage_configured {
                 "storage is not configured"
             } else {
-                "provisioning email ingest is not configured"
+                "operator authentication is not configured"
             },
             5,
         ));
@@ -504,13 +530,16 @@ async fn readiness(
         storage_configured,
         provisioning_email_configured,
         provisioning_enabled: state.provisioning_enabled,
+        operator_auth_configured,
         utc: Utc::now(),
     }))
 }
 
 async fn storage_status(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<StorageStatusResponse>, ApiResponseError> {
+    require_operator(&state, &headers)?;
     let policy = StoragePolicy::from_env().map_err(ApiResponseError::from)?;
     let accounts = if let Some(database) = &state.database {
         database
@@ -559,7 +588,9 @@ async fn storage_status(
 
 async fn storage_providers(
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Result<Json<Vec<StorageProviderCapabilityResponse>>, ApiResponseError> {
+    require_operator(&state, &headers)?;
     let mut providers = state
         .storage
         .providers()
@@ -580,7 +611,11 @@ async fn storage_providers(
     Ok(Json(providers))
 }
 
-async fn storage_metrics(State(state): State<AppState>) -> Result<Response, ApiResponseError> {
+async fn storage_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiResponseError> {
+    require_operator(&state, &headers)?;
     let policy = StoragePolicy::from_env().map_err(ApiResponseError::from)?;
     let health = state.storage.health().await;
     let accounts = if let Some(database) = &state.database {
@@ -714,6 +749,29 @@ async fn storage_metrics(State(state): State<AppState>) -> Result<Response, ApiR
         body,
     )
         .into_response())
+}
+
+fn require_operator(state: &AppState, headers: &HeaderMap) -> Result<(), ApiResponseError> {
+    let configured = state.operator_token.is_some();
+    if !configured && !state.operator_auth_required {
+        return Ok(());
+    }
+    let Some(expected) = &state.operator_token else {
+        return Err(ApiResponseError::temporary(
+            "operator_auth_unconfigured",
+            "operator authentication is required but not configured",
+            60,
+        ));
+    };
+    let supplied = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim);
+    if supplied != Some(expected.as_str()) {
+        return Err(ApiResponseError::unauthorized());
+    }
+    Ok(())
 }
 
 fn metric_label(value: &str) -> String {
@@ -1566,6 +1624,15 @@ impl ApiResponseError {
             retry_after_seconds: None,
         }
     }
+
+    fn unauthorized() -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "operator_auth_required",
+            message: "operator authentication required".to_owned(),
+            retry_after_seconds: None,
+        }
+    }
 }
 
 fn map_provisioning_error(error: ProvisioningError, fallback: &str) -> ApiResponseError {
@@ -1705,6 +1772,8 @@ mod tests {
             cold_stream_worker_url: None,
             cold_stream_token: None,
             cold_stream_client: reqwest::Client::new(),
+            operator_token: None,
+            operator_auth_required: false,
         };
         let resolved = resolve_chunks(
             State(state),

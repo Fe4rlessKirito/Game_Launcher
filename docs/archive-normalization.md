@@ -31,7 +31,7 @@ LAUNCHER_NORMALIZER_MAX_FILE_BYTES      # default 512 GiB
 LAUNCHER_NORMALIZER_MAX_ENTRIES         # default 2,000,000
 ```
 
-The limits are safety ceilings, not a promise that a Railway instance has that
+The limits are safety ceilings, not a promise that a deployment host has that
 much free disk. Deployment should set `LAUNCHER_NORMALIZER_MAX_OUTPUT_BYTES`
 below the worker's available temporary volume, leaving room for the analyzer,
 chunk staging, and physical-pack construction. The temporary directory is
@@ -50,3 +50,9 @@ cargo run --manifest-path server/Cargo.toml -p launcher-worker -- ingest `
 Ingestion still ends at `publication=EXPLICIT_OPERATOR_ACTION_REQUIRED`.
 Normalization does not grant distribution rights and does not publish a build
 automatically.
+
+For a workstation validation of all four primary formats, run
+`scripts/validate-archive-normalization.ps1 -RarArchive <authorized.rar>`.
+The script creates fresh ZIP, TAR, and 7z fixtures, uses the supplied RAR, and
+requires every input to reach `stage=Ready`; it deletes its bounded artifacts
+unless `-KeepArtifacts` is supplied.

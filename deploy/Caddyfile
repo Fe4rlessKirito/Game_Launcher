@@ -4,6 +4,11 @@
 
 {$SITE_HOST:localhost} {
     encode gzip zstd
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        -Server
+    }
     handle /api/* {
         reverse_proxy api:8080
     }

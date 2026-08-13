@@ -4,6 +4,13 @@ Mantle is the active staging host for Vaultnode. The VPS runs the API,
 PostgreSQL, worker, private Telegram Local Bot API, private Telegram file
 proxy, and Caddy through the repository's Docker Compose files. Only Caddy is
 public; PostgreSQL, the worker, and both Telegram services remain private.
+The checked-in `deploy/VpsCaddyfile` deliberately keeps the current IP-only
+staging endpoint on HTTP. Once DNS is pointed at the VPS, replace it with
+`deploy/VpsCaddyfile.https.example`, set `SITE_HOST` to the real hostname, and
+recreate Caddy so ACME can issue the certificate.
+The production-shaped override requires `LAUNCHER_OPERATOR_TOKEN` for storage
+diagnostics and Prometheus metrics. Keep that token in the VPS `.env`; it is
+never included in the launcher or returned by the API.
 
 ## Deploy the stack
 
@@ -31,6 +38,7 @@ the worker uses `http://telegram-bot-api-proxy:8081` over the Compose network.
 ```text
 curl -fsS https://<public-api-host>/v1/health
 curl -fsS https://<public-api-host>/v1/ready
+curl -fsS -H "Authorization: Bearer $LAUNCHER_OPERATOR_TOKEN" https://<public-api-host>/metrics
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T worker launcher-admin storage health
 ```
 
@@ -52,6 +60,19 @@ Railway CLI:
 The Telegram smoke is intentionally tiny and proves Bot API reachability,
 physical-pack upload/download, exact-byte and BLAKE3 verification, and
 temporary-message deletion. It is not the 512 MiB performance gate.
+
+## Backups and monitoring
+
+Install a timer or cron entry on the VPS for `deploy/backup-postgres.sh`. It
+creates a custom-format PostgreSQL dump and checksum in the explicit
+`BACKUP_DIR`, retains the configured window, and never logs database contents.
+Copy dumps off-host before the retention window expires, then restore one into
+a disposable PostgreSQL instance before trusting a release. The Docker volume
+is not an independent backup.
+
+Run `scripts/mantle-healthcheck.sh` from a monitoring job with
+`LAUNCHER_PUBLIC_BASE_URL` and the operator token in its secret environment.
+It checks liveness, database readiness, and the authenticated metrics surface.
 
 After a real staging build has a recorded build ID and physical-pack hash, the
 destructive recovery check is explicit:

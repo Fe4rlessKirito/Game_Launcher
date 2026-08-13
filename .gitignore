@@ -8,6 +8,7 @@ obj/
 TestResults/
 target/
 __pycache__/
+*.egg-info/
 *.py[cod]
 .venv/
 .pytest_cache/

@@ -33,7 +33,30 @@ The publisher uploads content-addressed objects under `chunks/encoded/{blake3}.b
 
 The repository does not contain a VPS hostname, DNS zone, bucket, or production credentials, so staging deployment and real HTTPS validation remain operator actions.
 
-## Railway API deployment
+## Mantle deployment
+
+Mantle is the active deployment target. The VPS compose override is the
+authoritative production-shaped topology; the Railway files below are retained
+only as historical configuration examples. Before switching the launcher from
+the current temporary VPS-IP URL, point DNS at the VPS, set `SITE_HOST` and
+`ACME_EMAIL`, and let Caddy obtain the HTTPS certificate. Do not expose the
+operator token, database URL, Telegram credentials, or signing key to clients.
+
+The override requires:
+
+```text
+LAUNCHER_PUBLIC_BASE_URL=https://<public-api-host>
+SITE_HOST=<public-api-host>
+ACME_EMAIL=<certificate-contact>
+LAUNCHER_OPERATOR_TOKEN=<random-long-secret>
+LAUNCHER_OPERATOR_AUTH_REQUIRED=true
+```
+
+The launcher uses the current Mantle IP only as a development fallback. A
+release build must set `LAUNCHER_API_BASE_URL` or ship a local settings file
+with the HTTPS hostname.
+
+## Historical Railway API deployment
 
 The root `railway.toml` uses the current Railway config-as-code keys:
 
