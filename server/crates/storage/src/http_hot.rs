@@ -47,6 +47,7 @@ pub struct FileMirageStorageConfig {
     pub upload_chunk_bytes: usize,
     pub request_timeout: Duration,
     pub max_concurrent_requests: usize,
+    pub delete_proven: bool,
 }
 
 impl FileMirageStorageConfig {
@@ -69,6 +70,7 @@ impl FileMirageStorageConfig {
                 300,
             )?),
             max_concurrent_requests: env_usize("LAUNCHER_FILEMIRAGE_MAX_CONCURRENT_REQUESTS", 4)?,
+            delete_proven: env_bool("LAUNCHER_FILEMIRAGE_DELETE_PROVEN", false),
         })
     }
 
@@ -197,7 +199,7 @@ impl FileMirageStorage {
                 config.max_concurrent_requests,
                 true,
                 true,
-                false,
+                config.delete_proven,
                 false,
                 false,
                 config.provider_id,
@@ -1125,6 +1127,7 @@ mod tests {
             upload_chunk_bytes: 99 * 1024 * 1024,
             request_timeout: Duration::from_secs(30),
             max_concurrent_requests: 4,
+            delete_proven: false,
         })
         .unwrap();
         let capabilities = storage.capabilities();
