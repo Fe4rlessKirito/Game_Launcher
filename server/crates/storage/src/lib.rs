@@ -1253,6 +1253,34 @@ impl S3CompatibleStorage {
         Ok(())
     }
 
+    async fn put_file_streaming(
+        &self,
+        hash: &str,
+        key: &str,
+        path: &Path,
+        size: u64,
+    ) -> Result<(), StorageError> {
+        let body = ByteStream::read_from()
+            .path(path)
+            .buffer_size(1024 * 1024)
+            .build()
+            .await
+            .map_err(|error| StorageError::Io(std::io::Error::other(error.to_string())))?;
+        self.client
+            .put_object()
+            .bucket(&self.config.bucket)
+            .key(key)
+            .content_length(i64::try_from(size).map_err(|_| {
+                StorageError::Configuration("S3 object size exceeds i64".to_owned())
+            })?)
+            .metadata("blake3", hash)
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| StorageError::Provider(error.to_string()))?;
+        Ok(())
+    }
+
     async fn abort_upload(&self, key: &str, upload_id: &str) -> Result<(), StorageError> {
         self.client
             .abort_multipart_upload()
@@ -1470,6 +1498,48 @@ impl StorageProvider for S3CompatibleStorage {
         }
         let remote = self.read_remote(&key).await?;
         verify_pack_bytes(pack_hash, &remote)
+    }
+
+    async fn put_pack_file(&self, pack_hash: &str, path: &Path) -> Result<(), StorageError> {
+        validate_pack_hash(pack_hash)?;
+        let size = tokio::fs::metadata(path).await?.len();
+        let size_i64 = i64::try_from(size)
+            .map_err(|_| StorageError::Configuration("S3 object size exceeds i64".to_owned()))?;
+        let _slot = self.acquire_request_slot().await?;
+        let key = self.pack_key(pack_hash)?;
+        let head = match self
+            .client
+            .head_object()
+            .bucket(&self.config.bucket)
+            .key(&key)
+            .send()
+            .await
+        {
+            Ok(head) => Some(head),
+            Err(error) if Self::is_missing(&error) => None,
+            Err(error) => return Err(StorageError::Provider(error.to_string())),
+        };
+        if head.as_ref().is_some_and(|head| {
+            head.content_length().unwrap_or(-1) == size_i64
+                && head
+                    .metadata()
+                    .and_then(|metadata| metadata.get("blake3"))
+                    .is_some_and(|metadata_hash| metadata_hash == pack_hash)
+        }) {
+            return Ok(());
+        }
+        self.put_file_streaming(pack_hash, &key, path, size).await?;
+        let head = self.head_remote(&key).await?;
+        let metadata_matches = head
+            .metadata()
+            .and_then(|metadata| metadata.get("blake3"))
+            .is_some_and(|metadata_hash| metadata_hash == pack_hash);
+        if head.content_length().unwrap_or(-1) != size_i64 || !metadata_matches {
+            return Err(StorageError::Provider(
+                "S3 pack verification failed after streaming upload".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     async fn read_encoded(&self, encoded_hash: &str) -> Result<Vec<u8>, StorageError> {
