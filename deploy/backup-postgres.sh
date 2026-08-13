@@ -12,7 +12,7 @@ chmod 700 -- "${backup_dir}"
 
 output="${backup_dir}/postgres-${timestamp}.dump"
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml \
-  exec -T postgres sh -ceu 'pg_dump --username="$POSTGRES_USER" --format=custom --no-owner --no-acl --file=- "$POSTGRES_DB"' > "${output}"
+  exec -T postgres sh -ceu 'pg_dump --username="$POSTGRES_USER" --format=custom --no-owner --no-acl "$POSTGRES_DB"' > "${output}"
 chmod 600 -- "${output}"
 sha256sum -- "${output}" > "${output}.sha256"
 chmod 600 -- "${output}.sha256"
