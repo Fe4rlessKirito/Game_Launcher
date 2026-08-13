@@ -127,11 +127,12 @@ function Invoke-MantleShell {
     )
 
     $resolvedIdentity = Get-MantleIdentityFile $IdentityFile
+    $quotedCommand = "'" + ($Command -replace "'", "'\\''") + "'"
     Invoke-Checked -File "ssh" -Arguments @(
         "-i", $resolvedIdentity,
         "-o", "BatchMode=yes",
         "$RemoteUser@$RemoteHost",
-        "sh", "-lc", $Command
+        "sh -lc $quotedCommand"
     )
 }
 
