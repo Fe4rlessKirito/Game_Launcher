@@ -10,7 +10,7 @@ Compose network.
 Use the base stack plus the Mantle override from the repository root:
 
 ```text
-docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml up -d --build
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml up -d --build
 ```
 
 The override starts:
@@ -70,7 +70,7 @@ calling the COLD provider staging-validated.
 
 ## Readiness and recovery
 
-Run `docker compose ... exec -T worker launcher-admin storage health` before
+Run `docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T worker launcher-admin storage health` before
 the live smoke. Keep the Telegram message/index state on the persistent
 `launcher-storage` volume. Do not claim COLD-to-HOT recovery is validated until
 a physical pack is deliberately removed from FileMirage HOT, restored from

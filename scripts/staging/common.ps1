@@ -174,7 +174,7 @@ function Invoke-MantleAdmin {
     }
     $adminArguments = (($Arguments | ForEach-Object { & $quoteRemote ([string]$_) }) -join " ")
     $remoteCommand = "cd " + (& $quoteRemote $RemoteDirectory) +
-        " && docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T " +
+        " && docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T " +
         (& $quoteRemote $Service) +
         " /usr/local/bin/launcher-admin " + $adminArguments
 

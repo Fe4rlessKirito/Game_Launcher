@@ -11,8 +11,8 @@ On the VPS, from `/home/debian/vaultnode`:
 
 ```text
 git pull --ff-only
-docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml up -d --build
-docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml ps
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml up -d --build
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml ps
 ```
 
 Create `secrets/telegram.env` and `secrets/telegram-api.env` directly on the
@@ -31,7 +31,7 @@ the worker uses `http://telegram-bot-api-proxy:8081` over the Compose network.
 ```text
 curl -fsS https://<public-api-host>/v1/health
 curl -fsS https://<public-api-host>/v1/ready
-docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T worker launcher-admin storage health
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T worker launcher-admin storage health
 ```
 
 From the workstation, the Mantle-aware scripts use SSH and never require a

@@ -101,15 +101,15 @@ else {
 
     $remoteCommands = @(
         "set -eu",
-        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteA' '$WorkerService`:$remoteContainerRoot/A'",
-        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteB' '$WorkerService`:$remoteContainerRoot/B'",
-        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' chown -R launcher:launcher '$remoteContainerRoot'",
-        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/A' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage",
-        "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/B' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage"
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteA' '$WorkerService`:$remoteContainerRoot/A'",
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteB' '$WorkerService`:$remoteContainerRoot/B'",
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' chown -R launcher:launcher '$remoteContainerRoot'",
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/A' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage",
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/B' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage"
     )
     if (-not $KeepRemotePackages) {
         $remoteCommands += "rm -rf '$remoteHostRoot'"
-        $remoteCommands += "docker compose -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' rm -rf '$remoteContainerRoot'"
+        $remoteCommands += "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' rm -rf '$remoteContainerRoot'"
     }
     Invoke-MantleShell -RemoteHost $RemoteHost -RemoteUser $RemoteUser `
         -IdentityFile $IdentityFile -Command ($remoteCommands -join "; ")
