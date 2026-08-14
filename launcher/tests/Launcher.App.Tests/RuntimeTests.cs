@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using Launcher.App.Runtime;
 using Launcher.Core;
+using Launcher.Networking;
 using Microsoft.Data.Sqlite;
 
 namespace Launcher.App.Tests;
@@ -34,6 +35,17 @@ public sealed class RuntimeTests
         }
     }
 
+    [Fact]
+    public async Task ApiClientLoadsEveryCatalogPage()
+    {
+        using var client = new HttpClient(new PagedCatalogHandler());
+        var api = new LauncherApiClient(client, new Uri("http://launcher/"));
+
+        var games = await api.GetGamesAsync();
+
+        Assert.Equal(["Game A", "Game B"], games.Select(game => game.Title));
+    }
+
     private sealed class CatalogHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -47,6 +59,18 @@ public sealed class RuntimeTests
             }
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        }
+    }
+
+    private sealed class PagedCatalogHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var secondPage = request.RequestUri?.Query.Contains("cursor=1", StringComparison.Ordinal) == true;
+            var body = secondPage
+                ? "{\"items\":[{\"id\":\"game-b\",\"slug\":\"game-b\",\"title\":\"Game B\",\"description\":\"B\",\"hero_image_url\":null,\"cover_image_url\":null,\"latest_build\":null}],\"next_cursor\":null}"
+                : "{\"items\":[{\"id\":\"game-a\",\"slug\":\"game-a\",\"title\":\"Game A\",\"description\":\"A\",\"hero_image_url\":null,\"cover_image_url\":null,\"latest_build\":null}],\"next_cursor\":\"1\"}";
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
         }
     }
 }

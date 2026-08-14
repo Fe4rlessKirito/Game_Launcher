@@ -37,8 +37,27 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 
     public async Task<IReadOnlyList<GameCatalogItem>> GetGamesAsync(CancellationToken cancellationToken = default)
     {
-        var response = await httpClient.GetFromJsonAsync<CatalogResponse>(new Uri(baseUri, "api/v1/games"), JsonOptions, cancellationToken).ConfigureAwait(false);
-        return response?.Items ?? [];
+        var games = new List<GameCatalogItem>();
+        var seenCursors = new HashSet<string>(StringComparer.Ordinal);
+        string? cursor = null;
+
+        do
+        {
+            var query = cursor is null
+                ? "api/v1/games?limit=100"
+                : $"api/v1/games?limit=100&cursor={Uri.EscapeDataString(cursor)}";
+            var response = await httpClient.GetFromJsonAsync<CatalogResponse>(new Uri(baseUri, query), JsonOptions, cancellationToken).ConfigureAwait(false);
+            if (response?.Items is not null) games.AddRange(response.Items);
+
+            cursor = response?.NextCursor;
+            if (cursor is not null && !seenCursors.Add(cursor))
+            {
+                throw new HttpRequestException("The catalog returned a repeated pagination cursor.");
+            }
+        }
+        while (cursor is not null);
+
+        return games;
     }
 
     public async Task<Manifest> GetManifestAsync(string buildId, CancellationToken cancellationToken = default)
@@ -94,7 +113,7 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
         return await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
     }
 
-    private sealed record CatalogResponse([property: JsonPropertyName("items")] IReadOnlyList<GameCatalogItem> Items, [property: JsonPropertyName("next_cursor")] string? NextCursor);
+    private sealed record CatalogResponse([property: JsonPropertyName("items")] IReadOnlyList<GameCatalogItem>? Items, [property: JsonPropertyName("next_cursor")] string? NextCursor);
     private sealed record ChunkResolutionRequest([property: JsonPropertyName("encoded_hashes")] IReadOnlyCollection<string> EncodedHashes);
     private sealed record PackResolutionRequest([property: JsonPropertyName("encoded_hashes")] IReadOnlyCollection<string> EncodedHashes);
 }

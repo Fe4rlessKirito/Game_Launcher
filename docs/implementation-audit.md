@@ -32,3 +32,14 @@ This phase adds the missing integrity and recovery boundaries rather than hiding
 - FastCDC reuse measurements, failure-injection coverage, and performance baselines.
 
 The infrastructure follow-up now includes the S3-compatible provider, multipart/retry/hash verification, multi-location resolution, provider health, and operator publication wiring. Live S3 credentials, DNS/TLS, VPS deployment, and public traffic remain deliberately out of scope for this repository-only run. The S3 suite uses an in-process S3-compatible HTTP fixture; it does not prove behavior of a particular cloud vendor. A PostgreSQL test is only counted as passing when a real disposable PostgreSQL process/container is available; otherwise the report records the environmental blocker.
+
+## Current validation status (2026-08-14)
+
+The table above is the historical baseline from `da2aeea`; it is not a description of the current tree. The follow-up validation now has the following evidence:
+
+- Manifest signatures, trusted-key verification, adversarial path checks, storage/download/installer/updater tests, and cross-language CI are implemented. Production signing still requires an externally managed private key; the production gate fails closed when that key is absent.
+- The Rust ingest worker accepts directories plus ZIP, RAR, 7z, TAR, `.tar.gz`, and `.tar.bz2`, extracts with bounded temporary-space and traversal/link protections, then runs analysis and physical-pack packaging.
+- PostgreSQL-backed publication, physical-pack resolution, FileMirage HOT placement, Telegram COLD placement, COLD-to-HOT pack streaming, repair, and restart checks have been exercised against Mantle staging. The verified real fixture was the authorized Steam Spacewar installation; no unauthorized game content is included in the repository.
+- The Avalonia runtime now hydrates the catalog from the API, derives install/update state from persisted local state, and wires library/search/sidebar, download jobs, pause/resume, install/update/repair/uninstall/play, and settings navigation through the runtime. The client now follows all catalog pages. Remaining UI work is interactive visual QA and release packaging, not the original service-graph wiring.
+- GitHub CI is green for website, .NET, Rust, analyzer, and E2E jobs. Mantle `/v1/health`, `/v1/ready`, authenticated metrics, and a local PostgreSQL dump/checksum have passed. Off-host backup replication is not yet configured.
+- Mantle is currently HTTP-only because `vaultnode.pp.ua` has no published A/AAAA record. HTTPS/Caddy templates are present but ACME/public launcher validation cannot be claimed until DNS points at the VPS. Buzzheavier remains disabled until direct download/range/delete behavior is proven; GoFile is not implemented.
