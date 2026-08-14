@@ -18,6 +18,10 @@ var stateRoot = Path.GetFullPath(Get("LAUNCHER_E2E_STATE_ROOT", Path.Combine(Pat
 var installRoot = Path.GetFullPath(Get("LAUNCHER_E2E_INSTALL_ROOT", Path.Combine(stateRoot, "game")));
 var sourceRoot = Path.GetFullPath(Get("LAUNCHER_E2E_SOURCE", Path.Combine(stateRoot, "source")));
 var requestedBuild = Environment.GetEnvironmentVariable("LAUNCHER_E2E_BUILD_ID");
+var skipLaunch = string.Equals(
+    Environment.GetEnvironmentVariable("LAUNCHER_E2E_SKIP_LAUNCH"),
+    "true",
+    StringComparison.OrdinalIgnoreCase);
 Directory.CreateDirectory(stateRoot);
 var paths = LauncherPaths.FromRoot(stateRoot);
 var cache = new ChunkCache(paths.CachePath, 2L * 1024 * 1024 * 1024);
@@ -56,10 +60,17 @@ switch (mode.ToLowerInvariant())
     case "install":
         await installer.InstallAsync(manifest, installRoot);
         await AssertByteIdenticalAsync(manifest, sourceRoot, installRoot);
-        var launched = Installer.Launch(manifest, installRoot);
-        await launched.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
-        var marker = Path.Combine(installRoot, "launched.txt");
-        if (!File.Exists(marker) || !File.ReadAllText(marker).Contains(manifest.DisplayVersion, StringComparison.Ordinal)) throw new InvalidDataException("Synthetic game launch marker was not written.");
+        if (!skipLaunch)
+        {
+            var launched = Installer.Launch(manifest, installRoot);
+            await launched.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+            var marker = Path.Combine(installRoot, "launched.txt");
+            if (!File.Exists(marker) || !File.ReadAllText(marker).Contains(manifest.DisplayVersion, StringComparison.Ordinal)) throw new InvalidDataException("Synthetic game launch marker was not written.");
+        }
+        else
+        {
+            Console.WriteLine("launch=SKIPPED real-game-validation");
+        }
         break;
     case "update":
         var installed = (await state.GetInstalledGamesAsync()).SingleOrDefault(item => item.GameId == manifest.GameId) ?? throw new InvalidOperationException("No prior installed build found for update.");

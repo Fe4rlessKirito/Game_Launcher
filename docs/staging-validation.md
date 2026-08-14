@@ -16,6 +16,10 @@ deployment, not the retired Railway setup.
 - Current build B downloads directly from FileMirage; historical build A is
   streamed Telegram -> private worker -> API -> launcher.
 - Remote synthetic A install and A -> B update pass with byte identity.
+- The remote E2E runner also supports `-SkipLaunch` for an authorized real
+  game directory; it still performs signed-manifest install, update, damage,
+  repair, and full byte-identity checks, but does not attempt to launch the
+  commercial executable.
 - Deliberate HOT reference eviction followed by Telegram -> worker ->
   FileMirage restore passes BLAKE3/read-back verification.
 - API and worker restart/reconnect checks recover with health/readiness 200 and

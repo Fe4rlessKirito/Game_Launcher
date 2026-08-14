@@ -7,7 +7,8 @@ param(
     [string]$BuildBId = "staging-b",
     [string]$StateRoot = "artifacts\staging-remote\state",
     [string]$InstallRoot = "artifacts\staging-remote\installed",
-    [switch]$SkipVerify
+    [switch]$SkipVerify,
+    [switch]$SkipLaunch
 )
 
 . (Join-Path $PSScriptRoot "common.ps1")
@@ -60,6 +61,7 @@ function Invoke-LauncherE2EPhase {
         "LAUNCHER_E2E_INSTALL_ROOT",
         "LAUNCHER_E2E_SOURCE",
         "LAUNCHER_E2E_BUILD_ID",
+        "LAUNCHER_E2E_SKIP_LAUNCH",
         "LAUNCHER_SETTINGS_PATH"
     )
     $previous = @{}
@@ -73,6 +75,8 @@ function Invoke-LauncherE2EPhase {
         $env:LAUNCHER_E2E_INSTALL_ROOT = $installPath
         $env:LAUNCHER_E2E_SOURCE = $Source
         $env:LAUNCHER_E2E_BUILD_ID = $BuildId
+        if ($SkipLaunch) { $env:LAUNCHER_E2E_SKIP_LAUNCH = "true" }
+        else { Remove-Item Env:LAUNCHER_E2E_SKIP_LAUNCH -ErrorAction SilentlyContinue }
         $env:LAUNCHER_SETTINGS_PATH = $settingsPathFull
         $lines = & $dotnet $runner 2>&1
         $exitCode = $LASTEXITCODE
