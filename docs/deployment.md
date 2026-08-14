@@ -1,6 +1,6 @@
 # Deployment
 
-`deploy/compose.yaml` starts PostgreSQL, the API, and Caddy. Copy `deploy/env.example` into the staging secret-management workflow; do not commit a populated environment file. Run migrations explicitly before starting production traffic. PostgreSQL backups should use `pg_dump --format=custom` and be restored into a disposable database before a release is trusted.
+`deploy/compose.yaml` starts PostgreSQL, the API, and Caddy. Copy `deploy/env.example` into the staging secret-management workflow; do not commit a populated environment file. Run migrations explicitly before starting production traffic. PostgreSQL backups should use `pg_dump --format=custom` and be restored into a disposable database before a release is trusted. `deploy/backup-postgres.sh` can also replicate each dump and its checksum to an explicitly configured SSH host using `BACKUP_REPLICATION_*`. The replication path uses batch mode and strict host-key checking; set `BACKUP_REPLICATION_REQUIRED=true` to fail the backup job closed when the off-host destination is not configured.
 
 ## Environments
 

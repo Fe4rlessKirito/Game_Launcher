@@ -89,7 +89,10 @@ custom-format PostgreSQL dump and checksum in the explicit `BACKUP_DIR`,
 retains the configured window, and never logs database contents.
 Copy dumps off-host before the retention window expires, then restore one into
 a disposable PostgreSQL instance before trusting a release. The Docker volume
-is not an independent backup.
+is not an independent backup. For an automated copy, configure the
+`BACKUP_REPLICATION_*` variables for an SSH destination; set
+`BACKUP_REPLICATION_REQUIRED=true` once that destination is ready so a failed
+replication prevents the backup job from reporting success.
 
 Example installation:
 
