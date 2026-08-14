@@ -79,6 +79,9 @@ This is the recorded baseline for future pack-size/provider tuning.
 - The desktop client uses a ten-minute streaming request timeout for manifest,
   pack, and restore transfers; catalog refresh still has its own short
   connectivity timeout.
+- Commit `db74890` was rebuilt and deployed to Mantle on 2026-08-14. The live
+  API reports trusted proxy headers enabled; unauthenticated storage-admin
+  access returns HTTP 401 while `/v1/health` and `/v1/ready` return HTTP 200.
 - Production HTTPS is still waiting on the public DNS A/AAAA record for
   `vaultnode.pp.ua`; the current Mantle endpoint is intentionally HTTP-only
   staging behind the wildcard Caddy listener.
