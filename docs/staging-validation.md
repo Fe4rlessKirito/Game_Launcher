@@ -22,6 +22,9 @@ deployment, not the retired Railway setup.
   commercial executable.
 - Deliberate HOT reference eviction followed by Telegram -> worker ->
   FileMirage restore passes BLAKE3/read-back verification.
+- The live physical-pack recovery used `staging-b`, pack
+  `4d5dcc2cb0126045a40f8620e29bc9410f0cdea7e040a4edbf9e1634ded37251`,
+  and completed as restore job `34` with 8,478,699 verified bytes.
 - API and worker restart/reconnect checks recover with health/readiness 200 and
   zero pending pack restores.
 - Workstation archive-normalization probe passes ZIP, TAR, 7z, and authorized

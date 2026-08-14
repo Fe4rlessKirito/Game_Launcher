@@ -73,5 +73,8 @@ calling the COLD provider staging-validated.
 Run `docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T worker launcher-admin storage health` before
 the live smoke. Keep the Telegram message/index state on the persistent
 `launcher-storage` volume. Do not claim COLD-to-HOT recovery is validated until
-a physical pack is deliberately removed from FileMirage HOT, restored from
-Telegram through the worker, BLAKE3-verified, and published back to HOT.
+a physical pack's Vaultnode HOT reference is deliberately evicted from
+FileMirage, restored from Telegram through the worker, BLAKE3-verified, and
+published back to HOT. FileMirage remote deletion remains disabled until its
+authenticated delete contract is independently proven; the old remote object
+is left to the provider's natural expiry policy.

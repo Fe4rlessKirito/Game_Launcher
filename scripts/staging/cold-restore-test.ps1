@@ -18,7 +18,7 @@ param(
 . (Join-Path $PSScriptRoot "common.ps1")
 
 if (-not $Confirm) {
-    throw "This test evicts one HOT reference and restores it. With -MetadataOnly, the provider-side object is not deleted; re-run with -Confirm after checking the staging build and hash."
+    throw "This test evicts one HOT reference and restores it. With -MetadataOnly, the provider-side object is not deleted; otherwise the provider delete capability must be proven. Re-run with -Confirm after checking the staging build and hash."
 }
 if (-not $BuildId.StartsWith("staging-", [StringComparison]::OrdinalIgnoreCase)) {
     throw "Cold restore test only accepts build IDs beginning with staging-"
@@ -38,18 +38,20 @@ if ($MetadataOnly -and -not $PackHash) {
 if ($Mantle -and $Local) { throw "Choose -Mantle or -Local, not both" }
 if (-not $Mantle -and -not $Local) { $Local = $true }
 
-$arguments = if ($PackHash) {
-    @(
+if ($PackHash) {
+    $arguments = @(
         "storage", "cold-pack-restore-smoke",
         "--build-id", $BuildId,
         "--pack-hash", $PackHash,
         "--confirm",
-        $(if ($MetadataOnly) { "--metadata-only" } else { $null }),
         "--storage-root", $StorageRoot
     )
+    if ($MetadataOnly) {
+        $arguments += "--metadata-only"
+    }
 }
 else {
-    @(
+    $arguments = @(
         "storage", "cold-restore-smoke",
         "--build-id", $BuildId,
         "--encoded-hash", $EncodedHash,
