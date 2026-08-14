@@ -61,6 +61,8 @@ jobs:
       - run: pytest analyzer/tests
       - name: Validate deployment shell script
         run: bash -n deploy/backup-postgres.sh
+      - name: Validate Mantle production preflight
+        run: bash -n scripts/mantle-production-check.sh
       - name: Validate staging PowerShell scripts
         shell: pwsh
         run: |

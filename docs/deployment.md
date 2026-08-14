@@ -95,6 +95,27 @@ Exceeded requests receive HTTP 429 and a `Retry-After` header. Keep the limit
 appropriate for the number of launcher clients and retain the concurrency and
 body-size limits as separate protections.
 
+Before calling the VPS production-shaped, run the fail-closed public cutover
+check from a host that can resolve the final DNS record:
+
+```bash
+export LAUNCHER_PUBLIC_BASE_URL=https://vaultnode.pp.ua
+export SITE_HOST=vaultnode.pp.ua
+export ACME_EMAIL=operator@example.invalid
+export LAUNCHER_OPERATOR_TOKEN='read-from-the-secret-store'
+export MANTLE_PUBLIC_IP=5.231.32.191
+export BACKUP_REPLICATION_REQUIRED=true
+export BACKUP_REPLICATION_HOST=backup.example.invalid
+export BACKUP_REPLICATION_DIR=/srv/backups/vaultnode
+export BACKUP_REPLICATION_IDENTITY_FILE=/root/.ssh/vaultnode-backup
+bash scripts/mantle-production-check.sh
+```
+
+The command verifies the DNS target, certificate-validated HTTPS health and
+readiness, authenticated metrics, plaintext redirect, and the required
+off-host backup configuration. It deliberately cannot pass against the
+temporary VPS-IP HTTP endpoint or with only a local PostgreSQL dump.
+
 The launcher defaults to `https://vaultnode.pp.ua` and migrates the historical
 Mantle IP/local URLs to that HTTPS endpoint. During DNS cutover, set
 `LAUNCHER_API_BASE_URL` or the local settings file to the final HTTPS hostname;
