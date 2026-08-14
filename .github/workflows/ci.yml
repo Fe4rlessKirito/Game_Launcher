@@ -74,7 +74,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.302'
-      - run: dotnet restore launcher/Launcher.sln
+      - run: dotnet restore launcher/src/Launcher.App/Launcher.App.csproj --runtime win-x64
       - run: >-
           dotnet publish launcher/src/Launcher.App/Launcher.App.csproj
           --configuration Release
