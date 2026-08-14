@@ -6,7 +6,7 @@ The highest-risk future work is production key-ring management, updater package 
 
 S3 credentials are server-side configuration only. The API exposes either stable public object URLs or scoped presigned GET URLs; clients never receive access keys. Presigned URLs are not persisted in database mirror records because they expire. Staging and production should use separate buckets/credentials, private buckets when presigning, prefix-scoped IAM policies, TLS, short URL lifetimes, and lifecycle cleanup for incomplete multipart uploads.
 
-The current `launcher-admin publish` path still supports embedded local fixture keys. Before public release, replace that mode with a controlled signing operation backed by an encrypted key store or external signing service, retain overlapping trusted public keys during rotation, and require an explicit approval step before `PUBLISHED`.
+The current `launcher-admin publish` path still supports embedded local fixture keys for development and staging. Set `LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true` in a production-shaped signing environment; then the command fails closed unless `LAUNCHER_SIGNING_PRIVATE_KEY_PATH` or `LAUNCHER_SIGNING_PRIVATE_KEY_PEM` is supplied by the secret manager. Before public release, replace that secret injection with a controlled signing operation backed by an encrypted key store or external signing service, retain overlapping trusted public keys during rotation, and require an explicit approval step before `PUBLISHED`.
 
 Cold storage adds an operator-only boundary. MEGA account configuration stores
 credential references and isolated MEGAcmd session directories, not raw

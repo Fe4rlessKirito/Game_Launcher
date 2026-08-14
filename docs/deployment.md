@@ -50,12 +50,18 @@ SITE_HOST=<public-api-host>
 ACME_EMAIL=<certificate-contact>
 LAUNCHER_OPERATOR_TOKEN=<random-secret-at-least-32-bytes>
 LAUNCHER_OPERATOR_AUTH_REQUIRED=true
+LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true
 ```
 
 When an operator token is configured, the API requires at least 32 bytes and
 compares bearer values without an early-exit equality check. Keep the token in
 the deployment secret store; never put it in launcher settings, logs, or a
 client build.
+
+With `LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true`, an admin publish/signing
+job fails closed when the secret-managed signing key is absent; it will not
+generate a local fixture key. The private key must be supplied through the
+deployment secret store or an external signing service.
 
 The API also applies a 50 MiB request-body limit and a 256-request global
 concurrency limit by default. Keep both limits enabled in production; adjust

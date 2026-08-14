@@ -461,6 +461,11 @@ async fn main() -> Result<()> {
                 }
                 None => match env::var("LAUNCHER_SIGNING_PRIVATE_KEY_PEM") {
                     Ok(pem) => load_private_key_pem(&pem)?,
+                    Err(_) if env_bool("LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY", false) => {
+                        anyhow::bail!(
+                            "external signing key required; configure LAUNCHER_SIGNING_PRIVATE_KEY_PATH or LAUNCHER_SIGNING_PRIVATE_KEY_PEM"
+                        )
+                    }
                     Err(_) => generate_signing_key()?,
                 },
             };
