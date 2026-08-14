@@ -104,12 +104,38 @@ $updateResult = Invoke-LauncherE2EPhase -Mode "update" -Source $sourceBPath -Bui
 
 # Deliberately damage the installed B build, then let the launcher repair it
 # from the verified manifest. This stays inside the staging artifact root.
-$repairTarget = Join-Path $installPath "Data\changed.txt"
-Set-Content -LiteralPath $repairTarget -Value "staging-corruption" -NoNewline -Encoding UTF8
-Remove-Item -LiteralPath (Join-Path $installPath "Data\added.bin") -Force
-$truncateTarget = Join-Path $installPath "Data\inserted.bin"
-$truncateStream = [IO.File]::Open($truncateTarget, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
-try { $truncateStream.SetLength(1024) } finally { $truncateStream.Dispose() }
+function Damage-InstalledBuild {
+    $syntheticChanged = Join-Path $installPath "Data\changed.txt"
+    $syntheticAdded = Join-Path $installPath "Data\added.bin"
+    $syntheticInserted = Join-Path $installPath "Data\inserted.bin"
+    if (Test-Path -LiteralPath $syntheticChanged -PathType Leaf) {
+        Set-Content -LiteralPath $syntheticChanged -Value "staging-corruption" -NoNewline -Encoding UTF8
+        if (Test-Path -LiteralPath $syntheticAdded -PathType Leaf) {
+            Remove-Item -LiteralPath $syntheticAdded -Force
+        }
+        if (Test-Path -LiteralPath $syntheticInserted -PathType Leaf) {
+            $truncateStream = [IO.File]::Open($syntheticInserted, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $truncateStream.SetLength([Math]::Min(1024, $truncateStream.Length)) } finally { $truncateStream.Dispose() }
+        }
+        return
+    }
+
+    # Real-game validation does not assume a particular fixture layout. Damage
+    # one non-empty installed file and remove another file when available.
+    $candidates = @(Get-ChildItem -LiteralPath $installPath -File -Recurse | Sort-Object FullName)
+    $nonEmpty = @($candidates | Where-Object Length -gt 0 | Select-Object -First 1)
+    if ($nonEmpty.Count -eq 0) { throw "Installed build contains no non-empty file to damage." }
+    $stream = [IO.File]::Open($nonEmpty[0].FullName, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $stream.Position = 0
+        $stream.WriteByte(0xA5)
+    }
+    finally { $stream.Dispose() }
+    $second = $candidates | Where-Object { $_.FullName -ne $nonEmpty[0].FullName } | Select-Object -First 1
+    if ($null -ne $second) { Remove-Item -LiteralPath $second.FullName -Force }
+}
+
+Damage-InstalledBuild
 $repairResult = Invoke-LauncherE2EPhase -Mode "repair" -Source $sourceBPath -BuildId $BuildBId
 
 $baseUri = [Uri]($ApiUrl.TrimEnd("/") + "/")
