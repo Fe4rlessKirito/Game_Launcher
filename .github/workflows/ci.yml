@@ -65,3 +65,29 @@ jobs:
       - run: dotnet restore launcher/Launcher.sln
       - run: dotnet build launcher/Launcher.sln --configuration Release --no-restore
       - run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-local-e2e.ps1
+
+  desktop-publish:
+    needs: dotnet
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.302'
+      - run: dotnet restore launcher/Launcher.sln
+      - run: >-
+          dotnet publish launcher/src/Launcher.App/Launcher.App.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --no-restore
+          --output artifacts/vaultnode-win-x64
+      - name: Package desktop release
+        shell: pwsh
+        run: Compress-Archive -Path artifacts/vaultnode-win-x64/* -DestinationPath artifacts/vaultnode-win-x64.zip -CompressionLevel Optimal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vaultnode-win-x64
+          path: artifacts/vaultnode-win-x64.zip
+          if-no-files-found: error
+          retention-days: 14

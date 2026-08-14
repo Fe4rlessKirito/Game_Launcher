@@ -38,11 +38,11 @@ The client owns UI, local SQLite state, download scheduling, cache eviction, rec
 
 1. PostgreSQL-backed jobs are sufficient for the first ingestion worker. The job table has leases and retries; Redis, Kafka, and RabbitMQ are intentionally absent.
 2. Local filesystem storage is the development provider. `StorageProvider`, `StorageRegistry`, and the verified `storage_locations`/`storage_objects` records are the seam for S3-compatible storage and independent mirrors.
-3. Storage placement is tier-aware: hot locations are client-facing, cold locations are operator-facing, and publication is gated by `StoragePolicy`. MEGA and Telegram cold accounts use PostgreSQL-backed metadata; historical Telegram packs can be streamed through the private worker without creating a permanent HOT copy.
+3. Storage placement is tier-aware: hot locations are client-facing, cold locations are operator-facing, and publication is gated by `StoragePolicy`. Telegram cold accounts use PostgreSQL-backed metadata; historical Telegram packs can be streamed through the private worker/API relay without creating a permanent HOT copy.
 4. The manifest is JSON for inspectability and signed canonical bytes can be introduced without changing the file/chunk model.
 5. SQLite uses numbered SQL migrations and a small repository abstraction instead of an ORM.
-6. Deployment is provider-neutral. Railway is the current staging host; Mantle is a future deployment target, not a storage or database type in the application. The API, worker, PostgreSQL schema, storage pools, and client contracts remain portable across that move.
+6. Deployment is provider-neutral. Mantle is the current staging host; Railway is historical staging only, not a storage or database type in the application. The API, worker, PostgreSQL schema, storage pools, and client contracts remain portable across that move.
 
 ## Known limitations
 
-The current infrastructure phase includes local and S3-compatible providers, multipart/retry/hash verification, presigned URL generation, provider health reporting, and an operator publish path. It does not yet ship a production key-management service, a continuously running ingestion worker, Windows named-pipe single-instance broker, or native-AOT release pipeline. Those remain explicit extension points and are not silently represented as complete.
+The current infrastructure phase includes local and S3-compatible providers, FileMirage HOT and Telegram COLD adapters, multipart/retry/hash verification, provider health reporting, a continuously running restore/ingestion worker, Windows single-instance coordination, and an operator publish path. It does not yet ship a production key-management service, public TLS until DNS is configured, off-host PostgreSQL backup replication, full end-user account/authentication, or a native-AOT release pipeline. Those remain explicit release gates and are not silently represented as complete.
