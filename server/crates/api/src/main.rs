@@ -4,6 +4,7 @@ use axum::{
     body::{Body, to_bytes},
     extract::{Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -25,7 +26,14 @@ use launcher_storage::{
     StorageTier, storage_from_env_with_reservation_store,
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    env,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use tokio::sync::RwLock;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
@@ -33,6 +41,82 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 const MIN_OPERATOR_TOKEN_BYTES: usize = 32;
+const DEFAULT_RATE_LIMIT_REQUESTS: u32 = 600;
+const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
+
+#[derive(Clone)]
+struct RequestRateLimiter {
+    state: Arc<Mutex<RateWindow>>,
+}
+
+struct RateWindow {
+    started: Instant,
+    requests: u32,
+    limit: u32,
+    duration: Duration,
+}
+
+impl RequestRateLimiter {
+    fn from_env() -> Self {
+        let limit = env::var("LAUNCHER_RATE_LIMIT_REQUESTS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_RATE_LIMIT_REQUESTS)
+            .clamp(1, 100_000);
+        let duration = env::var("LAUNCHER_RATE_LIMIT_WINDOW_SECONDS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_RATE_LIMIT_WINDOW_SECONDS)
+            .clamp(1, 3_600);
+        Self::new(limit, Duration::from_secs(duration))
+    }
+
+    fn new(limit: u32, duration: Duration) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RateWindow {
+                started: Instant::now(),
+                requests: 0,
+                limit: limit.max(1),
+                duration: duration.max(Duration::from_secs(1)),
+            })),
+        }
+    }
+
+    fn retry_after_seconds(&self) -> Option<u64> {
+        let mut state = self.state.lock().expect("rate limiter mutex poisoned");
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(state.started);
+        if elapsed >= state.duration {
+            state.started = now;
+            state.requests = 0;
+        }
+        if state.requests < state.limit {
+            state.requests += 1;
+            return None;
+        }
+        Some(state.duration.saturating_sub(elapsed).as_secs().max(1))
+    }
+}
+
+async fn enforce_rate_limit(
+    State(rate_limiter): State<RequestRateLimiter>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(retry_after) = rate_limiter.retry_after_seconds() {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry_after.to_string())],
+            Json(ApiErrorBody {
+                code: "rate_limited".to_owned(),
+                message: "request rate limit exceeded".to_owned(),
+                request_id: Uuid::new_v4().to_string(),
+            }),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -228,6 +312,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(256)
         .clamp(8, 4096);
+    let rate_limiter = RequestRateLimiter::from_env();
     let cors = match env::var("LAUNCHER_CORS_ALLOW_ORIGIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -306,6 +391,10 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(max_request_bytes))
         .layer(ConcurrencyLimitLayer::new(max_concurrent_requests))
+        .layer(middleware::from_fn_with_state(
+            rate_limiter,
+            enforce_rate_limit,
+        ))
         .with_state(state);
     let address: SocketAddr = env::var("LAUNCHER_BIND")
         .or_else(|_| env::var("PORT").map(|port| format!("0.0.0.0:{port}")))
@@ -1787,6 +1876,14 @@ mod tests {
             "operator-token-extra"
         ));
         assert!(!constant_time_token_eq("", "operator-token"));
+    }
+
+    #[test]
+    fn request_rate_limiter_rejects_after_budget() {
+        let limiter = RequestRateLimiter::new(2, Duration::from_secs(1));
+        assert!(limiter.retry_after_seconds().is_none());
+        assert!(limiter.retry_after_seconds().is_none());
+        assert!(limiter.retry_after_seconds().is_some());
     }
 
     #[tokio::test]

@@ -73,6 +73,12 @@ Provider health probes used by storage status and metrics are bounded by
 `LAUNCHER_STORAGE_HEALTH_TIMEOUT_SECONDS` (15 seconds by default, capped at 120
 seconds), so an unavailable HOT provider cannot hang operator monitoring.
 
+The API also applies a bounded global request window. `LAUNCHER_RATE_LIMIT_REQUESTS`
+defaults to 600 requests per `LAUNCHER_RATE_LIMIT_WINDOW_SECONDS` (default 60).
+Exceeded requests receive HTTP 429 and a `Retry-After` header. Keep the limit
+appropriate for the number of launcher clients and retain the concurrency and
+body-size limits as separate protections.
+
 The launcher defaults to `https://vaultnode.pp.ua` and migrates the historical
 Mantle IP/local URLs to that HTTPS endpoint. During DNS cutover, set
 `LAUNCHER_API_BASE_URL` or the local settings file to the final HTTPS hostname;
