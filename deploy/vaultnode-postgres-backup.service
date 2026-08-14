@@ -6,4 +6,8 @@ After=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/home/debian/vaultnode
+# The backup script reads BACKUP_REPLICATION_* from the deployment environment.
+# Keep this optional so a development host can still run local-only backups;
+# BACKUP_REPLICATION_REQUIRED=true remains fail-closed when production enables it.
+EnvironmentFile=-/home/debian/vaultnode/.env
 ExecStart=/home/debian/vaultnode/deploy/backup-postgres.sh
