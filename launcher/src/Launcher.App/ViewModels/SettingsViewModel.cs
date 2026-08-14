@@ -40,6 +40,9 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _saveStatus = "Changes are stored locally.";
 
+    private IReadOnlyDictionary<string, string>? _trustedManifestKeysPem;
+    private bool _requireTrustedManifestKeys;
+
     public SettingsViewModel()
     {
         Load();
@@ -69,7 +72,9 @@ public partial class SettingsViewModel : ObservableObject
                 ConcurrentDownloads,
                 DefaultGameDirectory: InstallDirectory,
                 ReducedMotion: ReducedMotion,
-                ApiBaseUrl: ApiBaseUrl);
+                ApiBaseUrl: ApiBaseUrl,
+                TrustedManifestKeysPem: _trustedManifestKeysPem,
+                RequireTrustedManifestKeys: _requireTrustedManifestKeys);
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
             SaveStatus = "Changes saved locally.";
         }
@@ -126,6 +131,8 @@ public partial class SettingsViewModel : ObservableObject
                 : snapshot.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
                     ? DefaultApiBaseUrl
                     : snapshot.ApiBaseUrl;
+            _trustedManifestKeysPem = snapshot.TrustedManifestKeysPem;
+            _requireTrustedManifestKeys = snapshot.RequireTrustedManifestKeys;
         }
         catch (JsonException)
         {

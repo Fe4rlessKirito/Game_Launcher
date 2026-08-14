@@ -82,6 +82,10 @@ This is the recorded baseline for future pack-size/provider tuning.
 - Commit `db74890` was rebuilt and deployed to Mantle on 2026-08-14. The live
   API reports trusted proxy headers enabled; unauthenticated storage-admin
   access returns HTTP 401 while `/v1/health` and `/v1/ready` return HTTP 200.
+- Mantle now mounts the operator-managed `mantle-2026-08-14` signing key
+  read-only into the worker. A live `launcher-admin manifest-sign` probe
+  succeeded without exposing the private key, and the production launcher key
+  ring matches the public keys on the existing published builds.
 - Production HTTPS is still waiting on the public DNS A/AAAA record for
   `vaultnode.pp.ua`; the current Mantle endpoint is intentionally HTTP-only
   staging behind the wildcard Caddy listener.

@@ -21,12 +21,14 @@ public class ModelsTests
                 TrustedManifestKeysPem: new Dictionary<string, string>
                 {
                     ["staging-2026-01"] = "-----BEGIN PUBLIC KEY-----\nredacted\n-----END PUBLIC KEY-----"
-                }));
+                },
+                RequireTrustedManifestKeys: true));
             var settings = await store.LoadAsync();
             Assert.True(settings.LaunchOnStartup);
             Assert.Equal(8, settings.ConcurrentDownloads);
             Assert.Equal("https://staging.example.invalid/", settings.ApiBaseUrl);
             Assert.Contains("staging-2026-01", settings.TrustedManifestKeysPem!.Keys);
+            Assert.True(settings.RequireTrustedManifestKeys);
         }
         finally
         {

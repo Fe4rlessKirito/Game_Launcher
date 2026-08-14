@@ -69,6 +69,16 @@ job fails closed when the secret-managed signing key is absent; it will not
 generate a local fixture key. The private key must be supplied through the
 deployment secret store or an external signing service.
 
+The Mantle override mounts the operator-managed key at
+`/run/secrets/mantle-signing-key.pem` for the worker only. Keep the host file
+mode `600`, owned by the container's `launcher` UID, and never copy the
+private key into the repository or a client settings file.
+
+Production launcher settings must also contain the matching public key ring
+and set `requireTrustedManifestKeys` to `true` (see
+`deploy/launcher-production.example.json`). Development settings may leave
+this disabled, which permits the embedded fixture key in a signature envelope.
+
 The API also applies a 50 MiB request-body limit and a 256-request global
 concurrency limit by default. Keep both limits enabled in production; adjust
 `LAUNCHER_MAX_REQUEST_BYTES` and `LAUNCHER_MAX_CONCURRENT_REQUESTS` only when

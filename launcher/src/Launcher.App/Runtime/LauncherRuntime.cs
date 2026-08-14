@@ -66,6 +66,14 @@ public sealed class LauncherRuntime : IAsyncDisposable
     // with LAUNCHER_API_BASE_URL or the local settings file during cutover.
     private const string DefaultMantleApiBaseUrl = "https://vaultnode.pp.ua";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
+    private static readonly IReadOnlyDictionary<string, string> DefaultMantleTrustedManifestKeys =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["mantle-2026-08-14"] = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAn/FIINMz1NFm3jhcgclN\nKQNZ/1932tlQA9r1uYpXU0aGVoT+2W4KPWNr5u+QgyVDO/ocGk/LpkT7TGHlFOQg\nVAvxnRu/Q3TvSBTRsXlJFDT6sHCg0bEbWPzDJOEt1h7q1WZOMml/x8V9tSfeDqye\nk3ipyDI4GgaNsv5AYV/KPTePLUiyu61uEWnKVsGq1jndAjSi8Y3HadY7YDsxll77\njSiQi+CLmkmKNIRSzs1oA0pni5C2RkXDoIYuvAXHblFvIn144N8cAn+U+QL+IyRH\nVX55g5Ksa7QaEZ5trlw7X995oevjJCDJO59OyV+5LnrB9w8eAwW9UVldmjLy2xu6\nywIDAQAB\n-----END PUBLIC KEY-----",
+            ["authorized-spacewar-2026"] = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA11UH/8GIAXxEYRODqxLc\nxp+KsUPK5KgrQLS/gL0LfexRbfSj9VWw1/uKFNbgG3fz/O3w3qf3GlslKFU+Cc7K\n17K9ZGbhgtQkkaJouTzLqfmH3gNxegHrZkfVyeYLEyXUemeGrjG/lj5Yv3Ek8JwB\nQgMMWnP1WdEO192Ab1qL5VsHuTrNVOZsWSgWAY23ZZKkKbStm5+Vh6MQi8VjYZ/j\nXgc/bo0+/A/06cjnZ1gwSk0NN69EZos6siLHO0SNCArT4gLL5pGAjZ/VAf0AVMyu\nnGK5O4kswB3tnX9ZzwfuMIaWdavZF9gVb0484g5Btm3ZCKoQI/87H6gqJjFZq1Ed\nnwIDAQAB\n-----END PUBLIC KEY-----",
+            ["local-spacewar-key"] = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvnXGMH7NIVouQjbXD6cA\nO61FI9xrfZfYlKQWopcg/B9M5Rd0VVeEYxauRok50KSxdz3elGzxPv0H1gYKkIQZ\nCaRttXSeUnYavT1+tpZQOA0EYFqIFcl8MfKbJd0jyR5BAGOJ77bBhsfgCw1TfmvJ\nac/HfcAXDaBdPtseeZPqcsVC8Shvn+PAcWIti9UlOW7S0eyT5s+Ek46hRnltxTeR\nWOQH+1n5fC3v5VlxcIMe6rIKg0xfpufaus2FqAfqHwjYgkClGK/cm9odrNeis1O/\n8ezkHAZkMvqss/MP4Cot3//LOpAx6K69oVS5WhiqWjbSdQhUAFn1+htrt/kFRN2a\nwQIDAQAB\n-----END PUBLIC KEY-----",
+            ["staging-2026-01"] = "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwU/5VcHGDAJ4Ns64Iw5y\nWeaKerdWYPhM0qearJ5uXBaIvv29g8Cu+ol7Hqpp2K6bCKmpRigyyFhUy2tv+V7i\nvfJHmvRGyM3HoFIHguFZrcg43R9x3OSApu0kqKoixeX9ymz9Axuh7P+okpG+9art\n/F6TN/cCtp8kWIx5Sac+HYmmrTDYoy7DgC7HozRHlaYh2IxdinEcyqSyp0niBhgj\nwAh4D4+sAChnXkONhbMhegJRRTRW4N59C9Cl0X2q3YmAqM0D0z2Xq8G3KkpZIjMd\nuIz+FtsJz7e28lsfQbVFRqLUfCjSqq7otn15BEbiF/MlT80SQ+Z9oheCaMP/mQT/\nmQIDAQAB\n-----END PUBLIC KEY-----",
+        };
     private readonly LauncherSettings _settings;
     private readonly LauncherPaths _paths;
     private readonly HttpClient _httpClient;
@@ -130,6 +138,17 @@ public sealed class LauncherRuntime : IAsyncDisposable
             || settings.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase))
         {
             settings = settings with { ApiBaseUrl = DefaultMantleApiBaseUrl };
+        }
+
+        if (settings.ApiBaseUrl.Equals(DefaultMantleApiBaseUrl, StringComparison.OrdinalIgnoreCase)
+            && !settings.RequireTrustedManifestKeys
+            && (settings.TrustedManifestKeysPem is null || settings.TrustedManifestKeysPem.Count == 0))
+        {
+            settings = settings with
+            {
+                TrustedManifestKeysPem = DefaultMantleTrustedManifestKeys,
+                RequireTrustedManifestKeys = true,
+            };
         }
 
         var apiOverride = Environment.GetEnvironmentVariable("LAUNCHER_API_BASE_URL");
@@ -213,7 +232,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 signedManifest.RawBytes,
                 signature,
                 _settings.TrustedManifestKeysPem,
-                allowEmbeddedPublicKey: _settings.TrustedManifestKeysPem is null || _settings.TrustedManifestKeysPem.Count == 0);
+                allowEmbeddedPublicKey: !_settings.RequireTrustedManifestKeys
+                    && (_settings.TrustedManifestKeysPem is null || _settings.TrustedManifestKeysPem.Count == 0));
 
             using var downloader = new DownloadManager(
                 _httpClient,

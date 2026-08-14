@@ -122,6 +122,7 @@ public sealed record LauncherSettings(
     string DefaultGameDirectory = "",
     bool ReducedMotion = false,
     string ApiBaseUrl = "https://vaultnode.pp.ua",
-    IReadOnlyDictionary<string, string>? TrustedManifestKeysPem = null);
+    IReadOnlyDictionary<string, string>? TrustedManifestKeysPem = null,
+    bool RequireTrustedManifestKeys = false);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

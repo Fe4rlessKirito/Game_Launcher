@@ -45,6 +45,7 @@ services:
       LAUNCHER_FILEMIRAGE_STATE_FILE: /var/lib/launcher/storage/filemirage-state.json
       LAUNCHER_RESTORE_TARGET_PROVIDER: filemirage
       LAUNCHER_OPERATOR_AUTH_REQUIRED: "true"
+      LAUNCHER_SIGNING_PRIVATE_KEY_PATH: /run/secrets/mantle-signing-key.pem
       LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY: "true"
       LAUNCHER_AUTO_MIGRATE: "0"
       TELEGRAM_COLD_ENABLED: "true"
@@ -71,6 +72,7 @@ services:
         condition: service_started
     volumes:
       - launcher-storage:/var/lib/launcher/storage
+      - ../secrets/mantle-2026-08-14.private.pem:/run/secrets/mantle-signing-key.pem:ro
 
   telegram-bot-api:
     build:
