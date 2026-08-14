@@ -17,6 +17,9 @@ files. The health-check script rejects HTTP by default after the cutover.
 The production-shaped override requires `LAUNCHER_OPERATOR_TOKEN` for storage
 diagnostics and Prometheus metrics, and sets
 `LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true` in the API/worker environment.
+The same token is injected into the private worker so its `staging verify`
+command can authenticate those protected diagnostics without exposing the
+token to launcher clients.
 Keep the operator token and the external manifest-signing key in VPS secret
 storage; neither is included in the launcher or returned by the API.
 
