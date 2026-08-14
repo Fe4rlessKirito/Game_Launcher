@@ -24,6 +24,9 @@ deployment, not the retired Railway setup.
   FileMirage restore passes BLAKE3/read-back verification.
 - API and worker restart/reconnect checks recover with health/readiness 200 and
   zero pending pack restores.
+- Workstation archive-normalization probe passes ZIP, TAR, 7z, and authorized
+  RAR inputs through `launcher-admin ingest`; each reaches `stage=Ready` after
+  bounded extraction and cleanup.
 - No remote provider deletion is used for the recovery test. Old HOT links are
   retired from Vaultnode and their provider-side objects are left to natural
   provider expiry.
@@ -69,6 +72,9 @@ This is the recorded baseline for future pack-size/provider tuning.
   small provider probes.
 - The local no-database E2E helper still assumes the legacy logical resolver;
   the Mantle pack-canonical runner is the authoritative remote test.
+- Production HTTPS is still waiting on the public DNS A/AAAA record for
+  `vaultnode.pp.ua`; the current Mantle endpoint is intentionally HTTP-only
+  staging behind the wildcard Caddy listener.
 
 See `docs/staging-performance.md` and `docs/provider-capability-records.md`
 for the measured values and capability decisions.
