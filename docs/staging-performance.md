@@ -82,5 +82,6 @@ worker after restart: RUNNING; cold stream LISTENING; pending pack restores=0
   proven, so it remains disabled.
 - The isolated local no-database E2E harness was not used as staging evidence;
   its legacy pack resolver returns 503 when physical-pack storage is disabled.
-- No authorized real commercial game was uploaded. The remote evidence uses
-  the checked-in synthetic A/B fixture.
+- The authorized Steam Spacewar real-game install/update/repair run is recorded
+  in `docs/staging-validation.md`; this performance record intentionally keeps
+  the larger throughput table focused on synthetic A/B measurements.
