@@ -12,8 +12,10 @@ The checked-in `deploy/vps.compose.https.yaml` is the reproducible switch for
 that cutover; it mounts the HTTPS Caddyfile without editing the base compose
 files. The health-check script rejects HTTP by default after the cutover.
 The production-shaped override requires `LAUNCHER_OPERATOR_TOKEN` for storage
-diagnostics and Prometheus metrics. Keep that token in the VPS `.env`; it is
-never included in the launcher or returned by the API.
+diagnostics and Prometheus metrics, and sets
+`LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true` in the API/worker environment.
+Keep the operator token and the external manifest-signing key in VPS secret
+storage; neither is included in the launcher or returned by the API.
 
 ## Deploy the stack
 
