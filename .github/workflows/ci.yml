@@ -23,7 +23,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --all -- --check
         working-directory: server
-      - run: cargo test --workspace
+      # Embedded PostgreSQL integration tests share a Windows runner's local
+      # process and port resources; serialize test cases for deterministic CI.
+      - run: cargo test --workspace -- --test-threads=1
         working-directory: server
       - run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: server
