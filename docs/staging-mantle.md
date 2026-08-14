@@ -4,13 +4,13 @@ Mantle is the active staging host for Vaultnode. The VPS runs the API,
 PostgreSQL, worker, private Telegram Local Bot API, private Telegram file
 proxy, and Caddy through the repository's Docker Compose files. Only Caddy is
 public; PostgreSQL, the worker, and both Telegram services remain private.
-The checked-in `deploy/VpsCaddyfile` deliberately keeps the current IP-only
-staging endpoint on HTTP with a wildcard `:80` listener. Caddy receives
-`SITE_HOST` and `ACME_EMAIL` through the Compose environment so the HTTPS
-mounted configuration is reproducible. Once DNS is pointed at the VPS,
-switch to `deploy/VpsCaddyfile.https.example`, set `SITE_HOST` and
-`ACME_EMAIL` to the real values, and recreate Caddy so ACME can issue the
-certificate.
+The checked-in `deploy/VpsCaddyfile` remains the HTTP fallback for local or
+IP-only staging. The active Mantle deployment now uses
+`deploy/VpsCaddyfile.https.example` with `SITE_HOST=vaultnode.pp.ua` and a
+Let's Encrypt certificate. Caddy receives `SITE_HOST` and `ACME_EMAIL` through
+the Compose environment so the HTTPS configuration is reproducible. When
+recreating the deployment, keep the HTTPS file mounted and verify the public
+certificate before enabling client traffic.
 The checked-in `deploy/vps.compose.https.yaml` is the reproducible switch for
 that cutover; it mounts the HTTPS Caddyfile without editing the base compose
 files. The health-check script rejects HTTP by default after the cutover.
@@ -53,7 +53,7 @@ curl -fsS -H "Authorization: Bearer $LAUNCHER_OPERATOR_TOKEN" https://<public-ap
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T worker launcher-admin storage health
 ```
 
-For the temporary IP-only smoke endpoint, explicitly opt into the exception:
+For a temporary IP-only smoke endpoint, explicitly opt into the exception:
 
 ```text
 LAUNCHER_ALLOW_HTTP_HEALTHCHECK=true \
@@ -94,13 +94,16 @@ Install the checked-in `deploy/vaultnode-postgres-backup.service` and
 `deploy/vaultnode-postgres-backup.timer` units on the VPS, or use an equivalent
 managed scheduler, to run `deploy/backup-postgres.sh`. It creates a
 custom-format PostgreSQL dump and checksum in the explicit `BACKUP_DIR`,
-retains the configured window, and never logs database contents.
-Copy dumps off-host before the retention window expires, then restore one into
-a disposable PostgreSQL instance before trusting a release. The Docker volume
-is not an independent backup. For an automated copy, configure the
-`BACKUP_REPLICATION_*` variables for an SSH destination; set
-`BACKUP_REPLICATION_REQUIRED=true` once that destination is ready so a failed
-replication prevents the backup job from reporting success.
+retains the configured window, and never logs database contents. The current
+no-user staging deployment keeps these backups on the VPS with
+`BACKUP_REPLICATION_REQUIRED=false`; this protects against application and
+database mistakes but is not an off-host disaster-recovery copy.
+
+For a production cutover, copy dumps off-host before the retention window
+expires, then restore one into a disposable PostgreSQL instance. Configure the
+`BACKUP_REPLICATION_*` variables for an SSH destination and set
+`BACKUP_REPLICATION_REQUIRED=true` only once that destination is ready so a
+failed replication prevents the backup job from reporting success.
 
 Example installation:
 

@@ -27,6 +27,12 @@ deployment, not the retired Railway setup.
   and completed as restore job `34` with 8,478,699 verified bytes.
 - API and worker restart/reconnect checks recover with health/readiness 200 and
   zero pending pack restores.
+- `vaultnode.pp.ua` now resolves to the Mantle VPS; Caddy serves a valid
+  Let's Encrypt certificate, redirects HTTP to HTTPS, and authenticated
+  metrics pass through the public hostname.
+- PostgreSQL local-only backup mode is enabled for the no-user staging
+  environment; the daily timer is active and the last local dump/checksum
+  completed successfully.
 - Workstation archive-normalization probe passes ZIP, TAR, 7z, and authorized
   RAR inputs through `launcher-admin ingest`; each reaches `stage=Ready` after
   bounded extraction and cleanup.
@@ -89,9 +95,9 @@ This is the recorded baseline for future pack-size/provider tuning.
   read-only into the worker. A live `launcher-admin manifest-sign` probe
   succeeded without exposing the private key, and the production launcher key
   ring matches the public keys on the existing published builds.
-- Production HTTPS is still waiting on the public DNS A/AAAA record for
-  `vaultnode.pp.ua`; the current Mantle endpoint is intentionally HTTP-only
-  staging behind the wildcard Caddy listener.
+- Off-host backup replication is intentionally not enabled for this no-user
+  staging deployment. The production preflight remains fail-closed until a
+  separate backup destination is configured.
 
 See `docs/staging-performance.md` and `docs/provider-capability-records.md`
 for the measured values and capability decisions.

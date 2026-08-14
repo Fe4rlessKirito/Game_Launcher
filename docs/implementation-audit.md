@@ -44,5 +44,11 @@ The table above is the historical baseline from `da2aeea`; it is not a descripti
 - The Avalonia runtime now hydrates the catalog from the API, derives install/update state from persisted local state, and wires library/search/sidebar, download jobs, pause/resume, install/update/repair/uninstall/play, and settings navigation through the runtime. The client now follows all catalog pages. Remaining UI work is interactive visual QA and release packaging, not the original service-graph wiring.
 - On 2026-08-14, interactive Windows validation against Mantle staging confirmed settings endpoint persistence, live catalog hydration, UI install, persisted completed-download history, and UI repair/integrity success for the authorized Spacewar fixture. The client timeout was raised from 8 seconds to 10 minutes for streaming transfers after the first real UI attempt exposed the shorter limit.
 - The API request limiter now keeps bounded per-client windows when Mantle's trusted Caddy proxy headers are enabled, while direct/untrusted access uses a shared fallback bucket. Tests cover budget exhaustion and forwarded-client isolation.
-- GitHub CI is green for website, .NET, Rust, analyzer, and E2E jobs. Mantle `/v1/health`, `/v1/ready`, authenticated metrics, and a local PostgreSQL dump/checksum have passed. Off-host backup replication is not yet configured.
-- Mantle is currently HTTP-only because `vaultnode.pp.ua` has no published A/AAAA record. HTTPS/Caddy templates are present but ACME/public launcher validation cannot be claimed until DNS points at the VPS. Buzzheavier remains disabled until direct download/range/delete behavior is proven; GoFile is not implemented.
+- GitHub CI is green for website, .NET, Rust, analyzer, and E2E jobs. Mantle
+  `/v1/health`, `/v1/ready`, authenticated metrics, HTTPS certificate/redirect,
+  and a local PostgreSQL dump/checksum have passed. Off-host backup
+  replication is intentionally not enabled for the no-user staging setup.
+- Mantle now serves `https://vaultnode.pp.ua` with a valid ACME certificate;
+  the IP-only HTTP listener remains only as a checked-in fallback. Buzzheavier
+  remains disabled until direct download/range/delete behavior is proven;
+  GoFile is not implemented.
