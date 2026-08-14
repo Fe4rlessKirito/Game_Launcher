@@ -1,6 +1,6 @@
 # Live Mantle staging validation
 
-Validation date: 2026-08-13. This checklist records the current Mantle
+Validation date: 2026-08-14. This checklist records the current Mantle
 deployment, not the retired Railway setup.
 
 ## PASS
@@ -28,6 +28,30 @@ deployment, not the retired Railway setup.
   retired from Vaultnode and their provider-side objects are left to natural
   provider expiry.
 
+## Authorized real-game Mantle run
+
+On 2026-08-14, the installed Steam Spacewar sample was copied into disposable
+ignored A/B fixtures; the original installation was not modified. Both builds
+were ingested, signed, and published to Mantle with FileMirage HOT and
+Telegram physical-pack COLD placement. The launcher then ran the real
+install -> update -> damage -> repair flow against the Mantle API. Launch was
+explicitly skipped because this is a storage/install validation, not an
+attempt to start the user's game executable.
+
+Observed results:
+
+| Phase | Result |
+| --- | --- |
+| A install | 8 files; 905,795 logical encoded bytes; BLAKE3 byte identity PASS |
+| A -> B update | 9 files; 1,904,486 installed bytes reused; 1,642 bytes reconstructed |
+| B repair after corruption/removal | PASS; 0 network bytes; BLAKE3 byte identity PASS |
+| Data plane | PASS; resolved direct host was `filemirage.com`, not the API |
+| Pack amplification | A: `1.001x`; B update: `1.999x` physical traffic/logical bytes |
+
+The B update amplification is expected in canonical physical-pack mode: the
+launcher downloads the complete pack containing the changed logical data.
+This is the recorded baseline for future pack-size/provider tuning.
+
 ## NOT ENABLED
 
 - Buzzheavier: upload was observed, but direct download/range/resume were not.
@@ -38,8 +62,9 @@ deployment, not the retired Railway setup.
 
 ## Remaining limitations
 
-- The remote run is an authorized synthetic game fixture, not a commercial
-  game archive.
+- The remote real-game run validates authorized Steam Spacewar bytes but does
+  not launch the executable; the synthetic run remains the launch-validation
+  fixture.
 - A full 16-provider/real-client network benchmark is not implied by the
   small provider probes.
 - The local no-database E2E helper still assumes the legacy logical resolver;
