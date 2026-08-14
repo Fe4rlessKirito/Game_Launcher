@@ -1,4 +1,4 @@
-http://{$SITE_HOST:localhost} {
+:80 {
     encode gzip zstd
     header {
         X-Content-Type-Options nosniff
