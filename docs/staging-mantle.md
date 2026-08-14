@@ -76,6 +76,11 @@ Railway CLI:
   -IdentityFile C:\path\to\new_key
 ```
 
+When running `scripts/staging/verify-staging.ps1` against a deployment with
+operator authentication enabled, keep `LAUNCHER_OPERATOR_TOKEN` in the local
+secret environment as well. The verifier uses it only for the protected
+storage-status and metrics requests; it never prints or persists the token.
+
 The Telegram smoke is intentionally tiny and proves Bot API reachability,
 physical-pack upload/download, exact-byte and BLAKE3 verification, and
 temporary-message deletion. It is not the 512 MiB performance gate.

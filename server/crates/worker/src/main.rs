@@ -830,6 +830,9 @@ async fn verify_staging(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()?;
+    let operator_token = env::var("LAUNCHER_OPERATOR_TOKEN")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
 
     fetch_success(&client, &base_url.join("v1/health")?, "api_liveness").await?;
     fetch_success(&client, &base_url.join("v1/ready")?, "api_readiness").await?;
@@ -837,9 +840,16 @@ async fn verify_staging(
         &client,
         &base_url.join("api/v1/storage/status")?,
         "storage_status",
+        operator_token.as_deref(),
     )
     .await?;
-    fetch_success(&client, &base_url.join("metrics")?, "metrics").await?;
+    fetch_success_with_auth(
+        &client,
+        &base_url.join("metrics")?,
+        "metrics",
+        operator_token.as_deref(),
+    )
+    .await?;
 
     let policy = storage_status
         .get("policy")
@@ -957,8 +967,27 @@ async fn verify_staging(
 }
 
 async fn fetch_success(client: &reqwest::Client, url: &reqwest::Url, name: &str) -> Result<()> {
-    let response = client.get(url.clone()).send().await?;
+    fetch_success_with_auth(client, url, name, None).await
+}
+
+async fn fetch_success_with_auth(
+    client: &reqwest::Client,
+    url: &reqwest::Url,
+    name: &str,
+    operator_token: Option<&str>,
+) -> Result<()> {
+    let request = if let Some(token) = operator_token {
+        client.get(url.clone()).bearer_auth(token)
+    } else {
+        client.get(url.clone())
+    };
+    let response = request.send().await?;
     if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED && operator_token.is_none() {
+            anyhow::bail!(
+                "staging check {name} requires LAUNCHER_OPERATOR_TOKEN in the verifier environment"
+            )
+        }
         anyhow::bail!("staging check {name} failed: HTTP {}", response.status())
     }
     println!("check={name} status=PASS http={}", response.status());
@@ -969,9 +998,20 @@ async fn fetch_json(
     client: &reqwest::Client,
     url: &reqwest::Url,
     name: &str,
+    operator_token: Option<&str>,
 ) -> Result<serde_json::Value> {
-    let response = client.get(url.clone()).send().await?;
+    let request = if let Some(token) = operator_token {
+        client.get(url.clone()).bearer_auth(token)
+    } else {
+        client.get(url.clone())
+    };
+    let response = request.send().await?;
     if !response.status().is_success() {
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED && operator_token.is_none() {
+            anyhow::bail!(
+                "staging check {name} requires LAUNCHER_OPERATOR_TOKEN in the verifier environment"
+            )
+        }
         anyhow::bail!("staging check {name} failed: HTTP {}", response.status())
     }
     let status = response.status();
