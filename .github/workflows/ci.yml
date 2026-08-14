@@ -14,7 +14,25 @@ jobs:
           dotnet-version: '10.0.302'
       - run: dotnet restore launcher/Launcher.sln
       - run: dotnet build launcher/Launcher.sln --configuration Release --no-restore
-      - run: dotnet test launcher/Launcher.sln --configuration Release --no-build
+      # Running every test project through the solution in parallel can start
+      # six test hosts at once on the Windows runner. The installation tests
+      # are intentionally filesystem-heavy, so serialize the hosts to avoid
+      # nondeterministic testhost OOM failures.
+      - name: Run .NET tests serially
+        shell: pwsh
+        run: |
+          $projects = @(
+            'launcher/tests/Launcher.Core.Tests/Launcher.Core.Tests.csproj',
+            'launcher/tests/Launcher.Manifests.Tests/Launcher.Manifests.Tests.csproj',
+            'launcher/tests/Launcher.Updater.Tests/Launcher.Updater.Tests.csproj',
+            'launcher/tests/Launcher.Downloads.Tests/Launcher.Downloads.Tests.csproj',
+            'launcher/tests/Launcher.Installation.Tests/Launcher.Installation.Tests.csproj',
+            'launcher/tests/Launcher.App.Tests/Launcher.App.Tests.csproj'
+          )
+          foreach ($project in $projects) {
+            dotnet test $project --configuration Release --no-build --no-restore -- RunConfiguration.MaxCpuCount=1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
   rust:
     runs-on: windows-latest
