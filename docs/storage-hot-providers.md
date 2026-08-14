@@ -12,13 +12,14 @@ short-lived presigned URLs with resolver refresh. Runtime provider URLs are
 preferred over stored URLs so expired presigned locations are not reused.
 
 FileMirage and Buzzheavier are implemented, but their capability flags are
-deliberately conservative. FileMirage may serve direct HOT URLs using the
+deliberately conservative. FileMirage serves direct HOT URLs using the
 observed upload/range behavior; it does not advertise stable URLs or delete.
-Buzzheavier remains upload-only until a real server-side direct-download,
-range, and cleanup probe passes. GoFile remains unimplemented. An upload
-success alone never enables direct HOT traffic. A provider without a proven
-direct-download, range, URL-refresh, and cleanup contract remains a
-server-side restore source, never a client URL.
+Buzzheavier remains upload-only: the 2026-08-14 anonymous probe uploaded a
+small object, but the returned download paths were blocked by a Cloudflare
+challenge, so direct download, range/resume, and cleanup remain unproven.
+GoFile remains unimplemented. An upload success alone never enables direct HOT
+traffic. A provider without a proven direct-download, range, URL-refresh, and
+cleanup contract remains a server-side restore source, never a client URL.
 
 Normal bytes are served by providers, not by the API's local proxy. The proxy
 routes exist only for local development fixtures and explicitly bounded

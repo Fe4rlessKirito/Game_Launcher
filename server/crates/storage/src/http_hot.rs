@@ -759,7 +759,9 @@ impl HttpHotStorage {
         let base = self.download_base_url.as_ref().ok_or_else(|| {
             StorageError::Configuration("Buzzheavier download base URL is missing".to_owned())
         })?;
-        Ok(format!("{base}/{remote_id}/download"))
+        // Buzzheavier's provider-generated download link is /d/{id}; the
+        // landing-page URL and the upload API path are different contracts.
+        Ok(format!("{base}/d/{remote_id}"))
     }
 
     async fn read_remote(&self, hash: &str, pack: bool) -> Result<Vec<u8>, StorageError> {
@@ -1231,5 +1233,26 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("range support"));
+    }
+
+    #[test]
+    fn buzzheavier_uses_provider_download_link_shape() {
+        let storage = BuzzheavierStorage::new(BuzzheavierStorageConfig {
+            provider_id: "buzzheavier".to_owned(),
+            upload_base_url: "https://w.buzzheavier.example".to_owned(),
+            download_base_url: "https://buzzheavier.example".to_owned(),
+            account_id: None,
+            state_file: state_file("buzz-url"),
+            request_timeout: Duration::from_secs(30),
+            max_concurrent_requests: 2,
+            direct_download_proven: false,
+            range_requests_proven: false,
+            delete_proven: false,
+        })
+        .unwrap();
+        assert_eq!(
+            storage.inner.buzz_url("abc123").unwrap(),
+            "https://buzzheavier.example/d/abc123"
+        );
     }
 }
