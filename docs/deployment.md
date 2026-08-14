@@ -53,6 +53,12 @@ LAUNCHER_OPERATOR_AUTH_REQUIRED=true
 LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true
 ```
 
+Caddy receives `SITE_HOST` and `ACME_EMAIL` from the Compose environment. The
+HTTP Mantle file uses the host as a bounded staging target; the HTTPS file
+uses the same variables for the ACME certificate cutover. Recreate Caddy
+after changing either value and validate the rendered configuration before
+opening public traffic.
+
 When an operator token is configured, the API requires at least 32 bytes and
 compares bearer values without an early-exit equality check. Keep the token in
 the deployment secret store; never put it in launcher settings, logs, or a

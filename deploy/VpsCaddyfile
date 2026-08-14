@@ -1,8 +1,4 @@
-{
-    email {$ACME_EMAIL}
-}
-
-http://{$SITE_HOST} {
+http://{$SITE_HOST:localhost} {
     encode gzip zstd
     header {
         X-Content-Type-Options nosniff

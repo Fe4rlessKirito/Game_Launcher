@@ -5,9 +5,11 @@ PostgreSQL, worker, private Telegram Local Bot API, private Telegram file
 proxy, and Caddy through the repository's Docker Compose files. Only Caddy is
 public; PostgreSQL, the worker, and both Telegram services remain private.
 The checked-in `deploy/VpsCaddyfile` deliberately keeps the current IP-only
-staging endpoint on HTTP. Once DNS is pointed at the VPS, replace it with
-`deploy/VpsCaddyfile.https.example`, set `SITE_HOST` to the real hostname, and
-recreate Caddy so ACME can issue the certificate.
+staging endpoint on HTTP. Caddy receives `SITE_HOST` and `ACME_EMAIL` through
+the Compose environment so the mounted configuration is reproducible. Once
+DNS is pointed at the VPS, switch to `deploy/VpsCaddyfile.https.example`, set
+`SITE_HOST` and `ACME_EMAIL` to the real values, and recreate Caddy so ACME
+can issue the certificate.
 The checked-in `deploy/vps.compose.https.yaml` is the reproducible switch for
 that cutover; it mounts the HTTPS Caddyfile without editing the base compose
 files. The health-check script rejects HTTP by default after the cutover.
