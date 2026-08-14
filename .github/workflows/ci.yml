@@ -59,6 +59,30 @@ jobs:
       - run: ruff check analyzer
       - run: mypy analyzer/src
       - run: pytest analyzer/tests
+      - name: Validate deployment shell script
+        run: bash -n deploy/backup-postgres.sh
+      - name: Validate staging PowerShell scripts
+        shell: pwsh
+        run: |
+          $parseErrors = @()
+          foreach ($script in Get-ChildItem scripts/staging -Filter '*.ps1' -File) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $script.FullName,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $parseErrors += $errors | ForEach-Object {
+                "$($script.Name): $($_.Message)"
+              }
+            }
+          }
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Write-Error
+            exit 1
+          }
 
   website:
     runs-on: ubuntu-latest
