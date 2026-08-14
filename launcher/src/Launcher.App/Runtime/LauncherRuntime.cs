@@ -288,6 +288,12 @@ public sealed class LauncherRuntime : IAsyncDisposable
         }
     }
 
+    public async Task ClearCompletedDownloadsAsync(CancellationToken cancellationToken = default)
+    {
+        await _stateStore.DeleteCompletedDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
+        await RefreshAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task UninstallAsync(string gameId, CancellationToken cancellationToken = default)
     {
         await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);

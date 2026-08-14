@@ -60,4 +60,32 @@ public sealed class LocalStateStoreTests
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
+
+    [Fact]
+    public async Task ClearCompletedDownloadJobsRemovesReadyJobsOnly()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "launcher-state-clear-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var dbPath = Path.Combine(root, "launcher.db");
+            var store = new LocalStateStore(dbPath);
+            await store.InitializeAsync();
+            await store.SaveDownloadJobAsync(new PersistedDownloadJob("ready", "build-ready", DownloadJobState.Ready, 10, 10, DateTimeOffset.UtcNow));
+            await store.SaveDownloadJobAsync(new PersistedDownloadJob("failed", "build-failed", DownloadJobState.Failed, 2, 10, DateTimeOffset.UtcNow, "network"));
+            await store.SaveDownloadJobAsync(new PersistedDownloadJob("active", "build-active", DownloadJobState.Downloading, 2, 10, DateTimeOffset.UtcNow));
+
+            await store.DeleteCompletedDownloadJobsAsync();
+
+            var remaining = await store.GetDownloadJobsAsync();
+            Assert.DoesNotContain(remaining, job => job.JobId == "ready");
+            Assert.Contains(remaining, job => job.JobId == "failed");
+            Assert.Contains(remaining, job => job.JobId == "active");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
 }

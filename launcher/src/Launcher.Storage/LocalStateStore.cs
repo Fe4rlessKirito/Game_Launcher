@@ -134,6 +134,16 @@ public sealed class LocalStateStore(string databasePath)
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    public async Task DeleteCompletedDownloadJobsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM download_jobs WHERE state = $state";
+        command.Parameters.AddWithValue("$state", DownloadJobState.Ready.ToString());
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private static async Task EnsureColumnAsync(SqliteConnection connection, string table, string column, string type, CancellationToken cancellationToken)
     {
         await using var check = connection.CreateCommand();

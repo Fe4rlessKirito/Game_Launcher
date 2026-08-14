@@ -136,8 +136,21 @@ public partial class DownloadsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void ClearCompleted()
+    private async Task ClearCompleted()
     {
+        if (_runtime is not null)
+        {
+            try
+            {
+                await _runtime.ClearCompletedDownloadsAsync().ConfigureAwait(true);
+            }
+            catch (Exception error)
+            {
+                LastActionMessage = $"Could not clear completed history: {error.Message}";
+                return;
+            }
+        }
+
         Completed.Clear();
         LastActionMessage = "Completed download history cleared.";
     }
