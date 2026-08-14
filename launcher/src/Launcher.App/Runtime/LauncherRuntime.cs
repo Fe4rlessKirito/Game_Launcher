@@ -65,7 +65,6 @@ public sealed class LauncherRuntime : IAsyncDisposable
     // The public release endpoint must be HTTPS. Operators can override it
     // with LAUNCHER_API_BASE_URL or the local settings file during cutover.
     private const string DefaultMantleApiBaseUrl = "https://vaultnode.pp.ua";
-    private const string LegacyMantleIpBaseUrl = "http://5.231.32.191";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
     private readonly LauncherSettings _settings;
     private readonly LauncherPaths _paths;
@@ -89,7 +88,11 @@ public sealed class LauncherRuntime : IAsyncDisposable
     {
         _settings = settings;
         _paths = LauncherPaths.FromRoot(stateRoot);
-        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        // Catalog refresh has its own short linked timeout below. Download
+        // and restore requests must be allowed to stream a physical pack;
+        // FileMirage can legitimately take longer than eight seconds before
+        // the first verified bytes arrive.
+        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         _ownsHttpClient = httpClient is null;
         _apiClient = new LauncherApiClient(_httpClient, ParseBaseUri(settings.ApiBaseUrl));
         _stateStore = new LocalStateStore(_paths.DatabasePath);
@@ -124,8 +127,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         }
 
         if (string.IsNullOrWhiteSpace(settings.ApiBaseUrl)
-            || settings.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
-            || settings.ApiBaseUrl.Equals(LegacyMantleIpBaseUrl, StringComparison.OrdinalIgnoreCase))
+            || settings.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase))
         {
             settings = settings with { ApiBaseUrl = DefaultMantleApiBaseUrl };
         }

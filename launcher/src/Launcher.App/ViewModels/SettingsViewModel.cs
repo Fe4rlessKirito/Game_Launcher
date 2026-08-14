@@ -8,7 +8,6 @@ namespace Launcher.App.ViewModels;
 public partial class SettingsViewModel : ObservableObject
 {
     private const string DefaultApiBaseUrl = "https://vaultnode.pp.ua";
-    private const string LegacyMantleIpBaseUrl = "http://5.231.32.191";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly JsonSerializerOptions ReadOptions = new(JsonSerializerDefaults.Web);
@@ -124,8 +123,7 @@ public partial class SettingsViewModel : ObservableObject
                 : snapshot.DefaultGameDirectory;
             ApiBaseUrl = string.IsNullOrWhiteSpace(snapshot.ApiBaseUrl)
                 ? DefaultApiBaseUrl
-                : (snapshot.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
-                    || snapshot.ApiBaseUrl.Equals(LegacyMantleIpBaseUrl, StringComparison.OrdinalIgnoreCase))
+                : snapshot.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
                     ? DefaultApiBaseUrl
                     : snapshot.ApiBaseUrl;
         }

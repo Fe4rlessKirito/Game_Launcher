@@ -159,7 +159,9 @@ public partial class ShellViewModel : ObservableObject
 
     private void UpdateDownloadStatus(IReadOnlyList<PersistedDownloadJob> jobs)
     {
-        var active = jobs.Count(job => job.State is not DownloadJobState.Ready and not DownloadJobState.Cancelled);
+        var active = jobs.Count(job => job.State is not DownloadJobState.Ready
+            and not DownloadJobState.Cancelled
+            and not DownloadJobState.Failed);
         DownloadStatus = active == 0
             ? "Downloads · All games up to date"
             : $"Downloads · {active} active";

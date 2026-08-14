@@ -27,6 +27,10 @@ deployment, not the retired Railway setup.
 - Workstation archive-normalization probe passes ZIP, TAR, 7z, and authorized
   RAR inputs through `launcher-admin ingest`; each reaches `stage=Ready` after
   bounded extraction and cleanup.
+- The Avalonia client was launched against the Mantle staging IP, hydrated the
+  live catalog, installed the authorized Spacewar build through the UI, showed
+  a completed persisted download entry, and ran the UI repair action to a
+  local BLAKE3 integrity success.
 - No remote provider deletion is used for the recovery test. Old HOT links are
   retired from Vaultnode and their provider-side objects are left to natural
   provider expiry.
@@ -72,6 +76,9 @@ This is the recorded baseline for future pack-size/provider tuning.
   small provider probes.
 - The local no-database E2E helper still assumes the legacy logical resolver;
   the Mantle pack-canonical runner is the authoritative remote test.
+- The desktop client uses a ten-minute streaming request timeout for manifest,
+  pack, and restore transfers; catalog refresh still has its own short
+  connectivity timeout.
 - Production HTTPS is still waiting on the public DNS A/AAAA record for
   `vaultnode.pp.ua`; the current Mantle endpoint is intentionally HTTP-only
   staging behind the wildcard Caddy listener.
