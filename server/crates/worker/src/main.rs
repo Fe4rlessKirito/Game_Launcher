@@ -1224,7 +1224,11 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                     policy.required_failure_domains(StorageClass::Archive),
                 );
             }
-            if policy.required_replicas(StorageTier::Cold) > 0 {
+            let cold_capacity_is_ledger_managed = storage
+                .restore_sources(StorageClass::Cold)
+                .iter()
+                .any(|provider| provider.requires_capacity_account());
+            if policy.required_replicas(StorageTier::Cold) > 0 && cold_capacity_is_ledger_managed {
                 let database = database.context(
                     "staging readiness requires DATABASE_URL when cold backups are required",
                 )?;

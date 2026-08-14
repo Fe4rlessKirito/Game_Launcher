@@ -2402,6 +2402,10 @@ impl StorageProvider for MegaColdStoragePool {
         &self.pool.provider_type
     }
 
+    fn requires_capacity_account(&self) -> bool {
+        true
+    }
+
     fn failure_domain(&self) -> &str {
         &self.pool.failure_domain
     }

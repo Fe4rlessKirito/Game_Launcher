@@ -199,6 +199,13 @@ pub trait StorageProvider: Send + Sync {
     fn provider_type(&self) -> &str {
         self.provider_id()
     }
+    /// Returns whether readiness must find a live database-backed capacity
+    /// account for this provider. Server-relay stores such as Telegram do not
+    /// expose a provider capacity ledger and are validated by provider health
+    /// plus the configured storage policy instead.
+    fn requires_capacity_account(&self) -> bool {
+        false
+    }
     fn failure_domain(&self) -> &str {
         self.provider_id()
     }
