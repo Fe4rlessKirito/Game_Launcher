@@ -46,14 +46,15 @@ const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
 
 #[derive(Clone)]
 struct RequestRateLimiter {
-    state: Arc<Mutex<RateWindow>>,
+    state: Arc<Mutex<HashMap<String, RateWindow>>>,
+    limit: u32,
+    duration: Duration,
+    trust_proxy_headers: bool,
 }
 
 struct RateWindow {
     started: Instant,
     requests: u32,
-    limit: u32,
-    duration: Duration,
 }
 
 impl RequestRateLimiter {
@@ -68,33 +69,58 @@ impl RequestRateLimiter {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(DEFAULT_RATE_LIMIT_WINDOW_SECONDS)
             .clamp(1, 3_600);
-        Self::new(limit, Duration::from_secs(duration))
+        Self::with_proxy_headers(
+            limit,
+            Duration::from_secs(duration),
+            env_bool("LAUNCHER_TRUST_PROXY_HEADERS", false),
+        )
     }
 
-    fn new(limit: u32, duration: Duration) -> Self {
+    fn with_proxy_headers(limit: u32, duration: Duration, trust_proxy_headers: bool) -> Self {
         Self {
-            state: Arc::new(Mutex::new(RateWindow {
-                started: Instant::now(),
-                requests: 0,
-                limit: limit.max(1),
-                duration: duration.max(Duration::from_secs(1)),
-            })),
+            state: Arc::new(Mutex::new(HashMap::new())),
+            limit: limit.max(1),
+            duration: duration.max(Duration::from_secs(1)),
+            trust_proxy_headers,
         }
     }
 
-    fn retry_after_seconds(&self) -> Option<u64> {
+    fn client_key(&self, headers: &HeaderMap) -> String {
+        if self.trust_proxy_headers {
+            for name in ["x-forwarded-for", "x-real-ip"] {
+                if let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) {
+                    let client = value.split(',').next().unwrap_or_default().trim();
+                    if !client.is_empty() && client.len() <= 128 {
+                        return format!("proxy:{client}");
+                    }
+                }
+            }
+        }
+        "shared".to_owned()
+    }
+
+    fn retry_after_seconds(&self, client_key: &str) -> Option<u64> {
+        const MAX_TRACKED_CLIENTS: usize = 10_000;
         let mut state = self.state.lock().expect("rate limiter mutex poisoned");
         let now = Instant::now();
-        let elapsed = now.saturating_duration_since(state.started);
-        if elapsed >= state.duration {
-            state.started = now;
-            state.requests = 0;
+        state.retain(|_, window| now.saturating_duration_since(window.started) < self.duration);
+        if state.len() >= MAX_TRACKED_CLIENTS && !state.contains_key(client_key) {
+            return Some(self.duration.as_secs().max(1));
         }
-        if state.requests < state.limit {
-            state.requests += 1;
+        let window = state.entry(client_key.to_owned()).or_insert(RateWindow {
+            started: now,
+            requests: 0,
+        });
+        if window.requests < self.limit {
+            window.requests += 1;
             return None;
         }
-        Some(state.duration.saturating_sub(elapsed).as_secs().max(1))
+        Some(
+            self.duration
+                .saturating_sub(now.saturating_duration_since(window.started))
+                .as_secs()
+                .max(1),
+        )
     }
 }
 
@@ -103,7 +129,8 @@ async fn enforce_rate_limit(
     request: Request,
     next: Next,
 ) -> Response {
-    if let Some(retry_after) = rate_limiter.retry_after_seconds() {
+    let client_key = rate_limiter.client_key(request.headers());
+    if let Some(retry_after) = rate_limiter.retry_after_seconds(&client_key) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(header::RETRY_AFTER, retry_after.to_string())],
@@ -1880,10 +1907,32 @@ mod tests {
 
     #[test]
     fn request_rate_limiter_rejects_after_budget() {
-        let limiter = RequestRateLimiter::new(2, Duration::from_secs(1));
-        assert!(limiter.retry_after_seconds().is_none());
-        assert!(limiter.retry_after_seconds().is_none());
-        assert!(limiter.retry_after_seconds().is_some());
+        let limiter = RequestRateLimiter::with_proxy_headers(2, Duration::from_secs(1), false);
+        assert!(limiter.retry_after_seconds("client-a").is_none());
+        assert!(limiter.retry_after_seconds("client-a").is_none());
+        assert!(limiter.retry_after_seconds("client-a").is_some());
+        assert!(limiter.retry_after_seconds("client-b").is_none());
+    }
+
+    #[test]
+    fn trusted_proxy_rate_limiter_uses_the_first_forwarded_client() {
+        let limiter = RequestRateLimiter::with_proxy_headers(1, Duration::from_secs(1), true);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "198.51.100.24, 10.0.0.2".parse().unwrap(),
+        );
+        assert_eq!(limiter.client_key(&headers), "proxy:198.51.100.24");
+        assert!(
+            limiter
+                .retry_after_seconds(&limiter.client_key(&headers))
+                .is_none()
+        );
+        assert!(
+            limiter
+                .retry_after_seconds(&limiter.client_key(&headers))
+                .is_some()
+        );
     }
 
     #[tokio::test]
