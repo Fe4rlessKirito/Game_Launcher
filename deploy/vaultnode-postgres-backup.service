@@ -1,0 +1,9 @@
+[Unit]
+Description=Vaultnode PostgreSQL backup
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/debian/vaultnode
+ExecStart=/home/debian/vaultnode/deploy/backup-postgres.sh

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Vaultnode PostgreSQL backup
+
+[Timer]
+OnCalendar=*-*-* 03:15:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+Unit=vaultnode-postgres-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -77,12 +77,23 @@ temporary-message deletion. It is not the 512 MiB performance gate.
 
 ## Backups and monitoring
 
-Install a timer or cron entry on the VPS for `deploy/backup-postgres.sh`. It
-creates a custom-format PostgreSQL dump and checksum in the explicit
-`BACKUP_DIR`, retains the configured window, and never logs database contents.
+Install the checked-in `deploy/vaultnode-postgres-backup.service` and
+`deploy/vaultnode-postgres-backup.timer` units on the VPS, or use an equivalent
+managed scheduler, to run `deploy/backup-postgres.sh`. It creates a
+custom-format PostgreSQL dump and checksum in the explicit `BACKUP_DIR`,
+retains the configured window, and never logs database contents.
 Copy dumps off-host before the retention window expires, then restore one into
 a disposable PostgreSQL instance before trusting a release. The Docker volume
 is not an independent backup.
+
+Example installation:
+
+```bash
+sudo install -m 0644 deploy/vaultnode-postgres-backup.service deploy/vaultnode-postgres-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now vaultnode-postgres-backup.timer
+systemctl list-timers vaultnode-postgres-backup.timer
+```
 
 Run `scripts/mantle-healthcheck.sh` from a monitoring job with
 `LAUNCHER_PUBLIC_BASE_URL` and the operator token in its secret environment.
