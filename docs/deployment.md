@@ -63,6 +63,10 @@ concurrency limit by default. Keep both limits enabled in production; adjust
 the deployment has been measured and the values are set in the secret-managed
 environment.
 
+Provider health probes used by storage status and metrics are bounded by
+`LAUNCHER_STORAGE_HEALTH_TIMEOUT_SECONDS` (15 seconds by default, capped at 120
+seconds), so an unavailable HOT provider cannot hang operator monitoring.
+
 The launcher defaults to `https://vaultnode.pp.ua` and migrates the historical
 Mantle IP/local URLs to that HTTPS endpoint. During DNS cutover, set
 `LAUNCHER_API_BASE_URL` or the local settings file to the final HTTPS hostname;

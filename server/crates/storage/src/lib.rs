@@ -55,6 +55,17 @@ const OBJECT_PREFIX: &str = "chunks/encoded/";
 const PACK_PREFIX: &str = "packs/";
 const MIN_MULTIPART_PART_BYTES: usize = 5 * 1024 * 1024;
 const MAX_PRESIGN_SECONDS: u64 = 7 * 24 * 60 * 60;
+const DEFAULT_STORAGE_HEALTH_TIMEOUT_SECONDS: u64 = 15;
+const MAX_STORAGE_HEALTH_TIMEOUT_SECONDS: u64 = 120;
+
+fn storage_health_timeout() -> Duration {
+    let seconds = env::var("LAUNCHER_STORAGE_HEALTH_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_STORAGE_HEALTH_TIMEOUT_SECONDS)
+        .clamp(1, MAX_STORAGE_HEALTH_TIMEOUT_SECONDS);
+    Duration::from_secs(seconds)
+}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -466,11 +477,19 @@ impl StorageRegistry {
 
     pub async fn placement_pools(&self) -> Vec<StoragePoolCandidate> {
         let mut candidates = Vec::with_capacity(self.providers.len());
+        let health_timeout = storage_health_timeout();
         for provider in self.providers.iter() {
             let Some(pool) = self.pool_for_provider(provider.provider_id()) else {
                 continue;
             };
-            let health = provider.health_check().await;
+            let health = tokio::time::timeout(health_timeout, provider.health_check())
+                .await
+                .unwrap_or_else(|_| {
+                    Err(StorageError::NetworkUnavailable(format!(
+                        "storage health check timed out after {} seconds",
+                        health_timeout.as_secs()
+                    )))
+                });
             let direct_hot_ready =
                 pool.storage_class != StorageClass::Hot || provider.capabilities().direct_download;
             let healthy = health.is_ok() && direct_hot_ready;
@@ -573,6 +592,7 @@ impl StorageRegistry {
 
     pub async fn health(&self) -> Vec<StorageProviderHealth> {
         let mut health = Vec::with_capacity(self.providers.len());
+        let health_timeout = storage_health_timeout();
         for provider in self.providers.iter() {
             let pool = self.pool_for_provider(provider.provider_id());
             let storage_class = pool
@@ -593,7 +613,14 @@ impl StorageRegistry {
                         pool.id
                     )))
                 }
-                _ => provider.health_check().await,
+                _ => tokio::time::timeout(health_timeout, provider.health_check())
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(StorageError::NetworkUnavailable(format!(
+                            "storage health check timed out after {} seconds",
+                            health_timeout.as_secs()
+                        )))
+                    }),
             };
             health.push(StorageProviderHealth {
                 provider: provider.provider_id().to_owned(),
