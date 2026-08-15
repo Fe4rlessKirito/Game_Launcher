@@ -56,14 +56,23 @@
                 </Grid>
               </Border>
               <Button.Flyout>
-                <Flyout Placement="BottomEdgeAlignedRight">
-                  <Border Width="220" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="7" Padding="12">
+                <Flyout Placement="BottomEdgeAlignedRight" FlyoutPresenterClasses="ProfileFlyoutPresenter">
+                  <Border Width="232"
+                          Background="{DynamicResource SurfaceElevated}"
+                          BorderBrush="{DynamicResource BorderSubtle}"
+                          BorderThickness="1"
+                          CornerRadius="8"
+                          Padding="14">
                     <StackPanel Spacing="8">
-                      <TextBlock Text="{Binding AccountDisplayName}" Classes="BodyStrong" />
-                      <TextBlock Text="{Binding ConnectionStatus}" Classes="Caption" />
-                      <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="0,2" />
-                      <Button Content="Settings" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Settings" />
-                      <Button Content="Downloads" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Downloads" />
+                      <StackPanel Spacing="2">
+                        <TextBlock Text="{Binding AccountDisplayName}" Classes="BodyStrong" />
+                        <TextBlock Text="{Binding ConnectionStatus}" Classes="Caption" />
+                      </StackPanel>
+                      <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="0,3,0,2" />
+                      <StackPanel Spacing="2">
+                        <Button Content="Settings" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Settings" />
+                        <Button Content="Downloads" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Downloads" />
+                      </StackPanel>
                     </StackPanel>
                   </Border>
                 </Flyout>
