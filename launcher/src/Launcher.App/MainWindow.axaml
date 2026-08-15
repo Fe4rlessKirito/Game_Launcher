@@ -192,8 +192,16 @@
             </StackPanel>
           </Grid>
         </Border>
-        <ScrollViewer Grid.Row="1" Padding="30,26,34,42" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
-          <ContentControl Content="{Binding CurrentPage}" />
+        <ScrollViewer x:Name="PageScrollViewer"
+                      Grid.Row="1"
+                      Padding="30,26,34,42"
+                      HorizontalScrollBarVisibility="Disabled"
+                      VerticalScrollBarVisibility="Auto"
+                      AllowAutoHide="False"
+                      IsScrollChainingEnabled="True">
+          <ContentControl Content="{Binding CurrentPage}"
+                          HorizontalContentAlignment="Stretch"
+                          VerticalContentAlignment="Top" />
         </ScrollViewer>
       </Grid>
     </Grid>
