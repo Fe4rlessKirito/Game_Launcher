@@ -66,7 +66,6 @@
                     <StackPanel Spacing="8">
                       <StackPanel Spacing="2">
                         <TextBlock Text="{Binding AccountDisplayName}" Classes="BodyStrong" />
-                        <TextBlock Text="{Binding ConnectionStatus}" Classes="Caption" />
                       </StackPanel>
                       <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="0,3,0,2" />
                       <StackPanel Spacing="2">

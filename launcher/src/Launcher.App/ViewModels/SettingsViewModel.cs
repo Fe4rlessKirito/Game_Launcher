@@ -32,6 +32,9 @@ public partial class SettingsViewModel : ObservableObject
     private int _concurrentDownloads = 4;
 
     [ObservableProperty]
+    private int _cacheSizeGigabytes = 20;
+
+    [ObservableProperty]
     private string _downloadDirectory = @"C:\Games\Launcher\Downloads";
 
     [ObservableProperty]
@@ -49,8 +52,16 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _saveStatus = "Changes are stored locally.";
 
+    [ObservableProperty]
+    private string _selectedSection = "Profile";
+
     public bool HasProfileImage => ProfileImage is not null;
     public bool ShowDefaultProfile => !HasProfileImage;
+    public bool IsProfileSelected => SelectedSection == "Profile";
+    public bool IsGeneralSelected => SelectedSection == "General";
+    public bool IsDownloadsSelected => SelectedSection == "Downloads";
+    public bool IsAppearanceSelected => SelectedSection == "Appearance";
+    public bool IsAdvancedSelected => SelectedSection == "Advanced";
 
     private IReadOnlyDictionary<string, string>? _trustedManifestKeysPem;
     private bool _requireTrustedManifestKeys;
@@ -83,6 +94,7 @@ public partial class SettingsViewModel : ObservableObject
                 MinimizeOnClose,
                 DownloadDirectory,
                 ConcurrentDownloads,
+                CacheSizeBytes: (long)CacheSizeGigabytes * 1024L * 1024L * 1024L,
                 DefaultGameDirectory: InstallDirectory,
                 ReducedMotion: ReducedMotion,
                 ApiBaseUrl: ApiBaseUrl,
@@ -109,11 +121,25 @@ public partial class SettingsViewModel : ObservableObject
         MinimizeOnClose = true;
         ReducedMotion = false;
         ConcurrentDownloads = 4;
+        CacheSizeGigabytes = 20;
         DownloadDirectory = @"C:\Games\Launcher\Downloads";
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
         ProfileImagePath = string.Empty;
         SaveStatus = "Defaults restored. Save to keep them.";
+    }
+
+    [RelayCommand]
+    private void SelectSection(string? section)
+    {
+        SelectedSection = section switch
+        {
+            "General" => "General",
+            "Downloads" => "Downloads",
+            "Appearance" => "Appearance",
+            "Advanced" => "Advanced",
+            _ => "Profile"
+        };
     }
 
     public void SetProfileImagePath(string? path)
@@ -151,6 +177,10 @@ public partial class SettingsViewModel : ObservableObject
             MinimizeOnClose = snapshot.MinimizeOnClose;
             ReducedMotion = snapshot.ReducedMotion;
             ConcurrentDownloads = Math.Clamp(snapshot.ConcurrentDownloads, 1, 32);
+            CacheSizeGigabytes = (int)Math.Clamp(
+                Math.Round(snapshot.CacheSizeBytes / (double)(1024L * 1024L * 1024L)),
+                1,
+                256);
             DownloadDirectory = string.IsNullOrWhiteSpace(snapshot.DownloadDirectory)
                 ? @"C:\Games\Launcher\Downloads"
                 : snapshot.DownloadDirectory;
@@ -202,6 +232,15 @@ public partial class SettingsViewModel : ObservableObject
         {
             SaveStatus = "That profile picture could not be loaded.";
         }
+    }
+
+    partial void OnSelectedSectionChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsProfileSelected));
+        OnPropertyChanged(nameof(IsGeneralSelected));
+        OnPropertyChanged(nameof(IsDownloadsSelected));
+        OnPropertyChanged(nameof(IsAppearanceSelected));
+        OnPropertyChanged(nameof(IsAdvancedSelected));
     }
 
     partial void OnProfileImageChanged(Bitmap? value)
