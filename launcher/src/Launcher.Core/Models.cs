@@ -124,6 +124,9 @@ public sealed record LauncherSettings(
     string ApiBaseUrl = "https://vaultnode.pp.ua",
     IReadOnlyDictionary<string, string>? TrustedManifestKeysPem = null,
     bool RequireTrustedManifestKeys = false,
-    string ProfileImagePath = "");
+    string ProfileImagePath = "",
+    string ThemePreset = "Slate",
+    string AccentColor = "#1A9FFF",
+    bool CompactMode = false);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

@@ -16,6 +16,11 @@
   <Color x:Key="ArtworkTertiaryColor">#64483D</Color>
   <Color x:Key="DownloadChartColor">#0E141B</Color>
   <Color x:Key="DownloadPanelColor">#2A2F3A</Color>
+  <x:Double x:Key="SidebarWidth">244</x:Double>
+  <Thickness x:Key="NavButtonPadding">12,11</Thickness>
+  <Thickness x:Key="HomeButtonPadding">10,7</Thickness>
+  <Thickness x:Key="GamesHeaderPadding">10,7</Thickness>
+  <Thickness x:Key="SidebarGamePadding">5,4</Thickness>
   <SolidColorBrush x:Key="BackgroundPrimary" Color="{DynamicResource BackgroundPrimaryColor}" />
   <SolidColorBrush x:Key="ChromeBar" Color="{DynamicResource ChromeBarColor}" />
   <SolidColorBrush x:Key="SidebarBackground" Color="{DynamicResource SidebarBackgroundColor}" />

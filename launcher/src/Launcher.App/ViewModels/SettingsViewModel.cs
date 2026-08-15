@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Avalonia;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -35,6 +37,15 @@ public partial class SettingsViewModel : ObservableObject
     private int _cacheSizeGigabytes = 20;
 
     [ObservableProperty]
+    private string _themePreset = "Slate";
+
+    [ObservableProperty]
+    private string _accentColor = "#1A9FFF";
+
+    [ObservableProperty]
+    private bool _compactMode;
+
+    [ObservableProperty]
     private string _downloadDirectory = @"C:\Games\Launcher\Downloads";
 
     [ObservableProperty]
@@ -62,6 +73,7 @@ public partial class SettingsViewModel : ObservableObject
     public bool IsDownloadsSelected => SelectedSection == "Downloads";
     public bool IsAppearanceSelected => SelectedSection == "Appearance";
     public bool IsAdvancedSelected => SelectedSection == "Advanced";
+    public IReadOnlyList<string> ThemeOptions { get; } = ["Slate", "Midnight", "Graphite"];
 
     private IReadOnlyDictionary<string, string>? _trustedManifestKeysPem;
     private bool _requireTrustedManifestKeys;
@@ -100,7 +112,10 @@ public partial class SettingsViewModel : ObservableObject
                 ApiBaseUrl: ApiBaseUrl,
                 TrustedManifestKeysPem: _trustedManifestKeysPem,
                 RequireTrustedManifestKeys: _requireTrustedManifestKeys,
-                ProfileImagePath: ProfileImagePath);
+                ProfileImagePath: ProfileImagePath,
+                ThemePreset: ThemePreset,
+                AccentColor: AccentColor,
+                CompactMode: CompactMode);
             File.WriteAllText(_settingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
             SaveStatus = "Changes saved locally.";
         }
@@ -122,6 +137,9 @@ public partial class SettingsViewModel : ObservableObject
         ReducedMotion = false;
         ConcurrentDownloads = 4;
         CacheSizeGigabytes = 20;
+        ThemePreset = "Slate";
+        AccentColor = "#1A9FFF";
+        CompactMode = false;
         DownloadDirectory = @"C:\Games\Launcher\Downloads";
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
@@ -181,6 +199,11 @@ public partial class SettingsViewModel : ObservableObject
                 Math.Round(snapshot.CacheSizeBytes / (double)(1024L * 1024L * 1024L)),
                 1,
                 256);
+            ThemePreset = ThemeOptions.Contains(snapshot.ThemePreset, StringComparer.OrdinalIgnoreCase)
+                ? ThemeOptions.First(option => option.Equals(snapshot.ThemePreset, StringComparison.OrdinalIgnoreCase))
+                : "Slate";
+            AccentColor = string.IsNullOrWhiteSpace(snapshot.AccentColor) ? "#1A9FFF" : snapshot.AccentColor;
+            CompactMode = snapshot.CompactMode;
             DownloadDirectory = string.IsNullOrWhiteSpace(snapshot.DownloadDirectory)
                 ? @"C:\Games\Launcher\Downloads"
                 : snapshot.DownloadDirectory;
@@ -243,6 +266,12 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(IsAdvancedSelected));
     }
 
+    partial void OnThemePresetChanged(string value) => ApplyAppearance();
+
+    partial void OnAccentColorChanged(string value) => ApplyAppearance();
+
+    partial void OnCompactModeChanged(bool value) => ApplyAppearance();
+
     partial void OnProfileImageChanged(Bitmap? value)
     {
         OnPropertyChanged(nameof(HasProfileImage));
@@ -255,6 +284,85 @@ public partial class SettingsViewModel : ObservableObject
         return normalized.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
             || normalized.Equals(LegacyMantleIpApiBaseUrl, StringComparison.OrdinalIgnoreCase)
             || normalized.Equals("https://5.231.32.191", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ApplyAppearance()
+    {
+        if (Application.Current is not { } application)
+        {
+            return;
+        }
+
+        var palette = ThemePreset switch
+        {
+            "Midnight" => ThemePalette.Midnight,
+            "Graphite" => ThemePalette.Graphite,
+            _ => ThemePalette.Slate
+        };
+        var resources = application.Resources;
+        resources["BackgroundPrimaryColor"] = Color.Parse(palette.Background);
+        resources["ChromeBarColor"] = Color.Parse(palette.ChromeBar);
+        resources["SidebarBackgroundColor"] = Color.Parse(palette.Sidebar);
+        resources["SurfacePrimaryColor"] = Color.Parse(palette.Surface);
+        resources["SurfaceElevatedColor"] = Color.Parse(palette.Elevated);
+        resources["BorderSubtleColor"] = Color.Parse(palette.Border);
+        resources["TextPrimaryColor"] = Color.Parse(palette.TextPrimary);
+        resources["TextSecondaryColor"] = Color.Parse(palette.TextSecondary);
+        resources["TextMutedColor"] = Color.Parse(palette.TextMuted);
+        resources["ArtworkPrimaryColor"] = Color.Parse(palette.ArtworkPrimary);
+        resources["ArtworkSecondaryColor"] = Color.Parse(palette.ArtworkSecondary);
+        resources["ArtworkTertiaryColor"] = Color.Parse(palette.ArtworkTertiary);
+        resources["DownloadChartColor"] = Color.Parse(palette.DownloadChart);
+        resources["DownloadPanelColor"] = Color.Parse(palette.DownloadPanel);
+
+        var accent = ParseColorOrDefault(AccentColor, Color.Parse(palette.Accent));
+        resources["AccentPrimaryColor"] = accent;
+        resources["AccentSoftColor"] = Color.FromArgb(64, accent.R, accent.G, accent.B);
+        resources["SidebarWidth"] = CompactMode ? 220d : 244d;
+        resources["NavButtonPadding"] = CompactMode ? new Thickness(10, 8) : new Thickness(12, 11);
+        resources["HomeButtonPadding"] = CompactMode ? new Thickness(8, 6) : new Thickness(10, 7);
+        resources["GamesHeaderPadding"] = CompactMode ? new Thickness(8, 5) : new Thickness(10, 7);
+        resources["SidebarGamePadding"] = CompactMode ? new Thickness(4, 2) : new Thickness(5, 4);
+    }
+
+    private static Color ParseColorOrDefault(string value, Color fallback)
+    {
+        if (Color.TryParse((value ?? string.Empty).AsSpan(), out var color))
+        {
+            return color;
+        }
+
+        return fallback;
+    }
+
+    private sealed record ThemePalette(
+        string Background,
+        string ChromeBar,
+        string Sidebar,
+        string Surface,
+        string Elevated,
+        string Border,
+        string TextPrimary,
+        string TextSecondary,
+        string TextMuted,
+        string Accent,
+        string ArtworkPrimary,
+        string ArtworkSecondary,
+        string ArtworkTertiary,
+        string DownloadChart,
+        string DownloadPanel)
+    {
+        public static ThemePalette Slate { get; } = new(
+            "#2A2F3A", "#171D25", "#2A2F3A", "#2A2F3A", "#3A4352", "#3D4A5A",
+            "#D6D7D8", "#A4B3C2", "#6D7886", "#1A9FFF", "#1D4D78", "#4B3D5E", "#64483D", "#0E141B", "#2A2F3A");
+
+        public static ThemePalette Midnight { get; } = new(
+            "#171A21", "#101318", "#202631", "#20242D", "#303746", "#384252",
+            "#EEF1F5", "#B7C1CF", "#7C8899", "#5EA7FF", "#214C76", "#4C4267", "#6A4D42", "#0B1017", "#20242D");
+
+        public static ThemePalette Graphite { get; } = new(
+            "#292929", "#1C1C1C", "#303030", "#292929", "#414141", "#4C4C4C",
+            "#F0F0F0", "#C3C3C3", "#8F8F8F", "#D59B55", "#63513E", "#574E66", "#6C4D40", "#111111", "#292929");
     }
 
 }
