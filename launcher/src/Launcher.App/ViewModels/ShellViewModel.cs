@@ -16,12 +16,13 @@ public partial class ShellViewModel : ObservableObject
     private IReadOnlyList<RuntimeGame> _runtimeGames = [];
     private readonly HomeViewModel _homePage = new();
     private readonly LibraryViewModel _libraryPage = new();
+    private readonly StoreViewModel _storePage = new();
     private readonly CollectionsViewModel _collectionsPage;
     private readonly DownloadsViewModel _downloadsPage = new();
     private readonly SettingsViewModel _settingsPage = new();
     private readonly Stack<NavigationTarget> _backStack = new();
     private readonly Stack<NavigationTarget> _forwardStack = new();
-    private NavigationTarget _currentTarget = new("Library", null);
+    private NavigationTarget _currentTarget = new("Library", null, true);
 
     [ObservableProperty] private object _currentPage;
     [ObservableProperty] private string _pageTitle = "Your library";
@@ -42,6 +43,8 @@ public partial class ShellViewModel : ObservableObject
     [ObservableProperty] private string _accountDisplayName = "Guest";
 
     public ObservableCollection<SidebarCategory> SidebarCategories { get; }
+    public SettingsViewModel Settings => _settingsPage;
+    public string AccountInitials => BuildMonogram(AccountDisplayName.TrimStart('@'));
 
     public ObservableCollection<SidebarCategory> VisibleSidebarCategories { get; } = new();
     public SidebarCategory? SelectedCollection { get; private set; }
@@ -137,6 +140,7 @@ public partial class ShellViewModel : ObservableObject
             ? $"@{username}"
             : snapshot.User is not null ? "Account" : "Guest";
         _downloadsPage.ApplyRuntimeJobs(snapshot.DownloadJobs, snapshot.Games);
+        _storePage.ApplyRuntimeGames(snapshot.Games);
         UpdateDownloadStatus(snapshot.DownloadJobs);
         if (snapshot.Games.Count == 0) return;
 
@@ -189,6 +193,8 @@ public partial class ShellViewModel : ObservableObject
     }
 
     partial void OnShowOnlyReadyToPlayChanged(bool value) => OnPropertyChanged(nameof(ReadyToPlayFilterTip));
+
+    partial void OnAccountDisplayNameChanged(string value) => OnPropertyChanged(nameof(AccountInitials));
 
     [RelayCommand]
     private void ClearSearch() => SearchQuery = string.Empty;
@@ -268,7 +274,7 @@ public partial class ShellViewModel : ObservableObject
 
         _backStack.Push(_currentTarget);
         _forwardStack.Clear();
-        ApplyTarget(new NavigationTarget("Details", title));
+        ApplyTarget(new NavigationTarget("Details", title, IsSidebarVisible));
         NotifyNavigationState();
     }
 
@@ -438,8 +444,12 @@ public partial class ShellViewModel : ObservableObject
         {
             ClearCollectionSelection();
         }
-        IsSidebarVisible = string.Equals(target.Key, "Library", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(target.Key, "Collections", StringComparison.OrdinalIgnoreCase);
+        IsSidebarVisible = target.Key switch
+        {
+            "Library" or "Collections" => true,
+            "Details" => target.KeepSidebar,
+            _ => false
+        };
         IsPageHeaderVisible = !string.Equals(target.Key, "Downloads", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(target.Key, "Settings", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(target.Key, "Collections", StringComparison.OrdinalIgnoreCase);
@@ -467,7 +477,7 @@ public partial class ShellViewModel : ObservableObject
                 PageKicker = "SETTINGS / PREFERENCES";
                 break;
             case "Store":
-                CurrentPage = new SectionPageViewModel("Store", "STORE / DISCOVER", "Find verified games and builds for your library.", "The store surface is ready for catalog data.");
+                CurrentPage = _storePage;
                 PageTitle = "Store";
                 PageKicker = "STORE / DISCOVER";
                 break;
@@ -511,8 +521,8 @@ public partial class ShellViewModel : ObservableObject
 
     private static NavigationTarget CreateTarget(string? destination) => destination?.Trim().ToUpperInvariant() switch
     {
-        "HOME" or "LIBRARY" or "GAMES" => new NavigationTarget("Library", null),
-        "COLLECTIONS" => new NavigationTarget("Collections", null),
+        "HOME" or "LIBRARY" or "GAMES" => new NavigationTarget("Library", null, true),
+        "COLLECTIONS" => new NavigationTarget("Collections", null, true),
         "DOWNLOADS" => new NavigationTarget("Downloads", null),
         "SETTINGS" => new NavigationTarget("Settings", null),
         "STORE" => new NavigationTarget("Store", null),
@@ -530,7 +540,7 @@ public partial class ShellViewModel : ObservableObject
         return monogram.Length == 0 ? "G" : monogram;
     }
 
-    private sealed record NavigationTarget(string Key, string? Title);
+    private sealed record NavigationTarget(string Key, string? Title, bool KeepSidebar = false);
 }
 
 public sealed record SidebarGame(

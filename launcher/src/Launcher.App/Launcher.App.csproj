@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <AvaloniaResource Include="Assets\vaultnode-mark.png" />
+    <AvaloniaResource Include="Assets\vaultnode.ico" />
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
@@ -24,4 +25,7 @@
     <ProjectReference Include="..\Launcher.Security\Launcher.Security.csproj" />
     <ProjectReference Include="..\Launcher.Storage\Launcher.Storage.csproj" />
   </ItemGroup>
+  <PropertyGroup>
+    <ApplicationIcon>Assets\vaultnode.ico</ApplicationIcon>
+  </PropertyGroup>
 </Project>

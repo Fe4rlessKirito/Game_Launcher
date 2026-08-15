@@ -123,6 +123,7 @@ public sealed record LauncherSettings(
     bool ReducedMotion = false,
     string ApiBaseUrl = "https://vaultnode.pp.ua",
     IReadOnlyDictionary<string, string>? TrustedManifestKeysPem = null,
-    bool RequireTrustedManifestKeys = false);
+    bool RequireTrustedManifestKeys = false,
+    string ProfileImagePath = "");
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

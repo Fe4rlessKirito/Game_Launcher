@@ -7,6 +7,7 @@
   <Application.DataTemplates>
     <DataTemplate DataType="{x:Type vm:HomeViewModel}"><views:HomeView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:LibraryViewModel}"><views:LibraryView /></DataTemplate>
+    <DataTemplate DataType="{x:Type vm:StoreViewModel}"><views:StoreView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:CollectionsViewModel}"><views:CollectionsView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:GameDetailsViewModel}"><views:GameDetailsView /></DataTemplate>
     <DataTemplate DataType="{x:Type vm:DownloadsViewModel}"><views:DownloadsView /></DataTemplate>

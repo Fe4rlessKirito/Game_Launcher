@@ -10,6 +10,7 @@
         ExtendClientAreaToDecorationsHint="True"
         CanResize="True"
         Background="{DynamicResource BackgroundPrimary}"
+        Icon="avares://Launcher.App/Assets/vaultnode.ico"
         Title="{DynamicResource ProductName}">
   <Grid RowDefinitions="78,*,38">
     <Border x:Name="TitleBar"
@@ -47,13 +48,27 @@
           </StackPanel>
           <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <TextBlock Text="{Binding AccountDisplayName}" Classes="HeaderAccountName" VerticalAlignment="Center" ToolTip.Tip="Signed-in account" />
-            <Button Classes="HeaderAction" Command="{Binding NavigateCommand}" CommandParameter="Downloads">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <Path Width="13" Height="13" Stretch="Uniform" Fill="{DynamicResource TextSecondary}" Data="M5,20 L19,20 L19,18 L5,18 Z M19,9 L15,9 L15,3 L9,3 L9,9 L5,9 L12,16 Z" />
-                <TextBlock Text="DOWNLOADS" />
-              </StackPanel>
+            <Button Classes="ProfileButton" ToolTip.Tip="Profile menu">
+              <Border Width="32" Height="32" CornerRadius="16" Background="{DynamicResource AccentSoft}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" ClipToBounds="True">
+                <Grid>
+                  <Image Source="{Binding Settings.ProfileImage}" IsVisible="{Binding Settings.HasProfileImage}" Stretch="UniformToFill" />
+                  <TextBlock Text="{Binding AccountInitials}" IsVisible="{Binding Settings.ShowDefaultProfile}" Classes="ProfileInitials" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Grid>
+              </Border>
+              <Button.Flyout>
+                <Flyout Placement="BottomEdgeAlignedRight">
+                  <Border Width="220" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="7" Padding="12">
+                    <StackPanel Spacing="8">
+                      <TextBlock Text="{Binding AccountDisplayName}" Classes="BodyStrong" />
+                      <TextBlock Text="{Binding ConnectionStatus}" Classes="Caption" />
+                      <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="0,2" />
+                      <Button Content="Settings" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Settings" />
+                      <Button Content="Downloads" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Downloads" />
+                    </StackPanel>
+                  </Border>
+                </Flyout>
+              </Button.Flyout>
             </Button>
-            <Button Content="&#x2699;" Classes="HeaderSettings" Command="{Binding NavigateCommand}" CommandParameter="Settings" ToolTip.Tip="Settings" />
           </StackPanel>
         </Grid>
       </Grid>

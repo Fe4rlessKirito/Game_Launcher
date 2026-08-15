@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Launcher.Core;
@@ -40,7 +41,16 @@ public partial class SettingsViewModel : ObservableObject
     private string _apiBaseUrl = DefaultApiBaseUrl;
 
     [ObservableProperty]
+    private string _profileImagePath = string.Empty;
+
+    [ObservableProperty]
+    private Bitmap? _profileImage;
+
+    [ObservableProperty]
     private string _saveStatus = "Changes are stored locally.";
+
+    public bool HasProfileImage => ProfileImage is not null;
+    public bool ShowDefaultProfile => !HasProfileImage;
 
     private IReadOnlyDictionary<string, string>? _trustedManifestKeysPem;
     private bool _requireTrustedManifestKeys;
@@ -77,7 +87,8 @@ public partial class SettingsViewModel : ObservableObject
                 ReducedMotion: ReducedMotion,
                 ApiBaseUrl: ApiBaseUrl,
                 TrustedManifestKeysPem: _trustedManifestKeysPem,
-                RequireTrustedManifestKeys: _requireTrustedManifestKeys);
+                RequireTrustedManifestKeys: _requireTrustedManifestKeys,
+                ProfileImagePath: ProfileImagePath);
             File.WriteAllText(_settingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
             SaveStatus = "Changes saved locally.";
         }
@@ -101,7 +112,22 @@ public partial class SettingsViewModel : ObservableObject
         DownloadDirectory = @"C:\Games\Launcher\Downloads";
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
+        ProfileImagePath = string.Empty;
         SaveStatus = "Defaults restored. Save to keep them.";
+    }
+
+    public void SetProfileImagePath(string? path)
+    {
+        ProfileImagePath = path?.Trim() ?? string.Empty;
+        SaveStatus = string.IsNullOrWhiteSpace(ProfileImagePath)
+            ? "Default profile picture selected. Save to keep it."
+            : "Profile picture selected. Save to keep it.";
+    }
+
+    [RelayCommand]
+    private void ClearProfileImage()
+    {
+        SetProfileImagePath(string.Empty);
     }
 
     private void Load()
@@ -136,6 +162,7 @@ public partial class SettingsViewModel : ObservableObject
                 : IsLegacyApiBaseUrl(snapshot.ApiBaseUrl)
                     ? DefaultApiBaseUrl
                     : snapshot.ApiBaseUrl;
+            ProfileImagePath = snapshot.ProfileImagePath ?? string.Empty;
             _trustedManifestKeysPem = snapshot.TrustedManifestKeysPem;
             _requireTrustedManifestKeys = snapshot.RequireTrustedManifestKeys;
 
@@ -152,6 +179,35 @@ public partial class SettingsViewModel : ObservableObject
         {
             SaveStatus = "Using default settings.";
         }
+    }
+
+    partial void OnProfileImagePathChanged(string value)
+    {
+        ProfileImage?.Dispose();
+        ProfileImage = null;
+        if (string.IsNullOrWhiteSpace(value) || !File.Exists(value))
+        {
+            return;
+        }
+
+        try
+        {
+            ProfileImage = new Bitmap(value);
+        }
+        catch (ArgumentException)
+        {
+            SaveStatus = "That profile picture could not be loaded.";
+        }
+        catch (IOException)
+        {
+            SaveStatus = "That profile picture could not be loaded.";
+        }
+    }
+
+    partial void OnProfileImageChanged(Bitmap? value)
+    {
+        OnPropertyChanged(nameof(HasProfileImage));
+        OnPropertyChanged(nameof(ShowDefaultProfile));
     }
 
     private static bool IsLegacyApiBaseUrl(string value)
