@@ -10,5 +10,27 @@
         Referrer-Policy no-referrer
         -Server
     }
-    reverse_proxy api:8080
+    handle /api/* {
+        reverse_proxy api:8080
+    }
+    handle /v1/* {
+        reverse_proxy api:8080
+    }
+    handle /health {
+        reverse_proxy api:8080
+    }
+    handle /metrics {
+        reverse_proxy api:8080
+    }
+    handle /objects/* {
+        reverse_proxy api:8080
+    }
+    handle /packs/* {
+        reverse_proxy api:8080
+    }
+    handle {
+        root * /srv/vaultnode-website
+        try_files {path} {path}/index.html /index.html
+        file_server
+    }
 }

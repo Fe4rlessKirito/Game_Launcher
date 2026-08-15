@@ -109,6 +109,7 @@ services:
   caddy:
     volumes:
       - ./VpsCaddyfile:/etc/caddy/Caddyfile:ro
+      - ../website/dist:/srv/vaultnode-website:ro
 
 volumes:
   telegram-bot-api-data:
