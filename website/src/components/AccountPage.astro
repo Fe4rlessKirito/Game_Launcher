@@ -17,9 +17,6 @@ const registerMode = mode === 'register';
       <h1>{registerMode ? 'Create your account' : 'Vaultnode account'}</h1>
       <p class="account-lead">{registerMode ? 'Create an account to access your library and connect the desktop launcher.' : 'Sign in to manage your library and connect the desktop launcher.'}</p>
     </div>
-    <a class="account-heading-link" href={registerMode ? '/account/' : '/account/register/'}>
-      {registerMode ? 'Already have an account? Sign in' : 'Need an account? Create one'} <span aria-hidden="true">→</span>
-    </a>
   </div>
 
   <div class="account-layout">
@@ -49,7 +46,10 @@ const registerMode = mode === 'register';
           <div class="account-field"><label for="auth-email">Email address</label><input id="auth-email" type="email" autocomplete="email" required /></div>
           <div class="account-field"><label for="auth-password">Password</label><input id="auth-password" type="password" autocomplete={registerMode ? 'new-password' : 'current-password'} minlength="8" required /></div>
         </div>
-        <div class="account-actions"><button id="auth-submit" class="account-submit" type="submit">{registerMode ? 'Create account' : 'Sign in'}</button></div>
+        <div class="account-actions">
+          <button id="auth-submit" class="account-submit" type="submit">{registerMode ? 'Create account' : 'Sign in'}</button>
+          <a class="account-toggle account-action-link" href={registerMode ? '/account/' : '/account/register/'}>{registerMode ? 'Sign in' : 'Register'}</a>
+        </div>
         <p id="auth-message" class="account-message" role="status" aria-live="polite"></p>
       </form>
 
@@ -136,9 +136,6 @@ const registerMode = mode === 'register';
   .account-kicker, .account-card-kicker { margin: 0; color: #7f94ad; font-size: 10px; font-weight: 700; letter-spacing: .18em; }
   .account-heading h1 { margin: 10px 0 0; color: var(--text); font-size: clamp(30px, 4vw, 42px); font-weight: 600; letter-spacing: -.04em; }
   .account-lead { max-width: 520px; margin: 10px 0 0; color: var(--muted); font-size: 15px; line-height: 1.6; }
-  .account-heading-link { padding: 10px 0; color: #a5b8cc; font-size: 13px; white-space: nowrap; }
-  .account-heading-link span { margin-left: 7px; color: var(--accent); }
-  .account-heading-link:hover { color: var(--text); }
   .account-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 470px); gap: clamp(42px, 8vw, 106px); padding-top: 54px; }
   .account-overview { padding-top: 5px; }
   .account-product { display: inline-flex; align-items: center; gap: 10px; color: #cbd8e7; font-size: 13px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
@@ -168,6 +165,7 @@ const registerMode = mode === 'register';
   .account-submit:disabled { cursor: wait; opacity: .65; }
   .account-toggle { border: 1px solid #34465e; background: #182438; color: #cdd9e7; }
   .account-toggle:hover { border-color: #58728f; color: var(--text); }
+  .account-action-link { display: inline-flex; align-items: center; text-decoration: none; }
   .account-message { min-height: 20px; margin: 14px 0 0; color: #91a6bc; font-size: 12px; line-height: 1.5; }
   .account-notice { padding: 15px 17px; border: 1px solid #765d31; border-radius: 8px; background: #241e15; color: #d5b77b; font-size: 13px; line-height: 1.5; }
   .signed-in-card h2 { margin-top: 12px; }
@@ -177,7 +175,6 @@ const registerMode = mode === 'register';
   @media (max-width: 760px) {
     .account-page { padding: 34px 20px 58px; }
     .account-heading { align-items: start; flex-direction: column; gap: 18px; }
-    .account-heading-link { padding: 0; white-space: normal; }
     .account-layout { display: block; padding-top: 38px; }
     .account-overview { margin-bottom: 38px; }
     .account-points div { grid-template-columns: 1fr; gap: 5px; }
