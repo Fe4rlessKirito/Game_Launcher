@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Net.Http.Headers;
 using Launcher.Core;
 using Launcher.Downloads;
 using Launcher.Installation;
@@ -93,7 +94,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
     public event Action<LauncherRuntimeSnapshot>? SnapshotChanged;
     public event Action<DownloadProgress>? ProgressChanged;
 
-    public LauncherRuntime(LauncherSettings settings, string stateRoot, HttpClient? httpClient = null)
+    public LauncherRuntime(LauncherSettings settings, string stateRoot, HttpClient? httpClient = null, string? accessToken = null)
     {
         _settings = settings;
         _paths = LauncherPaths.FromRoot(stateRoot);
@@ -103,6 +104,10 @@ public sealed class LauncherRuntime : IAsyncDisposable
         // the first verified bytes arrive.
         _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         _ownsHttpClient = httpClient is null;
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Trim());
+        }
         _apiClient = new LauncherApiClient(_httpClient, ParseBaseUri(settings.ApiBaseUrl));
         _stateStore = new LocalStateStore(_paths.DatabasePath);
         _chunkCache = new ChunkCache(_paths.CachePath, Math.Max(1, settings.CacheSizeBytes));
@@ -170,7 +175,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
         var apiOverride = Environment.GetEnvironmentVariable("LAUNCHER_API_BASE_URL");
         if (!string.IsNullOrWhiteSpace(apiOverride)) settings = settings with { ApiBaseUrl = apiOverride.Trim() };
-        return new LauncherRuntime(settings, stateRoot);
+        var accessToken = Environment.GetEnvironmentVariable("LAUNCHER_ACCESS_TOKEN");
+        return new LauncherRuntime(settings, stateRoot, accessToken: accessToken);
     }
 
     public async Task<LauncherRuntimeSnapshot> InitializeAsync(CancellationToken cancellationToken = default)

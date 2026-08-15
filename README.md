@@ -76,3 +76,5 @@ npm run build
 - Expensive work is asynchronous and cancellable; UI view models receive coalesced progress updates.
 
 See [docs/architecture.md](docs/architecture.md), [docs/manifest-format.md](docs/manifest-format.md), and [docs/deployment.md](docs/deployment.md) for the detailed contracts and known limitations.
+
+User identity is integrated through Supabase Auth; see [docs/supabase-auth.md](docs/supabase-auth.md) for the environment and launcher handoff contract.

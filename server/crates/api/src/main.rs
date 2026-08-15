@@ -170,6 +170,7 @@ struct AppState {
     cold_stream_client: reqwest::Client,
     operator_token: Option<Arc<String>>,
     operator_auth_required: bool,
+    supabase_auth: Option<SupabaseAuth>,
     public_status: Arc<RwLock<PublicStatusResponse>>,
     public_status_poll_seconds: u64,
 }
@@ -203,7 +204,88 @@ struct ReadinessResponse {
     provisioning_email_configured: bool,
     provisioning_enabled: bool,
     operator_auth_configured: bool,
+    user_auth_configured: bool,
     utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Clone)]
+struct SupabaseAuth {
+    user_endpoint: String,
+    anon_key: Arc<String>,
+    client: reqwest::Client,
+}
+
+#[derive(Debug, Deserialize)]
+struct SupabaseUser {
+    id: String,
+    email: Option<String>,
+}
+
+#[derive(Debug)]
+enum SupabaseAuthError {
+    Unauthorized,
+    Unavailable,
+}
+
+impl SupabaseAuth {
+    fn from_env() -> anyhow::Result<Option<Self>> {
+        let url = env::var("LAUNCHER_SUPABASE_URL")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_owned())
+            .filter(|value| !value.is_empty());
+        let anon_key = env::var("LAUNCHER_SUPABASE_ANON_KEY")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        match (url, anon_key) {
+            (None, None) => Ok(None),
+            (Some(url), Some(anon_key)) => {
+                let parsed = reqwest::Url::parse(&url)
+                    .with_context(|| "LAUNCHER_SUPABASE_URL must be a valid URL")?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    anyhow::bail!("LAUNCHER_SUPABASE_URL must use http or https");
+                }
+                Ok(Some(Self {
+                    user_endpoint: format!("{url}/auth/v1/user"),
+                    anon_key: Arc::new(anon_key),
+                    client: reqwest::Client::builder()
+                        .build()
+                        .context("could not create Supabase auth client")?,
+                }))
+            }
+            _ => anyhow::bail!(
+                "LAUNCHER_SUPABASE_URL and LAUNCHER_SUPABASE_ANON_KEY must be configured together"
+            ),
+        }
+    }
+
+    async fn authenticate(&self, token: &str) -> Result<SupabaseUser, SupabaseAuthError> {
+        let response = self
+            .client
+            .get(&self.user_endpoint)
+            .header("apikey", self.anon_key.as_str())
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_| SupabaseAuthError::Unavailable)?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            return Err(SupabaseAuthError::Unauthorized);
+        }
+        if !response.status().is_success() {
+            return Err(SupabaseAuthError::Unavailable);
+        }
+        response
+            .json::<SupabaseUser>()
+            .await
+            .map_err(|_| SupabaseAuthError::Unavailable)
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct CurrentUserResponse {
+    id: String,
+    email: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -386,6 +468,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("LAUNCHER_OPERATOR_TOKEN must be at least {MIN_OPERATOR_TOKEN_BYTES} bytes");
     }
     let operator_auth_required = env_bool("LAUNCHER_OPERATOR_AUTH_REQUIRED", false);
+    let supabase_auth = SupabaseAuth::from_env()?;
     let max_request_bytes = env::var("LAUNCHER_MAX_REQUEST_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -458,6 +541,7 @@ async fn main() -> anyhow::Result<()> {
         cold_stream_client,
         operator_token,
         operator_auth_required,
+        supabase_auth,
         public_status: public_status_snapshot,
         public_status_poll_seconds,
     };
@@ -467,6 +551,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/health", get(liveness))
         .route("/v1/ready", get(readiness))
         .route("/api/v1/public/status", get(public_status))
+        .route("/api/v1/me", get(current_user))
         .route("/internal/v1/email-events", post(email_events))
         .route("/metrics", get(storage_metrics))
         .route("/api/v1/storage/status", get(storage_status))
@@ -737,8 +822,49 @@ async fn readiness(
         provisioning_email_configured,
         provisioning_enabled: state.provisioning_enabled,
         operator_auth_configured,
+        user_auth_configured: state.supabase_auth.is_some(),
         utc: Utc::now(),
     }))
+}
+
+async fn current_user(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<CurrentUserResponse>, ApiResponseError> {
+    let Some(auth) = &state.supabase_auth else {
+        return Err(ApiResponseError::temporary(
+            "user_auth_unconfigured",
+            "user authentication is not configured",
+            60,
+        ));
+    };
+    let Some(token) = bearer_token(&headers) else {
+        return Err(ApiResponseError::auth_required());
+    };
+    let user = match auth.authenticate(token).await {
+        Ok(user) => user,
+        Err(SupabaseAuthError::Unauthorized) => return Err(ApiResponseError::auth_required()),
+        Err(SupabaseAuthError::Unavailable) => {
+            return Err(ApiResponseError::temporary(
+                "user_auth_unavailable",
+                "user authentication service is unavailable",
+                15,
+            ));
+        }
+    };
+    Ok(Json(CurrentUserResponse {
+        id: user.id,
+        email: user.email,
+    }))
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 8192)
 }
 
 async fn storage_status(
@@ -2105,6 +2231,15 @@ impl ApiResponseError {
             retry_after_seconds: None,
         }
     }
+
+    fn auth_required() -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "user_auth_required",
+            message: "user authentication required".to_owned(),
+            retry_after_seconds: None,
+        }
+    }
 }
 
 fn map_provisioning_error(error: ProvisioningError, fallback: &str) -> ApiResponseError {
@@ -2287,6 +2422,7 @@ mod tests {
             cold_stream_client: reqwest::Client::new(),
             operator_token: None,
             operator_auth_required: false,
+            supabase_auth: None,
             public_status: Arc::new(RwLock::new(initial_public_status(true, 30))),
             public_status_poll_seconds: 30,
         };
