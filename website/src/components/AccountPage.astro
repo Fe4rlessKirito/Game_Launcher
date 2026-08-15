@@ -59,6 +59,17 @@ const registerMode = mode === 'register';
         <h2>Welcome back</h2>
         <p class="signed-in-username" id="account-username"></p>
         <p class="signed-in-email" id="account-email"></p>
+        <form id="profile-form" class="account-profile-form" novalidate>
+          <div class="account-field">
+            <label for="profile-username">Username</label>
+            <div class="account-profile-row">
+              <input id="profile-username" type="text" autocomplete="username" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]+" placeholder="e.g. marko" required />
+              <button id="profile-save" class="account-toggle" type="submit">Save</button>
+            </div>
+            <small>3–24 letters, numbers, or underscores.</small>
+          </div>
+          <p id="profile-message" class="account-message" role="status" aria-live="polite"></p>
+        </form>
         <p id="launcher-session" class="account-card-description">Checking launcher access…</p>
         <button id="auth-signout" class="account-toggle" type="button">Sign out</button>
       </div>
@@ -85,6 +96,10 @@ const registerMode = mode === 'register';
   const authSubmit = document.querySelector<HTMLButtonElement>('#auth-submit');
   const accountUsername = document.querySelector<HTMLElement>('#account-username');
   const accountEmail = document.querySelector<HTMLElement>('#account-email');
+  const profileForm = document.querySelector<HTMLFormElement>('#profile-form');
+  const profileUsernameInput = document.querySelector<HTMLInputElement>('#profile-username');
+  const profileSave = document.querySelector<HTMLButtonElement>('#profile-save');
+  const profileMessage = document.querySelector<HTMLElement>('#profile-message');
   const launcherSession = document.querySelector<HTMLElement>('#launcher-session');
   const signOut = document.querySelector<HTMLButtonElement>('#auth-signout');
   const message = (value: string) => { if (authMessage) authMessage.textContent = value; };
@@ -107,7 +122,9 @@ const registerMode = mode === 'register';
     if (session) {
       if (authForm) authForm.hidden = true;
       if (authPanel) authPanel.hidden = false;
-      if (accountUsername) accountUsername.textContent = session.user.user_metadata?.username ? `@${session.user.user_metadata.username}` : 'Username not set';
+      const username = session.user.user_metadata?.username ?? '';
+      if (accountUsername) accountUsername.textContent = username ? `@${username}` : 'Username not set';
+      if (profileUsernameInput) profileUsernameInput.value = username;
       if (accountEmail) accountEmail.textContent = session.user.email ?? session.user.id;
       await checkLauncherAccess(session.access_token);
     } else {
@@ -130,6 +147,19 @@ const registerMode = mode === 'register';
     if (authSubmit) authSubmit.disabled = false;
     if (result.error) { message(result.error.message); return; }
     message(registerMode ? 'Check your email to confirm the account.' : 'Signed in.');
+    await renderSession();
+  });
+  profileForm?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!supabase || !profileUsernameInput) return;
+    const username = profileUsernameInput.value.trim();
+    if (!/^[A-Za-z0-9_]{3,24}$/.test(username)) { if (profileMessage) profileMessage.textContent = 'Choose a username with 3–24 letters, numbers, or underscores.'; return; }
+    if (profileSave) profileSave.disabled = true;
+    if (profileMessage) profileMessage.textContent = 'Saving username…';
+    const result = await supabase.auth.updateUser({ data: { username } });
+    if (profileSave) profileSave.disabled = false;
+    if (result.error) { if (profileMessage) profileMessage.textContent = result.error.message; return; }
+    if (profileMessage) profileMessage.textContent = 'Username saved.';
     await renderSession();
   });
   signOut?.addEventListener('click', async () => { await supabase?.auth.signOut(); message('Signed out.'); await renderSession(); });
@@ -179,6 +209,10 @@ const registerMode = mode === 'register';
   .signed-in-card h2 { margin-top: 12px; }
   .signed-in-username { margin: 18px 0 0; color: var(--text); font-size: 15px; font-weight: 600; }
   .signed-in-email { margin: 18px 0 0; color: #dce7f3; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+  .account-profile-form { margin-top: 24px; }
+  .account-profile-row { display: flex; align-items: center; gap: 8px; }
+  .account-profile-row input { flex: 1; min-width: 0; }
+  .account-profile-row .account-toggle { margin-top: 0; }
   .signed-in-card .account-toggle { margin-top: 24px; }
   .account-footnote { margin: 15px 2px 0; color: #6f8399; font-size: 11px; line-height: 1.5; }
   @media (max-width: 760px) {
