@@ -1,0 +1,8 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import AccountPage from '../../components/AccountPage.astro';
+---
+
+<BaseLayout title="Create account — Vaultnode" description="Create your Vaultnode account.">
+  <AccountPage mode="register" supabaseUrl={import.meta.env.PUBLIC_SUPABASE_URL ?? ''} supabaseAnonKey={import.meta.env.PUBLIC_SUPABASE_ANON_KEY ?? ''} launcherApiUrl={import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vaultnode.pp.ua'} />
+</BaseLayout>
