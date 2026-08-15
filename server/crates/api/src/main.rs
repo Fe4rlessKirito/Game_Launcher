@@ -169,6 +169,8 @@ struct AppState {
     cold_stream_client: reqwest::Client,
     operator_token: Option<Arc<String>>,
     operator_auth_required: bool,
+    public_status: Arc<RwLock<PublicStatusResponse>>,
+    public_status_poll_seconds: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,7 +205,7 @@ struct ReadinessResponse {
     utc: chrono::DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct PublicStatusResponse {
     status: &'static str,
     database_ready: bool,
@@ -212,17 +214,22 @@ struct PublicStatusResponse {
     usage: Vec<PublicProviderUsageResponse>,
     total_used_bytes: u64,
     pending_restores: usize,
+    last_probe_at: Option<chrono::DateTime<Utc>>,
+    last_successful_probe_at: Option<chrono::DateTime<Utc>>,
+    probe_duration_ms: Option<u64>,
+    probe_interval_seconds: u64,
+    stale: bool,
     utc: chrono::DateTime<Utc>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct PublicProviderStatusResponse {
     provider: String,
     tier: StorageTier,
     healthy: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct PublicProviderUsageResponse {
     provider: String,
     tier: StorageTier,
@@ -396,6 +403,15 @@ async fn main() -> anyhow::Result<()> {
         .map(str::to_owned);
     let mirrors = MirrorSet::new(mirror_urls);
     let (games, manifests, manifest_bytes, signatures) = load_development_catalog();
+    let public_status_poll_seconds = env::var("LAUNCHER_PUBLIC_STATUS_POLL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(10, 300);
+    let public_status_snapshot = Arc::new(RwLock::new(initial_public_status(
+        !storage.providers().is_empty(),
+        public_status_poll_seconds,
+    )));
     let state = AppState {
         database,
         database_required,
@@ -419,7 +435,10 @@ async fn main() -> anyhow::Result<()> {
         cold_stream_client,
         operator_token,
         operator_auth_required,
+        public_status: public_status_snapshot,
+        public_status_poll_seconds,
     };
+    tokio::spawn(run_public_status_monitor(state.clone()));
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/health", get(liveness))
@@ -750,9 +769,43 @@ async fn storage_status(
     }))
 }
 
-async fn public_status(
-    State(state): State<AppState>,
-) -> Result<Json<PublicStatusResponse>, ApiResponseError> {
+fn initial_public_status(storage_configured: bool, poll_seconds: u64) -> PublicStatusResponse {
+    PublicStatusResponse {
+        status: "starting",
+        database_ready: false,
+        storage_configured,
+        providers: Vec::new(),
+        usage: Vec::new(),
+        total_used_bytes: 0,
+        pending_restores: 0,
+        last_probe_at: None,
+        last_successful_probe_at: None,
+        probe_duration_ms: None,
+        probe_interval_seconds: poll_seconds,
+        stale: true,
+        utc: Utc::now(),
+    }
+}
+
+async fn public_status(State(state): State<AppState>) -> Json<PublicStatusResponse> {
+    Json(state.public_status.read().await.clone())
+}
+
+async fn run_public_status_monitor(state: AppState) {
+    info!(
+        poll_seconds = state.public_status_poll_seconds,
+        "public telemetry monitor started"
+    );
+    loop {
+        refresh_public_status(&state).await;
+        tokio::time::sleep(Duration::from_secs(state.public_status_poll_seconds)).await;
+    }
+}
+
+async fn refresh_public_status(state: &AppState) {
+    let started = Instant::now();
+    let probe_at = Utc::now();
+    let previous = state.public_status.read().await.clone();
     let providers = state
         .storage
         .health()
@@ -764,62 +817,94 @@ async fn public_status(
             healthy: provider.healthy,
         })
         .collect::<Vec<_>>();
-    let accounts = if let Some(database) = &state.database {
-        database
-            .list_storage_accounts(None)
-            .await
-            .map_err(ApiResponseError::from)?
-    } else {
-        Vec::new()
-    };
-    let mut usage_by_provider = HashMap::<String, PublicProviderUsageResponse>::new();
-    for account in accounts {
-        let snapshot = account.snapshot;
-        let entry = usage_by_provider
-            .entry(snapshot.provider_id.clone())
-            .or_insert_with(|| PublicProviderUsageResponse {
-                provider: snapshot.provider_id.clone(),
-                tier: snapshot.tier,
-                used_bytes: 0,
-                last_capacity_check: None,
-            });
-        entry.used_bytes = entry.used_bytes.saturating_add(snapshot.used_bytes);
-        if snapshot.last_capacity_check > entry.last_capacity_check {
-            entry.last_capacity_check = snapshot.last_capacity_check;
+    let mut stale = false;
+    let mut database_ready = if state.database_required { false } else { true };
+    let mut usage = previous.usage;
+    let mut total_used_bytes = previous.total_used_bytes;
+    let mut pending_restores = previous.pending_restores;
+
+    if let Some(database) = &state.database {
+        database_ready = match database.ping().await {
+            Ok(()) => true,
+            Err(error) => {
+                stale = true;
+                warn!(%error, "public telemetry database probe failed");
+                false
+            }
+        };
+        if database_ready {
+            match database.list_storage_accounts(None).await {
+                Ok(accounts) => {
+                    let mut usage_by_provider =
+                        HashMap::<String, PublicProviderUsageResponse>::new();
+                    for account in accounts {
+                        let snapshot = account.snapshot;
+                        let entry = usage_by_provider
+                            .entry(snapshot.provider_id.clone())
+                            .or_insert_with(|| PublicProviderUsageResponse {
+                                provider: snapshot.provider_id.clone(),
+                                tier: snapshot.tier,
+                                used_bytes: 0,
+                                last_capacity_check: None,
+                            });
+                        entry.used_bytes = entry.used_bytes.saturating_add(snapshot.used_bytes);
+                        if snapshot.last_capacity_check > entry.last_capacity_check {
+                            entry.last_capacity_check = snapshot.last_capacity_check;
+                        }
+                    }
+                    usage = usage_by_provider.into_values().collect();
+                    usage.sort_by(|left, right| left.provider.cmp(&right.provider));
+                    total_used_bytes = usage.iter().map(|provider| provider.used_bytes).sum();
+                }
+                Err(error) => {
+                    stale = true;
+                    warn!(%error, "public telemetry storage usage probe failed");
+                }
+            }
+            match database
+                .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
+                .await
+            {
+                Ok(jobs) => pending_restores = jobs.len(),
+                Err(error) => {
+                    stale = true;
+                    warn!(%error, "public telemetry restore queue probe failed");
+                }
+            }
         }
     }
-    let mut usage = usage_by_provider.into_values().collect::<Vec<_>>();
-    usage.sort_by(|left, right| left.provider.cmp(&right.provider));
-    let total_used_bytes = usage.iter().map(|provider| provider.used_bytes).sum();
-    let pending_restores = if let Some(database) = &state.database {
-        database
-            .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
-            .await
-            .map_err(ApiResponseError::from)?
-            .len()
-    } else {
-        0
-    };
-    let database_ready = if let Some(database) = &state.database {
-        database.ping().await.is_ok()
-    } else {
-        !state.database_required
-    };
+
     let storage_configured = !providers.is_empty();
-    Ok(Json(PublicStatusResponse {
-        status: if database_ready && storage_configured {
-            "operational"
-        } else {
-            "degraded"
-        },
+    let status = if database_ready
+        && storage_configured
+        && !stale
+        && providers.iter().all(|provider| provider.healthy)
+    {
+        "operational"
+    } else {
+        "degraded"
+    };
+    let last_successful_probe_at = if stale {
+        previous.last_successful_probe_at
+    } else {
+        Some(probe_at)
+    };
+    let snapshot = PublicStatusResponse {
+        status,
         database_ready,
         storage_configured,
         providers,
         usage,
         total_used_bytes,
         pending_restores,
+        last_probe_at: Some(probe_at),
+        last_successful_probe_at,
+        probe_duration_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
+        probe_interval_seconds: state.public_status_poll_seconds,
+        stale,
         utc: Utc::now(),
-    }))
+    };
+    *state.public_status.write().await = snapshot;
 }
 
 async fn storage_providers(
@@ -2097,6 +2182,8 @@ mod tests {
             cold_stream_client: reqwest::Client::new(),
             operator_token: None,
             operator_auth_required: false,
+            public_status: Arc::new(RwLock::new(initial_public_status(true, 30))),
+            public_status_poll_seconds: 30,
         };
         let resolved = resolve_chunks(
             State(state),

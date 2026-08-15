@@ -38,7 +38,7 @@ const navigation: Array<{ key: PageKey; label: string; glyph: string; href: stri
   <script>
     type ProviderHealth = { provider: string; healthy: boolean; tier: string };
     type ProviderUsage = { provider: string; tier: string; used_bytes: number; last_capacity_check?: string };
-    type PublicStatus = { status: string; database_ready: boolean; storage_configured: boolean; providers: ProviderHealth[]; usage: ProviderUsage[]; total_used_bytes: number; pending_restores: number };
+    type PublicStatus = { status: string; database_ready: boolean; storage_configured: boolean; providers: ProviderHealth[]; usage: ProviderUsage[]; total_used_bytes: number; pending_restores: number; last_probe_at?: string; last_successful_probe_at?: string; probe_duration_ms?: number; probe_interval_seconds: number; stale: boolean };
 
     const root = document.querySelector<HTMLElement>('.ops-shell');
     const apiBase = root?.dataset.apiBase || 'https://vaultnode.pp.ua';
@@ -46,15 +46,12 @@ const navigation: Array<{ key: PageKey; label: string; glyph: string; href: stri
     const formatBytes = (value: number) => { if (!Number.isFinite(value) || value <= 0) return '0 B'; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(2)} GB`; return `${(value / 1024 ** 4).toFixed(2)} TB`; };
 
     async function refreshTelemetry() {
-      const started = Date.now();
       try {
-        const ready = await fetch(`${apiBase.replace(/\/$/, '')}/v1/ready`, { cache: 'no-store' });
-        const latency = Date.now() - started;
-        text('#latency-value', `${latency}ms`); text('#last-probe', 'just now'); text('#latency-state', ready.ok ? 'Healthy response' : 'Degraded response');
-        if (!ready.ok) throw new Error(`Readiness returned ${ready.status}`);
         const publicResponse = await fetch(`${apiBase.replace(/\/$/, '')}/api/v1/public/status`, { cache: 'no-store' });
         if (!publicResponse.ok) throw new Error(`Public status returned ${publicResponse.status}`);
         const publicStatus = await publicResponse.json() as PublicStatus;
+        const observed = publicStatus.last_probe_at ? new Date(publicStatus.last_probe_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'starting';
+        text('#latency-value', publicStatus.probe_duration_ms == null ? '—' : `${publicStatus.probe_duration_ms}ms`); text('#last-probe', observed); text('#latency-state', publicStatus.stale ? 'Stale snapshot' : 'Server probe');
         const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const healthyProviders = publicStatus.providers.filter((provider) => provider.healthy).length;
         const pending = publicStatus.pending_restores || 0;
