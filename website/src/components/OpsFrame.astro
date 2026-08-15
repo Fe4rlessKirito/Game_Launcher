@@ -28,7 +28,7 @@ const navigation: Array<{ key: PageKey; label: string; glyph: string; href: stri
     </aside>
 
     <section class="ops-content">
-      <header class="ops-topbar"><div><span class="eyebrow">SERVER OPERATIONS</span><h1>{title}</h1></div><div class="topbar-actions"><span class="live-pill"><span class="pulse-dot"></span><span id="live-label">Public status</span></span><button class="icon-button" id="refresh-button" type="button" aria-label="Refresh status">↻</button></div></header>
+      <header class="ops-topbar"><div><span class="eyebrow">SERVER OPERATIONS</span></div><div class="topbar-actions"><span class="live-pill"><span class="pulse-dot"></span><span id="live-label">Public status</span></span><button class="icon-button" id="refresh-button" type="button" aria-label="Refresh status">↻</button></div></header>
       <div class="operator-banner public-banner"><div class="banner-icon">●</div><div><strong>Public status feed</strong><p>Live health, provider availability, stored pack usage, and restore activity. Administrative actions and credentials remain private.</p></div><span class="public-banner-note">Updates every 15 seconds</span></div>
       <slot />
       <footer class="ops-footer"><span>Vaultnode control plane · Mantle / production</span><span id="footer-sync">Telemetry is not connected</span></footer>
