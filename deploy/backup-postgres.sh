@@ -17,6 +17,18 @@ chmod 600 -- "${output}"
 sha256sum -- "${output}" > "${output}.sha256"
 chmod 600 -- "${output}.sha256"
 
+# Validate both the checksum and the custom-dump directory before a backup is
+# eligible for replication. The PostgreSQL image owns pg_restore, so this
+# does not depend on host packages and does not mutate the live database.
+sha256sum --check --status -- "${output}.sha256"
+[[ -s "${output}" ]] || {
+  echo 'postgres backup is empty' >&2
+  exit 1
+}
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml \
+  exec -T postgres sh -ceu 'pg_restore --list >/dev/null' < "${output}"
+printf 'backup_verify=PASS format=custom checksum=PASS\n'
+
 # Optional off-host replication is explicit and fail-closed when required.
 # Strict host-key checking is intentional: configure the host key in the
 # invoking user's known_hosts before enabling this path.
@@ -44,6 +56,10 @@ if [[ -n "${replication_host}" || -n "${replication_dir}" || -n "${replication_k
   ssh "${ssh_options[@]}" "${replication_remote}" "install -d -m 700 -- '${replication_dir}'"
   scp "${ssh_options[@]}" "${output}" "${output}.sha256" \
     "${replication_remote}:${replication_dir}/"
+  remote_dump="$(basename -- "${output}")"
+  remote_checksum="$(basename -- "${output}.sha256")"
+  ssh "${ssh_options[@]}" "${replication_remote}" \
+    "cd -- '${replication_dir}' && sha256sum --check --status -- '${remote_checksum}' && test -s -- '${remote_dump}'"
   printf 'backup_replication=PASS host=%s directory=%s\n' \
     "${replication_host}" "${replication_dir}"
 elif [[ "${replication_required}" == 'true' ]]; then

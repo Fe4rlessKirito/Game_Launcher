@@ -6,7 +6,7 @@ before running `deploy/backup-postgres.sh`. This is required for
 with missing replication values still produces only a local backup unless
 `BACKUP_REPLICATION_REQUIRED=true`, in which case the job fails closed.
 
-`deploy/compose.yaml` starts PostgreSQL, the API, and Caddy. Copy `deploy/env.example` into the staging secret-management workflow; do not commit a populated environment file. Run migrations explicitly before starting production traffic. PostgreSQL backups should use `pg_dump --format=custom` and be restored into a disposable database before a release is trusted. `deploy/backup-postgres.sh` can also replicate each dump and its checksum to an explicitly configured SSH host using `BACKUP_REPLICATION_*`. The replication path uses batch mode and strict host-key checking; set `BACKUP_REPLICATION_REQUIRED=true` to fail the backup job closed when the off-host destination is not configured.
+`deploy/compose.yaml` starts PostgreSQL, the API, and Caddy. Copy `deploy/env.example` into the staging secret-management workflow; do not commit a populated environment file. Run migrations explicitly before starting production traffic. PostgreSQL backups use `pg_dump --format=custom`. `deploy/backup-postgres.sh` verifies the local checksum and asks the PostgreSQL image's `pg_restore` to validate the custom-dump directory before reporting success or replicating the file. It can also replicate each verified dump and checksum to an explicitly configured SSH host using `BACKUP_REPLICATION_*`; the remote copy is checksum-checked before the job succeeds. The replication path uses batch mode and strict host-key checking; set `BACKUP_REPLICATION_REQUIRED=true` to fail the backup job closed when the off-host destination is not configured.
 
 ## Environments
 

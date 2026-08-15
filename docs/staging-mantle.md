@@ -94,7 +94,10 @@ Install the checked-in `deploy/vaultnode-postgres-backup.service` and
 `deploy/vaultnode-postgres-backup.timer` units on the VPS, or use an equivalent
 managed scheduler, to run `deploy/backup-postgres.sh`. It creates a
 custom-format PostgreSQL dump and checksum in the explicit `BACKUP_DIR`,
-retains the configured window, and never logs database contents. The current
+verifies the checksum and custom-dump structure before success, retains the
+configured window, and never logs database contents. If off-host replication
+is configured, the destination checksum is verified before the job succeeds.
+The current
 no-user staging deployment keeps these backups on the VPS with
 `BACKUP_REPLICATION_REQUIRED=false`; this protects against application and
 database mistakes but is not an off-host disaster-recovery copy.
