@@ -33,7 +33,7 @@ This phase adds the missing integrity and recovery boundaries rather than hiding
 
 The infrastructure follow-up now includes the S3-compatible provider, multipart/retry/hash verification, multi-location resolution, provider health, and operator publication wiring. Live S3 credentials, DNS/TLS, VPS deployment, and public traffic remain deliberately out of scope for this repository-only run. The S3 suite uses an in-process S3-compatible HTTP fixture; it does not prove behavior of a particular cloud vendor. A PostgreSQL test is only counted as passing when a real disposable PostgreSQL process/container is available; otherwise the report records the environmental blocker.
 
-## Current validation status (2026-08-14)
+## Current validation status (2026-08-15)
 
 The table above is the historical baseline from `da2aeea`; it is not a description of the current tree. The follow-up validation now has the following evidence:
 
@@ -42,7 +42,7 @@ The table above is the historical baseline from `da2aeea`; it is not a descripti
 - On 2026-08-14, `scripts/validate-archive-normalization.ps1` passed ZIP, TAR, 7z, and an authorized RAR fixture through `launcher-admin ingest`; every format reached `stage=Ready`.
 - PostgreSQL-backed publication, physical-pack resolution, FileMirage HOT placement, Telegram COLD placement, COLD-to-HOT pack streaming, repair, and restart checks have been exercised against Mantle staging. The verified real fixture was the authorized Steam Spacewar installation; no unauthorized game content is included in the repository.
 - The Avalonia runtime now hydrates the catalog from the API, derives install/update state from persisted local state, and wires library/search/sidebar, download jobs, pause/resume, install/update/repair/uninstall/play, and settings navigation through the runtime. The client now follows all catalog pages. Remaining UI work is interactive visual QA and release packaging, not the original service-graph wiring.
-- On 2026-08-14, interactive Windows validation against Mantle staging confirmed settings endpoint persistence, live catalog hydration, UI install, persisted completed-download history, and UI repair/integrity success for the authorized Spacewar fixture. The client timeout was raised from 8 seconds to 10 minutes for streaming transfers after the first real UI attempt exposed the shorter limit.
+- On 2026-08-14, interactive Windows validation against Mantle staging confirmed settings endpoint persistence, live catalog hydration, UI install, persisted completed-download history, and UI repair/integrity success for the authorized Spacewar fixture. On 2026-08-15, the rebuilt client hydrated the same catalog over `https://vaultnode.pp.ua`, displayed the persisted download history, and migrated the historical Mantle-IP settings file to the HTTPS hostname. The client timeout was raised from 8 seconds to 10 minutes for streaming transfers after the first real UI attempt exposed the shorter limit.
 - The API request limiter now keeps bounded per-client windows when Mantle's trusted Caddy proxy headers are enabled, while direct/untrusted access uses a shared fallback bucket. Tests cover budget exhaustion and forwarded-client isolation.
 - GitHub CI is green for website, .NET, Rust, analyzer, and E2E jobs. Mantle
   `/v1/health`, `/v1/ready`, authenticated metrics, HTTPS certificate/redirect,

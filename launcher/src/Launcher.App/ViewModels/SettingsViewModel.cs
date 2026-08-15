@@ -9,12 +9,14 @@ public partial class SettingsViewModel : ObservableObject
 {
     private const string DefaultApiBaseUrl = "https://vaultnode.pp.ua";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
+    private const string LegacyMantleIpApiBaseUrl = "http://5.231.32.191";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly JsonSerializerOptions ReadOptions = new(JsonSerializerDefaults.Web);
-    private static readonly string SettingsPath = Path.Combine(
+    private static readonly string DefaultSettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Vaultnode",
         "settings.json");
+    private readonly string _settingsPath;
 
     [ObservableProperty]
     private bool _launchOnStartup;
@@ -43,8 +45,9 @@ public partial class SettingsViewModel : ObservableObject
     private IReadOnlyDictionary<string, string>? _trustedManifestKeysPem;
     private bool _requireTrustedManifestKeys;
 
-    public SettingsViewModel()
+    public SettingsViewModel(string? settingsPath = null)
     {
+        _settingsPath = string.IsNullOrWhiteSpace(settingsPath) ? DefaultSettingsPath : settingsPath;
         Load();
     }
 
@@ -64,7 +67,7 @@ public partial class SettingsViewModel : ObservableObject
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!);
             var snapshot = new LauncherSettings(
                 LaunchOnStartup,
                 MinimizeOnClose,
@@ -75,7 +78,7 @@ public partial class SettingsViewModel : ObservableObject
                 ApiBaseUrl: ApiBaseUrl,
                 TrustedManifestKeysPem: _trustedManifestKeysPem,
                 RequireTrustedManifestKeys: _requireTrustedManifestKeys);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
+            File.WriteAllText(_settingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
             SaveStatus = "Changes saved locally.";
         }
         catch (IOException)
@@ -105,17 +108,19 @@ public partial class SettingsViewModel : ObservableObject
     {
         try
         {
-            if (!File.Exists(SettingsPath))
+            if (!File.Exists(_settingsPath))
             {
                 return;
             }
 
-            var snapshot = JsonSerializer.Deserialize<LauncherSettings>(File.ReadAllText(SettingsPath), ReadOptions);
+            var snapshot = JsonSerializer.Deserialize<LauncherSettings>(File.ReadAllText(_settingsPath), ReadOptions);
             if (snapshot is null)
             {
                 return;
             }
 
+            var migratedApiEndpoint = !string.IsNullOrWhiteSpace(snapshot.ApiBaseUrl)
+                && IsLegacyApiBaseUrl(snapshot.ApiBaseUrl);
             LaunchOnStartup = snapshot.LaunchOnStartup;
             MinimizeOnClose = snapshot.MinimizeOnClose;
             ReducedMotion = snapshot.ReducedMotion;
@@ -128,11 +133,16 @@ public partial class SettingsViewModel : ObservableObject
                 : snapshot.DefaultGameDirectory;
             ApiBaseUrl = string.IsNullOrWhiteSpace(snapshot.ApiBaseUrl)
                 ? DefaultApiBaseUrl
-                : snapshot.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
+                : IsLegacyApiBaseUrl(snapshot.ApiBaseUrl)
                     ? DefaultApiBaseUrl
                     : snapshot.ApiBaseUrl;
             _trustedManifestKeysPem = snapshot.TrustedManifestKeysPem;
             _requireTrustedManifestKeys = snapshot.RequireTrustedManifestKeys;
+
+            if (migratedApiEndpoint)
+            {
+                Save();
+            }
         }
         catch (JsonException)
         {
@@ -142,6 +152,14 @@ public partial class SettingsViewModel : ObservableObject
         {
             SaveStatus = "Using default settings.";
         }
+    }
+
+    private static bool IsLegacyApiBaseUrl(string value)
+    {
+        var normalized = value.Trim().TrimEnd('/');
+        return normalized.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals(LegacyMantleIpApiBaseUrl, StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("https://5.231.32.191", StringComparison.OrdinalIgnoreCase);
     }
 
 }

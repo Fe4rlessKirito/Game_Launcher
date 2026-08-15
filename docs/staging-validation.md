@@ -1,6 +1,6 @@
 # Live Mantle staging validation
 
-Validation date: 2026-08-14. This checklist records the current Mantle
+Validation date: 2026-08-15. This checklist records the current Mantle
 deployment, not the retired Railway setup.
 
 ## PASS
@@ -36,10 +36,12 @@ deployment, not the retired Railway setup.
 - Workstation archive-normalization probe passes ZIP, TAR, 7z, and authorized
   RAR inputs through `launcher-admin ingest`; each reaches `stage=Ready` after
   bounded extraction and cleanup.
-- The Avalonia client was launched against the Mantle staging IP, hydrated the
-  live catalog, installed the authorized Spacewar build through the UI, showed
-  a completed persisted download entry, and ran the UI repair action to a
-  local BLAKE3 integrity success.
+- The Avalonia client was launched against `https://vaultnode.pp.ua`, hydrated
+  the live catalog, and showed the persisted download history and live
+  install-state badges. Historical settings pointing at the Mantle IP are
+  automatically migrated and persisted to the HTTPS hostname. The previously
+  validated authorized-Spacewar UI install and repair flow remains covered by
+  the 2026-08-14 run below.
 - No remote provider deletion is used for the recovery test. Old HOT links are
   retired from Vaultnode and their provider-side objects are left to natural
   provider expiry.

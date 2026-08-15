@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using Launcher.App.Runtime;
+using Launcher.App.ViewModels;
 using Launcher.Core;
 using Launcher.Networking;
 using Microsoft.Data.Sqlite;
@@ -9,6 +10,30 @@ namespace Launcher.App.Tests;
 
 public sealed class RuntimeTests
 {
+    [Theory]
+    [InlineData("http://127.0.0.1:8080")]
+    [InlineData("http://5.231.32.191")]
+    [InlineData("https://5.231.32.191/")]
+    public void SettingsMigrateLegacyApiEndpoints(string legacyEndpoint)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "vaultnode-settings-test", Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(directory, "settings.json");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            File.WriteAllText(path, $$"""{"apiBaseUrl":"{{legacyEndpoint}}"}""");
+
+            var settings = new SettingsViewModel(path);
+
+            Assert.Equal("https://vaultnode.pp.ua", settings.ApiBaseUrl);
+            Assert.Contains("\"apiBaseUrl\": \"https://vaultnode.pp.ua\"", File.ReadAllText(path));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task RuntimeHydratesCatalogAndDerivesInstallState()
     {

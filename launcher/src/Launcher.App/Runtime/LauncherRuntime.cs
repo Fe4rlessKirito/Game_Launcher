@@ -66,6 +66,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
     // with LAUNCHER_API_BASE_URL or the local settings file during cutover.
     private const string DefaultMantleApiBaseUrl = "https://vaultnode.pp.ua";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
+    private const string LegacyMantleIpApiBaseUrl = "http://5.231.32.191";
     private static readonly IReadOnlyDictionary<string, string> DefaultMantleTrustedManifestKeys =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -121,9 +122,11 @@ public sealed class LauncherRuntime : IAsyncDisposable
         settingsPath = string.IsNullOrWhiteSpace(settingsPath) ? Path.Combine(stateRoot, "settings.json") : settingsPath;
 
         LauncherSettings settings;
+        var loadedSettings = false;
         try
         {
             settings = await new JsonSettingsStore(settingsPath).LoadAsync(cancellationToken).ConfigureAwait(false);
+            loadedSettings = true;
         }
         catch (IOException)
         {
@@ -134,10 +137,24 @@ public sealed class LauncherRuntime : IAsyncDisposable
             settings = new LauncherSettings();
         }
 
-        if (string.IsNullOrWhiteSpace(settings.ApiBaseUrl)
-            || settings.ApiBaseUrl.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase))
+        var migratedApiEndpoint = loadedSettings && IsLegacyApiBaseUrl(settings.ApiBaseUrl);
+        if (migratedApiEndpoint)
         {
             settings = settings with { ApiBaseUrl = DefaultMantleApiBaseUrl };
+            try
+            {
+                await new JsonSettingsStore(settingsPath).SaveAsync(settings, cancellationToken).ConfigureAwait(false);
+            }
+            catch (IOException)
+            {
+                // The in-memory migration is still safe if a read-only profile
+                // prevents persisting the compatibility rewrite.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // The in-memory migration is still safe if a read-only profile
+                // prevents persisting the compatibility rewrite.
+            }
         }
 
         if (settings.ApiBaseUrl.Equals(DefaultMantleApiBaseUrl, StringComparison.OrdinalIgnoreCase)
@@ -393,6 +410,15 @@ public sealed class LauncherRuntime : IAsyncDisposable
         }
 
         return new Uri(uri.ToString().TrimEnd('/') + "/", UriKind.Absolute);
+    }
+
+    private static bool IsLegacyApiBaseUrl(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return true;
+        var normalized = value.Trim().TrimEnd('/');
+        return normalized.Equals(LegacyLocalApiBaseUrl, StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals(LegacyMantleIpApiBaseUrl, StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("https://5.231.32.191", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildMonogram(string title)
