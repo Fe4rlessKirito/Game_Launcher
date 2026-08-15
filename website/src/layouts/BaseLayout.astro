@@ -1,8 +1,8 @@
 ---
 import '../styles/global.css';
 
-interface Props { title?: string; description?: string; }
-const { title = 'Vaultnode — verified game distribution', description = 'A high-performance launcher foundation for authorized game builds.' } = Astro.props;
+interface Props { title?: string; description?: string; chrome?: boolean; }
+const { title = 'Vaultnode — verified game distribution', description = 'A high-performance launcher foundation for authorized game builds.', chrome = true } = Astro.props;
 const productName = 'Vaultnode';
 ---
 <!doctype html>
@@ -13,12 +13,12 @@ const productName = 'Vaultnode';
     <meta name="description" content={description} />
     <title>{title}</title>
   </head>
-  <body>
-    <header class="mx-auto flex max-w-6xl items-center justify-between px-6 py-7 lg:px-10">
-      <a href="/" class="flex items-center gap-3 text-sm font-semibold tracking-[0.18em] text-copy"><span class="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-sm font-black text-background">V</span> {productName.toUpperCase()}</a>
+  <body class:list={{ 'page-no-chrome': !chrome }}>
+    {chrome && <header class="mx-auto flex max-w-6xl items-center justify-between px-6 py-7 lg:px-10">
+      <a href="/" class="flex items-center gap-3 text-sm font-semibold tracking-[0.18em] text-copy"><img class="site-brand-mark" src="/assets/vaultnode-mark.png" alt="" /> {productName.toUpperCase()}</a>
       <nav class="flex items-center gap-6 text-sm text-muted"><a href="/#architecture" class="transition hover:text-copy">Architecture</a><a href="/dashboard" class="transition hover:text-copy">Operations</a><a href="/download" class="rounded-lg border border-border bg-surface px-4 py-2 text-copy transition hover:border-accent">Download</a></nav>
-    </header>
+    </header>}
     <main><slot /></main>
-    <footer class="mx-auto flex max-w-6xl flex-col gap-3 border-t border-border px-6 py-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between lg:px-10"><span>{productName} · neutral internal branding</span><span>Authorized content only.</span></footer>
+    {chrome && <footer class="mx-auto flex max-w-6xl flex-col gap-3 border-t border-border px-6 py-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between lg:px-10"><span>{productName} · neutral internal branding</span><span>Authorized content only.</span></footer>}
   </body>
 </html>

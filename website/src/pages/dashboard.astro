@@ -14,10 +14,10 @@ const jobs = [
 ];
 ---
 
-<BaseLayout title="Operations — Vaultnode" description="Live operator dashboard for the Vaultnode game distribution platform.">
+<BaseLayout title="Operations — Vaultnode" description="Live operator dashboard for the Vaultnode game distribution platform." chrome={false}>
   <main class="ops-shell" data-api-base="https://vaultnode.pp.ua">
     <aside class="ops-sidebar">
-      <a href="/" class="ops-brand"><span class="ops-brand-mark">V</span><span><strong>VAULTNODE</strong><small>CONTROL PLANE</small></span></a>
+      <a href="/" class="ops-brand"><img class="ops-brand-image" src="/assets/vaultnode-mark.png" alt="Vaultnode" /><span><strong>VAULTNODE</strong><small>CONTROL PLANE</small></span></a>
       <div class="ops-cluster"><span class="status-dot status-dot-live"></span><span><small>ACTIVE CLUSTER</small><strong>Mantle / production</strong></span><span class="ops-chevron">⌄</span></div>
       <nav class="ops-nav" aria-label="Operations navigation">
         <a class="ops-nav-link active" href="#overview"><span class="nav-glyph">◌</span> Overview</a>
