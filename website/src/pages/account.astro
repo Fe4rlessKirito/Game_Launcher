@@ -35,31 +35,57 @@ const launcherApiUrl = import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vault
       <div class="account-form-wrap">
         <div id="auth-config-warning" hidden class="account-notice">Account sign-in is not configured yet.</div>
 
-        <form id="auth-form" class="account-card" novalidate>
-          <div class="account-card-heading">
-            <div>
-              <p class="account-card-kicker">VAULTNODE</p>
-              <h2 id="auth-title">Sign in</h2>
+        <div id="auth-forms" class="account-auth-grid">
+          <form id="login-form" class="account-card" novalidate>
+            <div class="account-card-heading">
+              <div>
+                <p class="account-card-kicker">EXISTING ACCOUNT</p>
+                <h2>Sign in</h2>
+              </div>
+              <span class="account-card-mark" aria-hidden="true">V</span>
             </div>
-            <span class="account-card-mark" aria-hidden="true">V</span>
-          </div>
-          <p id="auth-description" class="account-card-description">Use your email and password.</p>
-          <div class="account-fields">
-            <div class="account-field">
-              <label for="auth-email">Email address</label>
-              <input id="auth-email" type="email" autocomplete="email" required />
+            <p class="account-card-description">Use your Vaultnode email and password.</p>
+            <div class="account-fields">
+              <div class="account-field">
+                <label for="login-email">Email address</label>
+                <input id="login-email" type="email" autocomplete="email" required />
+              </div>
+              <div class="account-field">
+                <label for="login-password">Password</label>
+                <input id="login-password" type="password" autocomplete="current-password" minlength="8" required />
+              </div>
             </div>
-            <div class="account-field">
-              <label for="auth-password">Password</label>
-              <input id="auth-password" type="password" autocomplete="current-password" minlength="8" required />
+            <div class="account-actions">
+              <button id="login-submit" class="account-submit" type="submit">Sign in</button>
             </div>
-          </div>
-          <div class="account-actions">
-            <button id="auth-submit" class="account-submit" type="submit">Sign in</button>
-            <button id="auth-toggle" class="account-toggle" type="button">Create account</button>
-          </div>
-          <p id="auth-message" class="account-message" role="status" aria-live="polite"></p>
-        </form>
+            <p id="login-message" class="account-message" role="status" aria-live="polite"></p>
+          </form>
+
+          <form id="register-form" class="account-card" novalidate>
+            <div class="account-card-heading">
+              <div>
+                <p class="account-card-kicker">NEW ACCOUNT</p>
+                <h2>Create account</h2>
+              </div>
+              <span class="account-card-mark" aria-hidden="true">+</span>
+            </div>
+            <p class="account-card-description">Create an account for your Vaultnode library.</p>
+            <div class="account-fields">
+              <div class="account-field">
+                <label for="register-email">Email address</label>
+                <input id="register-email" type="email" autocomplete="email" required />
+              </div>
+              <div class="account-field">
+                <label for="register-password">Password</label>
+                <input id="register-password" type="password" autocomplete="new-password" minlength="8" required />
+              </div>
+            </div>
+            <div class="account-actions">
+              <button id="register-submit" class="account-submit" type="submit">Create account</button>
+            </div>
+            <p id="register-message" class="account-message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
 
         <div id="account-panel" hidden class="account-card signed-in-card">
           <p class="account-card-kicker">SIGNED IN</p>
@@ -80,31 +106,24 @@ const launcherApiUrl = import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vault
     const supabaseUrl = root?.dataset.supabaseUrl ?? '';
     const supabaseAnonKey = root?.dataset.supabaseAnonKey ?? '';
     const launcherApi = (root?.dataset.launcherApi ?? 'https://vaultnode.pp.ua').replace(/\/$/, '');
-    const authForm = document.querySelector<HTMLFormElement>('#auth-form');
+    const authForms = document.querySelector<HTMLElement>('#auth-forms');
+    const loginForm = document.querySelector<HTMLFormElement>('#login-form');
+    const registerForm = document.querySelector<HTMLFormElement>('#register-form');
     const authPanel = document.querySelector<HTMLElement>('#account-panel');
     const configWarning = document.querySelector<HTMLElement>('#auth-config-warning');
-    const emailInput = document.querySelector<HTMLInputElement>('#auth-email');
-    const passwordInput = document.querySelector<HTMLInputElement>('#auth-password');
-    const authMessage = document.querySelector<HTMLElement>('#auth-message');
-    const authTitle = document.querySelector<HTMLElement>('#auth-title');
-    const authDescription = document.querySelector<HTMLElement>('#auth-description');
-    const authSubmit = document.querySelector<HTMLButtonElement>('#auth-submit');
-    const authToggle = document.querySelector<HTMLButtonElement>('#auth-toggle');
+    const loginEmail = document.querySelector<HTMLInputElement>('#login-email');
+    const loginPassword = document.querySelector<HTMLInputElement>('#login-password');
+    const loginSubmit = document.querySelector<HTMLButtonElement>('#login-submit');
+    const loginMessage = document.querySelector<HTMLElement>('#login-message');
+    const registerEmail = document.querySelector<HTMLInputElement>('#register-email');
+    const registerPassword = document.querySelector<HTMLInputElement>('#register-password');
+    const registerSubmit = document.querySelector<HTMLButtonElement>('#register-submit');
+    const registerMessage = document.querySelector<HTMLElement>('#register-message');
     const accountEmail = document.querySelector<HTMLElement>('#account-email');
     const launcherSession = document.querySelector<HTMLElement>('#launcher-session');
     const signOut = document.querySelector<HTMLButtonElement>('#auth-signout');
-    let createMode = false;
 
-    const message = (value: string) => { if (authMessage) authMessage.textContent = value; };
-    const setMode = (create: boolean) => {
-      createMode = create;
-      if (authTitle) authTitle.textContent = create ? 'Create account' : 'Sign in';
-      if (authDescription) authDescription.textContent = create ? 'Create an account with your email.' : 'Use your email and password.';
-      if (authSubmit) authSubmit.textContent = create ? 'Create account' : 'Sign in';
-      if (authToggle) authToggle.textContent = create ? 'Back to sign in' : 'Create account';
-      if (passwordInput) passwordInput.autocomplete = create ? 'new-password' : 'current-password';
-      message('');
-    };
+    const message = (element: HTMLElement | null, value: string) => { if (element) element.textContent = value; };
 
     const supabase = supabaseUrl && supabaseAnonKey
       ? createClient(supabaseUrl, supabaseAnonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } })
@@ -123,38 +142,47 @@ const launcherApiUrl = import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vault
     async function renderSession() {
       if (!supabase) {
         if (configWarning) configWarning.hidden = false;
-        if (authForm) authForm.hidden = true;
+        if (authForms) authForms.hidden = true;
         return;
       }
       const { data } = await supabase.auth.getSession();
       const session = data.session;
       if (session) {
-        if (authForm) authForm.hidden = true;
+        if (authForms) authForms.hidden = true;
         if (authPanel) authPanel.hidden = false;
         if (accountEmail) accountEmail.textContent = session.user.email ?? session.user.id;
         await checkLauncherAccess(session.access_token);
       } else {
-        if (authForm) authForm.hidden = false;
+        if (authForms) authForms.hidden = false;
         if (authPanel) authPanel.hidden = true;
       }
     }
 
-    authToggle?.addEventListener('click', () => setMode(!createMode));
-    authForm?.addEventListener('submit', async (event) => {
+    loginForm?.addEventListener('submit', async (event) => {
       event.preventDefault();
-      if (!supabase || !emailInput || !passwordInput) return;
-      if (!emailInput.value || passwordInput.value.length < 8) { message('Enter a valid email and an 8-character password.'); return; }
-      if (authSubmit) authSubmit.disabled = true;
-      message(createMode ? 'Creating account…' : 'Signing in…');
-      const result = createMode
-        ? await supabase.auth.signUp({ email: emailInput.value, password: passwordInput.value, options: { emailRedirectTo: `${window.location.origin}/account/` } })
-        : await supabase.auth.signInWithPassword({ email: emailInput.value, password: passwordInput.value });
-      if (authSubmit) authSubmit.disabled = false;
-      if (result.error) { message(result.error.message); return; }
-      message(createMode ? 'Check your email to confirm the account.' : 'Signed in.');
+      if (!supabase || !loginEmail || !loginPassword) return;
+      if (!loginEmail.value || loginPassword.value.length < 8) { message(loginMessage, 'Enter a valid email and an 8-character password.'); return; }
+      if (loginSubmit) loginSubmit.disabled = true;
+      message(loginMessage, 'Signing in…');
+      const result = await supabase.auth.signInWithPassword({ email: loginEmail.value, password: loginPassword.value });
+      if (loginSubmit) loginSubmit.disabled = false;
+      if (result.error) { message(loginMessage, result.error.message); return; }
+      message(loginMessage, 'Signed in.');
       await renderSession();
     });
-    signOut?.addEventListener('click', async () => { await supabase?.auth.signOut(); message('Signed out.'); await renderSession(); });
+    registerForm?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!supabase || !registerEmail || !registerPassword) return;
+      if (!registerEmail.value || registerPassword.value.length < 8) { message(registerMessage, 'Enter a valid email and an 8-character password.'); return; }
+      if (registerSubmit) registerSubmit.disabled = true;
+      message(registerMessage, 'Creating account…');
+      const result = await supabase.auth.signUp({ email: registerEmail.value, password: registerPassword.value, options: { emailRedirectTo: `${window.location.origin}/account/` } });
+      if (registerSubmit) registerSubmit.disabled = false;
+      if (result.error) { message(registerMessage, result.error.message); return; }
+      message(registerMessage, 'Check your email to confirm the account.');
+      await renderSession();
+    });
+    signOut?.addEventListener('click', async () => { await supabase?.auth.signOut(); message(loginMessage, 'Signed out.'); await renderSession(); });
     supabase?.auth.onAuthStateChange(() => window.setTimeout(() => void renderSession(), 0));
     void renderSession();
   </script>
@@ -272,6 +300,7 @@ const launcherApiUrl = import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vault
   .account-points dd { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 
   .account-form-wrap { min-width: 0; }
+  .account-auth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 
   .account-card {
     padding: 28px;
@@ -364,6 +393,7 @@ const launcherApiUrl = import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vault
     .account-layout { display: block; padding-top: 38px; }
     .account-overview { margin-bottom: 38px; }
     .account-points div { grid-template-columns: 1fr; gap: 5px; }
+    .account-auth-grid { grid-template-columns: 1fr; }
     .account-card { padding: 22px; }
   }
 </style>
