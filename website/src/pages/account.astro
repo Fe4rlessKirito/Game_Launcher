@@ -6,33 +6,70 @@ const supabaseAnonKey = import.meta.env.PUBLIC_SUPABASE_ANON_KEY ?? '';
 const launcherApiUrl = import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vaultnode.pp.ua';
 ---
 
-<BaseLayout title="Account — Vaultnode" description="Sign in to your Vaultnode account.">
-  <section class="mx-auto max-w-xl px-6 py-24 lg:px-10" data-supabase-url={supabaseUrl} data-supabase-anon-key={supabaseAnonKey} data-launcher-api={launcherApiUrl}>
-    <p class="text-xs font-semibold tracking-[0.24em] text-accent">VAULTNODE ACCOUNT</p>
-    <h1 class="mt-6 text-5xl font-semibold tracking-[-0.04em] text-copy">Your library, wherever you play.</h1>
-    <p class="mt-6 text-lg leading-8 text-muted">Sign in to connect your account to the launcher.</p>
-
-    <div id="auth-config-warning" hidden class="mt-10 rounded-2xl border border-border bg-surface p-6 text-sm leading-6 text-muted">Account sign-in is not configured yet.</div>
-
-    <form id="auth-form" class="mt-10 rounded-2xl border border-border bg-surface p-6" novalidate>
-      <h2 id="auth-title" class="text-xl font-semibold text-copy">Sign in</h2>
-      <p id="auth-description" class="mt-2 text-sm text-muted">Use your email and password.</p>
-      <label class="mt-6 block text-sm text-muted" for="auth-email">Email</label>
-      <input id="auth-email" class="mt-2 w-full rounded-lg border border-border bg-elevated px-3 py-3 text-copy outline-none" type="email" autocomplete="email" required />
-      <label class="mt-4 block text-sm text-muted" for="auth-password">Password</label>
-      <input id="auth-password" class="mt-2 w-full rounded-lg border border-border bg-elevated px-3 py-3 text-copy outline-none" type="password" autocomplete="current-password" minlength="8" required />
-      <div class="mt-6 flex flex-wrap items-center gap-3">
-        <button id="auth-submit" class="rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-background transition hover:brightness-110" type="submit">Sign in</button>
-        <button id="auth-toggle" class="rounded-lg border border-border bg-elevated px-4 py-3 text-sm font-semibold text-copy transition hover:border-accent" type="button">Create account</button>
+<BaseLayout title="Account — Vaultnode" description="Manage your Vaultnode account.">
+  <section class="account-page" data-supabase-url={supabaseUrl} data-supabase-anon-key={supabaseAnonKey} data-launcher-api={launcherApiUrl}>
+    <div class="account-heading">
+      <div>
+        <p class="account-kicker">ACCOUNT</p>
+        <h1>Vaultnode account</h1>
+        <p class="account-lead">Sign in to manage your library and connect the desktop launcher.</p>
       </div>
-      <p id="auth-message" class="mt-4 text-sm text-muted" role="status" aria-live="polite"></p>
-    </form>
+      <a class="account-heading-link" href="/download/">Get the launcher <span aria-hidden="true">→</span></a>
+    </div>
 
-    <div id="account-panel" hidden class="mt-10 rounded-2xl border border-border bg-surface p-6">
-      <p class="text-xs font-semibold tracking-[0.2em] text-accent">SIGNED IN</p>
-      <p class="mt-3 text-lg text-copy"> <strong id="account-email"></strong></p>
-      <p id="launcher-session" class="mt-2 text-sm text-muted">Checking launcher access…</p>
-      <button id="auth-signout" class="mt-6 rounded-lg border border-border bg-elevated px-4 py-3 text-sm font-semibold text-copy transition hover:border-accent" type="button">Sign out</button>
+    <div class="account-layout">
+      <div class="account-overview">
+        <div class="account-product">
+          <img src="/assets/vaultnode-mark.png" alt="" />
+          <span>Vaultnode</span>
+        </div>
+        <h2>Your library in one place.</h2>
+        <p class="account-overview-copy">Use your account to keep your authorized library available on the website and in the Windows launcher.</p>
+        <dl class="account-points">
+          <div><dt>Library access</dt><dd>View the builds available to you.</dd></div>
+          <div><dt>Desktop connection</dt><dd>Use the same account in the launcher.</dd></div>
+          <div><dt>Secure sign-in</dt><dd>Your password is handled by Supabase Auth.</dd></div>
+        </dl>
+      </div>
+
+      <div class="account-form-wrap">
+        <div id="auth-config-warning" hidden class="account-notice">Account sign-in is not configured yet.</div>
+
+        <form id="auth-form" class="account-card" novalidate>
+          <div class="account-card-heading">
+            <div>
+              <p class="account-card-kicker">VAULTNODE</p>
+              <h2 id="auth-title">Sign in</h2>
+            </div>
+            <span class="account-card-mark" aria-hidden="true">V</span>
+          </div>
+          <p id="auth-description" class="account-card-description">Use your email and password.</p>
+          <div class="account-fields">
+            <div class="account-field">
+              <label for="auth-email">Email address</label>
+              <input id="auth-email" type="email" autocomplete="email" required />
+            </div>
+            <div class="account-field">
+              <label for="auth-password">Password</label>
+              <input id="auth-password" type="password" autocomplete="current-password" minlength="8" required />
+            </div>
+          </div>
+          <div class="account-actions">
+            <button id="auth-submit" class="account-submit" type="submit">Sign in</button>
+            <button id="auth-toggle" class="account-toggle" type="button">Create account</button>
+          </div>
+          <p id="auth-message" class="account-message" role="status" aria-live="polite"></p>
+        </form>
+
+        <div id="account-panel" hidden class="account-card signed-in-card">
+          <p class="account-card-kicker">SIGNED IN</p>
+          <h2>Welcome back</h2>
+          <p class="signed-in-email" id="account-email"></p>
+          <p id="launcher-session" class="account-card-description">Checking launcher access…</p>
+          <button id="auth-signout" class="account-toggle" type="button">Sign out</button>
+        </div>
+        <p class="account-footnote">Use this account only for authorized Vaultnode content.</p>
+      </div>
     </div>
   </section>
 
@@ -122,3 +159,211 @@ const launcherApiUrl = import.meta.env.PUBLIC_LAUNCHER_API_URL ?? 'https://vault
     void renderSession();
   </script>
 </BaseLayout>
+
+<style>
+  .account-page {
+    max-width: 1060px;
+    margin: 0 auto;
+    padding: 48px 40px 82px;
+  }
+
+  .account-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 32px;
+    padding-bottom: 30px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .account-kicker, .account-card-kicker {
+    margin: 0;
+    color: #7f94ad;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .18em;
+  }
+
+  .account-heading h1 {
+    margin: 10px 0 0;
+    color: var(--text);
+    font-size: clamp(30px, 4vw, 42px);
+    font-weight: 600;
+    letter-spacing: -.04em;
+  }
+
+  .account-lead {
+    max-width: 520px;
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .account-heading-link {
+    padding: 10px 0;
+    color: #a5b8cc;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .account-heading-link span { margin-left: 7px; color: var(--accent); }
+  .account-heading-link:hover { color: var(--text); }
+
+  .account-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(380px, 470px);
+    gap: clamp(42px, 8vw, 106px);
+    padding-top: 54px;
+  }
+
+  .account-overview { padding-top: 5px; }
+
+  .account-product {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    color: #cbd8e7;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .account-product img {
+    width: 30px;
+    height: 30px;
+    object-fit: contain;
+  }
+
+  .account-overview h2 {
+    max-width: 440px;
+    margin: 34px 0 0;
+    color: var(--text);
+    font-size: clamp(25px, 3vw, 34px);
+    font-weight: 600;
+    letter-spacing: -.035em;
+    line-height: 1.1;
+  }
+
+  .account-overview-copy {
+    max-width: 450px;
+    margin: 17px 0 0;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+
+  .account-points {
+    max-width: 470px;
+    margin: 40px 0 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .account-points div {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 18px;
+    padding: 15px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .account-points dt { color: #c8d5e4; font-size: 12px; font-weight: 600; }
+  .account-points dd { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+  .account-form-wrap { min-width: 0; }
+
+  .account-card {
+    padding: 28px;
+    border: 1px solid #2a3a52;
+    border-radius: 10px;
+    background: #111a28;
+  }
+
+  .account-card-heading {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 18px;
+  }
+
+  .account-card h2 {
+    margin: 9px 0 0;
+    color: var(--text);
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -.025em;
+  }
+
+  .account-card-mark {
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 1px solid #36526e;
+    border-radius: 7px;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .account-card-description {
+    margin: 9px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .account-fields { display: grid; gap: 18px; margin-top: 26px; }
+  .account-field { display: grid; gap: 8px; }
+  .account-field label { color: #c1cedd; font-size: 12px; font-weight: 600; }
+  .account-field input {
+    box-sizing: border-box;
+    width: 100%;
+    height: 44px;
+    padding: 0 12px;
+    border: 1px solid #34465e;
+    border-radius: 6px;
+    outline: none;
+    background: #0d1521;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+  }
+
+  .account-field input:hover { border-color: #4c6480; }
+  .account-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(117,224,193,.12); }
+
+  .account-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 25px; }
+  .account-submit, .account-toggle {
+    min-height: 40px;
+    padding: 0 16px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .account-submit { border: 1px solid var(--accent); background: var(--accent); color: #0a1717; }
+  .account-submit:hover { filter: brightness(1.07); }
+  .account-submit:disabled { cursor: wait; opacity: .65; }
+  .account-toggle { border: 1px solid #34465e; background: #182438; color: #cdd9e7; }
+  .account-toggle:hover { border-color: #58728f; color: var(--text); }
+  .account-message { min-height: 20px; margin: 14px 0 0; color: #91a6bc; font-size: 12px; line-height: 1.5; }
+  .account-notice { padding: 15px 17px; border: 1px solid #765d31; border-radius: 8px; background: #241e15; color: #d5b77b; font-size: 13px; line-height: 1.5; }
+  .signed-in-card h2 { margin-top: 12px; }
+  .signed-in-email { margin: 18px 0 0; color: #dce7f3; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+  .signed-in-card .account-toggle { margin-top: 24px; }
+  .account-footnote { margin: 15px 2px 0; color: #6f8399; font-size: 11px; line-height: 1.5; }
+
+  @media (max-width: 760px) {
+    .account-page { padding: 34px 20px 58px; }
+    .account-heading { align-items: start; flex-direction: column; gap: 18px; }
+    .account-heading-link { padding: 0; }
+    .account-layout { display: block; padding-top: 38px; }
+    .account-overview { margin-bottom: 38px; }
+    .account-points div { grid-template-columns: 1fr; gap: 5px; }
+    .account-card { padding: 22px; }
+  }
+</style>
