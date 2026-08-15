@@ -1,5 +1,5 @@
 ---
-import BaseLayout from '../layouts/BaseLayout.astro';
+import OpsFrame from '../components/OpsFrame.astro';
 
 const providers = [
   { name: 'FileMirage', kind: 'HOT · direct delivery', key: 'filemirage', tone: 'blue' },
@@ -8,87 +8,29 @@ const providers = [
 ];
 
 const jobs = [
-  { key: 'restore', title: 'Pack restore queue', detail: 'Waiting for telemetry', icon: '↗' },
+  { key: 'restore', title: 'Pack restore queue', detail: 'Public queue status', icon: '↗' },
   { key: 'renewal', title: 'HOT renewal window', detail: '18 day policy', icon: '⟳' },
-  { key: 'provisioning', title: 'Capacity provisioning', detail: 'No active jobs', icon: '＋' },
+  { key: 'provisioning', title: 'Capacity provisioning', detail: 'Administrative state is private', icon: '＋' },
 ];
 ---
 
-<BaseLayout title="Operations — Vaultnode" description="Live operator dashboard for the Vaultnode game distribution platform." chrome={false}>
-  <main class="ops-shell" data-api-base="https://vaultnode.pp.ua">
-    <aside class="ops-sidebar">
-      <a href="/" class="ops-brand"><img class="ops-brand-image" src="/assets/vaultnode-mark.png" alt="Vaultnode" /><span><strong>VAULTNODE</strong><small>CONTROL PLANE</small></span></a>
-      <div class="ops-cluster"><span class="status-dot status-dot-live"></span><span><small>ACTIVE CLUSTER</small><strong>Mantle / production</strong></span><span class="ops-chevron">⌄</span></div>
-      <nav class="ops-nav" aria-label="Operations navigation">
-        <a class="ops-nav-link active" href="#overview"><span class="nav-glyph">◌</span> Overview</a>
-        <a class="ops-nav-link" href="#activity"><span class="nav-glyph">↯</span> Activity</a>
-        <a class="ops-nav-link" href="#storage"><span class="nav-glyph">▣</span> Storage</a>
-        <a class="ops-nav-link" href="#providers"><span class="nav-glyph">⌁</span> Providers</a>
-      </nav>
-      <div class="ops-sidebar-footer"><div class="sidebar-rule"></div><div class="mini-health"><span class="status-dot status-dot-live"></span><span><strong id="sidebar-health">Connected</strong><small id="sidebar-sync">Waiting for first sync</small></span></div><a href="/" class="back-link">← Back to site</a></div>
-    </aside>
+<OpsFrame active="overview" title="Good evening, Marko.">
+  <div class="overview-grid">
+    <article class="hero-status card-surface"><div class="card-label">SYSTEM STATUS</div><div class="hero-status-row"><div><h2 id="system-status">Checking system</h2><p id="system-detail">Contacting the Mantle control plane…</p></div><div class="system-orb" id="system-orb"><span></span></div></div><div class="hero-meta"><span><i class="status-dot status-dot-live"></i> API <b id="api-state">Checking</b></span><span><i class="status-dot status-dot-muted"></i> Worker <b>Private</b></span><span><i class="status-dot status-dot-muted"></i> Database <b id="database-state">Protected</b></span></div></article>
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">API LATENCY</span><span class="metric-spark spark-blue"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="metric-value" id="latency-value">—</div><p>Readiness response · last probe</p><div class="metric-foot"><span class="metric-good" id="latency-state">Awaiting probe</span><span id="last-probe">—</span></div></article>
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE WORK</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">STORAGE COVERAGE</span><span class="metric-icon icon-green">✓</span></div><div class="metric-value" id="coverage-value">—</div><p>Healthy configured providers</p><div class="metric-foot"><span class="metric-good" id="coverage-state">Checking</span><span>public</span></div></article>
+  </div>
 
-    <section class="ops-content" id="overview">
-      <header class="ops-topbar"><div><span class="eyebrow">SERVER OPERATIONS</span><h1>Good evening, Marko.</h1></div><div class="topbar-actions"><span class="live-pill"><span class="pulse-dot"></span><span id="live-label">Public status</span></span><button class="icon-button" id="refresh-button" type="button" aria-label="Refresh status">↻</button></div></header>
+  <div class="section-heading"><div><span class="eyebrow">CURRENTLY RUNNING</span><h2>Activity overview</h2></div><a class="section-link" href="/dashboard/activity/">Open activity →</a></div>
+  <div class="activity-grid">
+    <article class="activity-card card-surface"><div class="activity-card-head"><div><span class="card-label">WORK QUEUE</span><h3>What the platform is doing</h3></div><span class="queue-count" id="queue-count">—</span></div><div class="job-list" id="job-list">{jobs.map((job) => <div class="job-row" data-job={job.key}><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>
+    <article class="activity-card card-surface throughput-card"><div class="activity-card-head"><div><span class="card-label">PUBLIC SNAPSHOT</span><h3>What the platform reports</h3></div><span class="time-filter" id="snapshot-age">Live</span></div><div class="public-signal"><div class="signal-row"><span><i class="signal-icon signal-api"></i> API readiness</span><strong id="public-api-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-storage"></i> Storage providers</span><strong id="public-provider-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Restore queue</span><strong id="public-restore-signal">—</strong></div></div><div class="chart-footer"><span><i class="legend-dot blue-dot"></i> Public telemetry</span><strong id="public-snapshot">—</strong></div></article>
+  </div>
 
-      <div class="operator-banner public-banner"><div class="banner-icon">●</div><div><strong>Public status feed</strong><p>Live health, provider availability, stored pack usage, and restore activity. Administrative actions and credentials remain private.</p></div><span class="public-banner-note">Updates every 15 seconds</span></div>
+  <div class="section-heading providers-heading"><div><span class="eyebrow">STORAGE USED</span><h2>Physical packs by provider</h2></div><a href="/dashboard/storage/" class="section-link">View storage →</a></div>
+  <div class="provider-grid">{providers.map((provider) => <article class={`provider-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-top"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><span class="provider-status status-unknown"><i></i> Checking</span></div><h3>{provider.name}</h3><p>{provider.kind}</p><div class="provider-bar" aria-label={`${provider.name} share of stored data`}><span></span></div><div class="provider-bottom"><span class="provider-detail">Checking public usage</span><strong class="provider-usage">—</strong></div></article>)}</div>
 
-      <div class="overview-grid">
-        <article class="hero-status card-surface"><div class="card-label">SYSTEM STATUS</div><div class="hero-status-row"><div><h2 id="system-status">Checking system</h2><p id="system-detail">Contacting the Mantle control plane…</p></div><div class="system-orb" id="system-orb"><span></span></div></div><div class="hero-meta"><span><i class="status-dot status-dot-live"></i> API <b id="api-state">Checking</b></span><span><i class="status-dot status-dot-muted"></i> Worker <b>Private</b></span><span><i class="status-dot status-dot-muted"></i> Database <b id="database-state">Protected</b></span></div></article>
-        <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">API LATENCY</span><span class="metric-spark spark-blue"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="metric-value" id="latency-value">—</div><p>Readiness response · last probe</p><div class="metric-foot"><span class="metric-good" id="latency-state">Awaiting probe</span><span id="last-probe">—</span></div></article>
-        <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE WORK</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
-        <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">STORAGE COVERAGE</span><span class="metric-icon icon-green">✓</span></div><div class="metric-value" id="coverage-value">—</div><p>Healthy configured providers</p><div class="metric-foot"><span class="metric-good" id="coverage-state">Checking</span><span>public</span></div></article>
-      </div>
-
-      <div class="section-heading" id="activity"><div><span class="eyebrow">CURRENTLY RUNNING</span><h2>Activity overview</h2></div><span class="section-note" id="activity-note">Public status · live</span></div>
-      <div class="activity-grid">
-        <article class="activity-card card-surface"><div class="activity-card-head"><div><span class="card-label">WORK QUEUE</span><h3>What the platform is doing</h3></div><span class="queue-count" id="queue-count">—</span></div><div class="job-list" id="job-list">{jobs.map((job) => <div class="job-row" data-job={job.key}><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>
-        <article class="activity-card card-surface throughput-card"><div class="activity-card-head"><div><span class="card-label">PUBLIC SNAPSHOT</span><h3>What the platform reports</h3></div><span class="time-filter" id="snapshot-age">Live</span></div><div class="public-signal"><div class="signal-row"><span><i class="signal-icon signal-api"></i> API readiness</span><strong id="public-api-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-storage"></i> Storage providers</span><strong id="public-provider-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Restore queue</span><strong id="public-restore-signal">—</strong></div></div><div class="chart-footer"><span><i class="legend-dot blue-dot"></i> Public telemetry</span><strong id="public-snapshot">—</strong></div></article>
-      </div>
-
-      <div class="section-heading providers-heading" id="providers"><div><span class="eyebrow">STORAGE USED</span><h2>Physical packs by provider</h2></div><a href="#storage" class="section-link">View usage →</a></div>
-      <div class="provider-grid">{providers.map((provider) => <article class={`provider-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-top"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><span class="provider-status status-unknown"><i></i> Protected</span></div><h3>{provider.name}</h3><p>{provider.kind}</p><div class="provider-bar" aria-label={`${provider.name} share of stored data`}><span></span></div><div class="provider-bottom"><span class="provider-detail">Reported usage locked</span><strong class="provider-usage">—</strong></div></article>)}</div>
-
-      <div class="section-heading storage-heading" id="storage"><div><span class="eyebrow">STORAGE POLICY</span><h2>Tier health at a glance</h2></div><span class="section-note">Pack-first placement · 512 MiB target</span></div>
-      <div class="tier-row"><article class="tier-card card-surface"><div class="tier-icon tier-hot">H</div><div><span class="card-label">HOT</span><h3>Fast delivery</h3><p>FileMirage direct pack downloads</p></div><strong id="hot-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-cold">C</div><div><span class="card-label">COLD</span><h3>Retained archive</h3><p>Telegram physical-pack store</p></div><strong id="cold-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-archive">R</div><div><span class="card-label">RENEWAL</span><h3>Next window</h3><p>HOT locations renewed after 18 days</p></div><strong id="renewal-health">18d</strong></article></div>
-
-      <footer class="ops-footer"><span>Vaultnode control plane · Mantle / production</span><span id="footer-sync">Telemetry is not connected</span></footer>
-    </section>
-  </main>
-
-  <script>
-    type ProviderHealth = { provider: string; healthy: boolean; tier: string };
-    type ProviderUsage = { provider: string; tier: string; used_bytes: number; last_capacity_check?: string };
-    type PublicStatus = { status: string; database_ready: boolean; storage_configured: boolean; providers: ProviderHealth[]; usage: ProviderUsage[]; total_used_bytes: number; pending_restores: number };
-
-    const root = document.querySelector<HTMLElement>('.ops-shell');
-    const state: { apiBase: string; timer: number | null } = { apiBase: root?.dataset.apiBase || 'https://vaultnode.pp.ua', timer: null };
-
-    const text = (selector: string, value: string) => { const element = document.querySelector<HTMLElement>(selector); if (element) element.textContent = value; };
-    const formatBytes = (value: number) => { if (!Number.isFinite(value) || value <= 0) return '0 B'; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(2)} GB`; return `${(value / 1024 ** 4).toFixed(2)} TB`; };
-
-    async function refreshTelemetry() {
-      const started = Date.now();
-      try {
-        const ready = await fetch(`${state.apiBase.replace(/\/$/, '')}/v1/ready`, { cache: 'no-store' });
-        const latency = Date.now() - started;
-        text('#latency-value', `${latency}ms`); text('#last-probe', 'just now'); text('#latency-state', ready.ok ? 'Healthy response' : 'Degraded response');
-        if (!ready.ok) throw new Error(`Readiness returned ${ready.status}`);
-        const publicResponse = await fetch(`${state.apiBase.replace(/\/$/, '')}/api/v1/public/status`, { cache: 'no-store' });
-        if (!publicResponse.ok) throw new Error(`Public status returned ${publicResponse.status}`);
-        const publicStatus = await publicResponse.json() as PublicStatus;
-        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); const healthyProviders = publicStatus.providers.filter((provider: ProviderHealth) => provider.healthy).length; const pending = publicStatus.pending_restores || 0;
-        text('#live-label', 'Public status'); text('#system-status', publicStatus.status === 'operational' ? 'Operational' : 'Degraded'); text('#system-detail', `Mantle control plane · updated ${now}`); text('#api-state', 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#sidebar-health', publicStatus.status === 'operational' ? 'Operational' : 'Degraded'); text('#sidebar-sync', `Updated ${now}`); text('#footer-sync', `Public status · updated ${now}`); text('#active-work', `${pending}`); text('#queue-count', pending ? `${pending} active` : 'clear'); text('#work-state', pending ? 'Restore queue active' : 'No restore jobs'); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Public provider health'); text('#activity-note', `Public snapshot · updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', now); text('#snapshot-age', 'Updated just now'); document.querySelector('#system-orb')?.classList.add('orb-online');
-        const usageByProvider = new Map<string, number>(); publicStatus.usage.forEach((account: ProviderUsage) => { const normalized = account.provider.toLowerCase(); const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => normalized.includes(candidate)); if (key) usageByProvider.set(key, (usageByProvider.get(key) || 0) + (account.used_bytes || 0)); }); const totalUsed = publicStatus.total_used_bytes || [...usageByProvider.values()].reduce((sum, value) => sum + value, 0); ['filemirage', 'telegram', 'buzzheavier'].forEach((key) => { const card = document.querySelector<HTMLElement>(`[data-provider="${key}"]`); if (!card) return; const used = usageByProvider.get(key) || 0; const usage = card.querySelector<HTMLElement>('.provider-usage'); if (usage) usage.textContent = formatBytes(used); const detail = card.querySelector<HTMLElement>('.provider-detail'); if (detail) detail.textContent = totalUsed ? `${((used / totalUsed) * 100).toFixed(0)}% of stored data` : 'No packs stored'; const bar = card.querySelector<HTMLElement>('.provider-bar span'); if (bar) bar.style.width = totalUsed ? `${Math.max(used ? 4 : 0, (used / totalUsed) * 100)}%` : '0%'; });
-        const hot = publicStatus.providers.filter((provider: ProviderHealth) => provider.tier === 'HOT' && provider.healthy).length; const cold = publicStatus.providers.filter((provider: ProviderHealth) => provider.tier === 'COLD' && provider.healthy).length; text('#hot-health', hot ? `${hot} healthy` : 'Needs attention'); text('#cold-health', cold ? `${cold} healthy` : 'Needs attention');
-        publicStatus.providers.forEach((provider: ProviderHealth) => { const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => provider.provider.toLowerCase().includes(candidate)); if (!key) return; const card = document.querySelector<HTMLElement>(`[data-provider="${key}"]`); if (!card) return; const badge = card.querySelector<HTMLElement>('.provider-status'); if (badge) { badge.className = `provider-status ${provider.healthy ? 'status-good' : 'status-bad'}`; badge.innerHTML = `<i></i> ${provider.healthy ? 'Healthy' : 'Degraded'}`; } });
-        document.querySelectorAll<HTMLElement>('.job-row').forEach((row) => { const jobState = row.querySelector<HTMLElement>('.job-state'); if (jobState) jobState.textContent = row.dataset.job === 'restore' ? (pending ? `${pending} queued` : 'Queue clear') : 'Standing by'; });
-      } catch (error) {
-        text('#live-label', 'Status offline'); text('#system-status', 'Unavailable'); text('#system-detail', error instanceof Error ? error.message : 'Could not reach the control plane'); text('#sidebar-health', 'Needs attention'); text('#sidebar-sync', 'Sync failed'); text('#activity-note', 'Public status unavailable');
-      }
-    }
-
-    document.querySelector('#refresh-button')?.addEventListener('click', refreshTelemetry); state.timer = window.setInterval(refreshTelemetry, 15000);
-    refreshTelemetry();
-  </script>
-</BaseLayout>
+  <div class="section-heading storage-heading"><div><span class="eyebrow">STORAGE POLICY</span><h2>Tier health at a glance</h2></div><a href="/dashboard/providers/" class="section-link">View providers →</a></div>
+  <div class="tier-row"><article class="tier-card card-surface"><div class="tier-icon tier-hot">H</div><div><span class="card-label">HOT</span><h3>Fast delivery</h3><p>FileMirage direct pack downloads</p></div><strong id="hot-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-cold">C</div><div><span class="card-label">COLD</span><h3>Retained archive</h3><p>Telegram physical-pack store</p></div><strong id="cold-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-archive">R</div><div><span class="card-label">RENEWAL</span><h3>Next window</h3><p>HOT locations renewed after 18 days</p></div><strong>18d</strong></article></div>
+</OpsFrame>

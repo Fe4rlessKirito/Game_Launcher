@@ -1,0 +1,81 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+type PageKey = 'overview' | 'activity' | 'storage' | 'providers';
+interface Props {
+  active: PageKey;
+  title: string;
+}
+
+const { active, title } = Astro.props;
+const navigation: Array<{ key: PageKey; label: string; glyph: string; href: string }> = [
+  { key: 'overview', label: 'Overview', glyph: '◌', href: '/dashboard/' },
+  { key: 'activity', label: 'Activity', glyph: '↯', href: '/dashboard/activity/' },
+  { key: 'storage', label: 'Storage', glyph: '▣', href: '/dashboard/storage/' },
+  { key: 'providers', label: 'Providers', glyph: '⌁', href: '/dashboard/providers/' },
+];
+---
+
+<BaseLayout title={`${title} — Vaultnode`} description="Public operations dashboard for the Vaultnode game distribution platform." chrome={false}>
+  <main class="ops-shell" data-api-base="https://vaultnode.pp.ua" data-ops-page={active}>
+    <aside class="ops-sidebar">
+      <a href="/" class="ops-brand"><img class="ops-brand-image" src="/assets/vaultnode-mark.png" alt="Vaultnode" /><span><strong>VAULTNODE</strong><small>CONTROL PLANE</small></span></a>
+      <div class="ops-cluster"><span class="status-dot status-dot-live"></span><span><small>ACTIVE CLUSTER</small><strong>Mantle / production</strong></span><span class="ops-chevron">⌄</span></div>
+      <nav class="ops-nav" aria-label="Operations navigation">
+        {navigation.map((item) => <a class:list={['ops-nav-link', active === item.key && 'active']} href={item.href} aria-current={active === item.key ? 'page' : undefined}><span class="nav-glyph">{item.glyph}</span> {item.label}</a>)}
+      </nav>
+      <div class="ops-sidebar-footer"><div class="sidebar-rule"></div><div class="mini-health"><span class="status-dot status-dot-live"></span><span><strong id="sidebar-health">Connected</strong><small id="sidebar-sync">Waiting for first sync</small></span></div><a href="/" class="back-link">← Back to site</a></div>
+    </aside>
+
+    <section class="ops-content">
+      <header class="ops-topbar"><div><span class="eyebrow">SERVER OPERATIONS</span><h1>{title}</h1></div><div class="topbar-actions"><span class="live-pill"><span class="pulse-dot"></span><span id="live-label">Public status</span></span><button class="icon-button" id="refresh-button" type="button" aria-label="Refresh status">↻</button></div></header>
+      <div class="operator-banner public-banner"><div class="banner-icon">●</div><div><strong>Public status feed</strong><p>Live health, provider availability, stored pack usage, and restore activity. Administrative actions and credentials remain private.</p></div><span class="public-banner-note">Updates every 15 seconds</span></div>
+      <slot />
+      <footer class="ops-footer"><span>Vaultnode control plane · Mantle / production</span><span id="footer-sync">Telemetry is not connected</span></footer>
+    </section>
+  </main>
+
+  <script>
+    type ProviderHealth = { provider: string; healthy: boolean; tier: string };
+    type ProviderUsage = { provider: string; tier: string; used_bytes: number; last_capacity_check?: string };
+    type PublicStatus = { status: string; database_ready: boolean; storage_configured: boolean; providers: ProviderHealth[]; usage: ProviderUsage[]; total_used_bytes: number; pending_restores: number };
+
+    const root = document.querySelector<HTMLElement>('.ops-shell');
+    const apiBase = root?.dataset.apiBase || 'https://vaultnode.pp.ua';
+    const text = (selector: string, value: string) => { const element = document.querySelector<HTMLElement>(selector); if (element) element.textContent = value; };
+    const formatBytes = (value: number) => { if (!Number.isFinite(value) || value <= 0) return '0 B'; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(2)} GB`; return `${(value / 1024 ** 4).toFixed(2)} TB`; };
+
+    async function refreshTelemetry() {
+      const started = Date.now();
+      try {
+        const ready = await fetch(`${apiBase.replace(/\/$/, '')}/v1/ready`, { cache: 'no-store' });
+        const latency = Date.now() - started;
+        text('#latency-value', `${latency}ms`); text('#last-probe', 'just now'); text('#latency-state', ready.ok ? 'Healthy response' : 'Degraded response');
+        if (!ready.ok) throw new Error(`Readiness returned ${ready.status}`);
+        const publicResponse = await fetch(`${apiBase.replace(/\/$/, '')}/api/v1/public/status`, { cache: 'no-store' });
+        if (!publicResponse.ok) throw new Error(`Public status returned ${publicResponse.status}`);
+        const publicStatus = await publicResponse.json() as PublicStatus;
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const healthyProviders = publicStatus.providers.filter((provider) => provider.healthy).length;
+        const pending = publicStatus.pending_restores || 0;
+        text('#live-label', 'Public status'); text('#system-status', publicStatus.status === 'operational' ? 'Operational' : 'Degraded'); text('#system-detail', `Mantle control plane · updated ${now}`); text('#api-state', 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#sidebar-health', publicStatus.status === 'operational' ? 'Operational' : 'Degraded'); text('#sidebar-sync', `Updated ${now}`); text('#footer-sync', `Public status · updated ${now}`); text('#latency-state', 'Healthy response'); text('#active-work', `${pending}`); text('#queue-count', pending ? `${pending} active` : 'clear'); text('#work-state', pending ? 'Restore queue active' : 'No restore jobs'); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Public provider health'); text('#activity-note', `Public snapshot · updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', now); text('#snapshot-age', 'Updated just now');
+        document.querySelector('#system-orb')?.classList.add('orb-online');
+
+        const usageByProvider = new Map<string, number>();
+        publicStatus.usage.forEach((account) => { const normalized = account.provider.toLowerCase(); const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => normalized.includes(candidate)); if (key) usageByProvider.set(key, (usageByProvider.get(key) || 0) + (account.used_bytes || 0)); });
+        const totalUsed = publicStatus.total_used_bytes || [...usageByProvider.values()].reduce((sum, value) => sum + value, 0);
+        text('#total-used', formatBytes(totalUsed)); text('#storage-updated', 'just now'); text('#activity-updated', `Updated ${now}`);
+        ['filemirage', 'telegram', 'buzzheavier'].forEach((key) => { const card = document.querySelector<HTMLElement>(`[data-provider="${key}"]`); if (!card) return; const used = usageByProvider.get(key) || 0; const usage = card.querySelector<HTMLElement>('.provider-usage'); if (usage) usage.textContent = formatBytes(used); const detail = card.querySelector<HTMLElement>('.provider-detail'); if (detail) detail.textContent = totalUsed ? `${((used / totalUsed) * 100).toFixed(0)}% of stored data` : 'No packs stored'; const bar = card.querySelector<HTMLElement>('.provider-bar span'); if (bar) bar.style.width = totalUsed ? `${Math.max(used ? 4 : 0, (used / totalUsed) * 100)}%` : '0%'; });
+        const hot = publicStatus.providers.filter((provider) => provider.tier === 'HOT' && provider.healthy).length; const cold = publicStatus.providers.filter((provider) => provider.tier === 'COLD' && provider.healthy).length; text('#hot-health', hot ? `${hot} healthy` : 'Needs attention'); text('#cold-health', cold ? `${cold} healthy` : 'Needs attention');
+        publicStatus.providers.forEach((provider) => { const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => provider.provider.toLowerCase().includes(candidate)); if (!key) return; const card = document.querySelector<HTMLElement>(`[data-provider="${key}"]`); if (!card) return; const badge = card.querySelector<HTMLElement>('.provider-status'); if (badge) { badge.className = `provider-status ${provider.healthy ? 'status-good' : 'status-bad'}`; badge.innerHTML = `<i></i> ${provider.healthy ? 'Healthy' : 'Degraded'}`; } const detailStatus = card.querySelector<HTMLElement>('.provider-detail-status'); if (detailStatus) detailStatus.textContent = provider.healthy ? 'Healthy and reachable' : 'Degraded'; });
+        document.querySelectorAll<HTMLElement>('.job-row').forEach((row) => { const jobState = row.querySelector<HTMLElement>('.job-state'); if (jobState) jobState.textContent = row.dataset.job === 'restore' ? (pending ? `${pending} queued` : 'Queue clear') : 'Standing by'; });
+      } catch (error) {
+        text('#live-label', 'Status offline'); text('#system-status', 'Unavailable'); text('#system-detail', error instanceof Error ? error.message : 'Could not reach the control plane'); text('#sidebar-health', 'Needs attention'); text('#sidebar-sync', 'Sync failed'); text('#footer-sync', 'Public status unavailable'); text('#activity-note', 'Public status unavailable');
+      }
+    }
+
+    document.querySelector('#refresh-button')?.addEventListener('click', refreshTelemetry);
+    window.setInterval(refreshTelemetry, 15000);
+    refreshTelemetry();
+  </script>
+</BaseLayout>

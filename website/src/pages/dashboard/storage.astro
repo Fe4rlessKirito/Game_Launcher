@@ -1,0 +1,25 @@
+---
+import OpsFrame from '../../components/OpsFrame.astro';
+
+const providers = [
+  { name: 'FileMirage', kind: 'HOT · direct delivery', key: 'filemirage', tone: 'blue' },
+  { name: 'Telegram', kind: 'COLD · retained packs', key: 'telegram', tone: 'violet' },
+  { name: 'Buzzheavier', kind: 'HOT · capability gated', key: 'buzzheavier', tone: 'amber' },
+];
+---
+
+<OpsFrame active="storage" title="Storage">
+  <div class="page-intro"><div><span class="eyebrow">STORAGE INVENTORY</span><h2>Where the physical packs live</h2><p>Aggregate usage is public; account-level capacity and credentials remain private.</p></div><span class="page-chip">Pack-first · 512 MiB target</span></div>
+
+  <div class="overview-grid storage-metrics">
+    <article class="hero-status card-surface"><div class="card-label">STORAGE COVERAGE</div><div class="hero-status-row"><div><h2 id="coverage-value">—</h2><p>Healthy configured providers</p></div><div class="system-orb" id="system-orb"><span></span></div></div><div class="hero-meta"><span><i class="status-dot status-dot-live"></i> Public provider health <b id="coverage-state">Checking</b></span></div></article>
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">TOTAL USED</span><span class="metric-icon icon-green">▣</span></div><div class="metric-value" id="total-used">—</div><p>Reported physical pack bytes</p><div class="metric-foot"><span class="metric-good">Aggregate only</span><span id="storage-updated">—</span></div></article>
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE RESTORES</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
+  </div>
+
+  <div class="section-heading providers-heading"><div><span class="eyebrow">PUBLIC USAGE</span><h2>Physical packs by provider</h2></div><span class="section-note" id="activity-note">Public status · live</span></div>
+  <div class="provider-grid">{providers.map((provider) => <article class={`provider-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-top"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><span class="provider-status status-unknown"><i></i> Checking</span></div><h3>{provider.name}</h3><p>{provider.kind}</p><div class="provider-bar" aria-label={`${provider.name} share of stored data`}><span></span></div><div class="provider-bottom"><span class="provider-detail">Checking public usage</span><strong class="provider-usage">—</strong></div></article>)}</div>
+
+  <div class="section-heading storage-heading"><div><span class="eyebrow">STORAGE POLICY</span><h2>Tier health</h2></div><span class="section-note">Only observed providers are enabled</span></div>
+  <div class="tier-row"><article class="tier-card card-surface"><div class="tier-icon tier-hot">H</div><div><span class="card-label">HOT</span><h3>Fast delivery</h3><p>Direct pack downloads</p></div><strong id="hot-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-cold">C</div><div><span class="card-label">COLD</span><h3>Retained archive</h3><p>Telegram physical-pack store</p></div><strong id="cold-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-archive">R</div><div><span class="card-label">RENEWAL</span><h3>Next window</h3><p>HOT locations renewed after 18 days</p></div><strong>18d</strong></article></div>
+</OpsFrame>

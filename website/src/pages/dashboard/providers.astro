@@ -1,0 +1,17 @@
+---
+import OpsFrame from '../../components/OpsFrame.astro';
+
+const providers = [
+  { name: 'FileMirage', tier: 'HOT', kind: 'Direct pack delivery', key: 'filemirage', tone: 'blue', note: 'Primary hot mirror' },
+  { name: 'Telegram', tier: 'COLD', kind: 'Retained physical-pack archive', key: 'telegram', tone: 'violet', note: 'Recovery source' },
+  { name: 'Buzzheavier', tier: 'HOT', kind: 'Capability-gated mirror', key: 'buzzheavier', tone: 'amber', note: 'Not enabled in current deployment' },
+];
+---
+
+<OpsFrame active="providers" title="Providers">
+  <div class="page-intro"><div><span class="eyebrow">STORAGE PROVIDERS</span><h2>Provider availability</h2><p>Only capabilities observed by the staging probes are used for delivery.</p></div><span class="page-chip">Public health view</span></div>
+
+  <div class="provider-detail-grid">{providers.map((provider) => <article class={`provider-detail-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-detail-head"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><span class="provider-status status-unknown"><i></i> Checking</span></div><div><span class="card-label">{provider.tier} PROVIDER</span><h2>{provider.name}</h2><p>{provider.kind}</p></div><div class="provider-capability"><span><strong>Status</strong><b class="provider-detail-status">Waiting for public probe</b></span><span><strong>Role</strong><b>{provider.note}</b></span><span><strong>Stored usage</strong><b class="provider-usage">—</b></span></div></article>)}</div>
+
+  <article class="wide-page-card card-surface"><div class="activity-card-head"><div><span class="card-label">DELIVERY MODEL</span><h3>How providers are used</h3></div><span class="page-chip subtle-chip">Pack-first</span></div><div class="visibility-grid provider-model-grid"><div><strong>HOT mirrors</strong><span>Latest physical packs are delivered directly by the healthy hot providers.</span></div><div><strong>COLD archive</strong><span>Telegram retains packs for recovery and older builds without becoming the normal download path.</span></div><div><strong>Failover</strong><span>When a hot reference is missing, the private worker restores and verifies the pack before publishing a new hot location.</span></div></div></article>
+</OpsFrame>

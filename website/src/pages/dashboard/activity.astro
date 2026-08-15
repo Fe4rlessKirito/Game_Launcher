@@ -1,0 +1,26 @@
+---
+import OpsFrame from '../../components/OpsFrame.astro';
+
+const jobs = [
+  { key: 'restore', title: 'Pack restore queue', detail: 'Public queue status', icon: '↗' },
+  { key: 'renewal', title: 'HOT renewal window', detail: '18 day renewal policy', icon: '⟳' },
+  { key: 'provisioning', title: 'Capacity provisioning', detail: 'Administrative state is private', icon: '＋' },
+];
+---
+
+<OpsFrame active="activity" title="Activity">
+  <div class="page-intro"><div><span class="eyebrow">LIVE WORKLOAD</span><h2>Activity overview</h2><p>Publicly visible work state from the Vaultnode control plane.</p></div><span class="page-chip">15 second refresh</span></div>
+
+  <div class="overview-grid activity-metrics">
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">API LATENCY</span><span class="metric-spark spark-blue"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="metric-value" id="latency-value">—</div><p>Readiness response · last probe</p><div class="metric-foot"><span class="metric-good" id="latency-state">Awaiting probe</span><span id="last-probe">—</span></div></article>
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE WORK</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
+    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">PLATFORM STATUS</span><span class="metric-icon icon-green">✓</span></div><div class="metric-value" id="system-status">—</div><p id="system-detail">Contacting the Mantle control plane…</p><div class="metric-foot"><span class="metric-good" id="api-state">Checking</span><span id="activity-updated">—</span></div></article>
+  </div>
+
+  <div class="activity-grid activity-page-grid">
+    <article class="activity-card card-surface"><div class="activity-card-head"><div><span class="card-label">WORK QUEUE</span><h3>What the platform is doing</h3></div><span class="queue-count" id="queue-count">—</span></div><div class="job-list">{jobs.map((job) => <div class="job-row" data-job={job.key}><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>
+    <article class="activity-card card-surface throughput-card"><div class="activity-card-head"><div><span class="card-label">PUBLIC SNAPSHOT</span><h3>What the platform reports</h3></div><span class="time-filter" id="snapshot-age">Live</span></div><div class="public-signal"><div class="signal-row"><span><i class="signal-icon signal-api"></i> API readiness</span><strong id="public-api-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-storage"></i> Storage providers</span><strong id="public-provider-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Restore queue</span><strong id="public-restore-signal">—</strong></div></div><div class="chart-footer"><span><i class="legend-dot blue-dot"></i> Public telemetry</span><strong id="public-snapshot">—</strong></div></article>
+  </div>
+
+  <article class="wide-page-card card-surface"><div class="activity-card-head"><div><span class="card-label">EVENT VISIBILITY</span><h3>What is intentionally public</h3></div><span class="page-chip subtle-chip">Read only</span></div><div class="visibility-grid"><div><strong>Health checks</strong><span>API and configured storage provider availability.</span></div><div><strong>Workload counts</strong><span>How many restore jobs are currently queued or running.</span></div><div><strong>Private operations</strong><span>Credentials, account IDs, and administrative actions stay hidden.</span></div></div></article>
+</OpsFrame>
