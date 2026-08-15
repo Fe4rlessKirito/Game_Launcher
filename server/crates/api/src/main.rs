@@ -219,6 +219,19 @@ struct SupabaseAuth {
 struct SupabaseUser {
     id: String,
     email: Option<String>,
+    #[serde(default)]
+    user_metadata: serde_json::Value,
+}
+
+impl SupabaseUser {
+    fn username(&self) -> Option<String> {
+        self.user_metadata
+            .get("username")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 24)
+            .map(str::to_owned)
+    }
 }
 
 #[derive(Debug)]
@@ -286,6 +299,7 @@ impl SupabaseAuth {
 struct CurrentUserResponse {
     id: String,
     email: Option<String>,
+    username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -852,9 +866,11 @@ async fn current_user(
             ));
         }
     };
+    let username = user.username();
     Ok(Json(CurrentUserResponse {
         id: user.id,
         email: user.email,
+        username,
     }))
 }
 

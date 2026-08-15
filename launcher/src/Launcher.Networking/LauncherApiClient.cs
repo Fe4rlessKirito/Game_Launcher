@@ -29,6 +29,11 @@ public sealed record ResolvedPack(
     [property: JsonPropertyName("chunk_hashes")] IReadOnlyList<string> ChunkHashes,
     [property: JsonPropertyName("sources")] IReadOnlyList<ResolvedPackSource> Sources);
 
+public sealed record LauncherUserProfile(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("email")] string? Email,
+    [property: JsonPropertyName("username")] string? Username);
+
 public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 {
     private const int MaxRestorePolls = 20;
@@ -58,6 +63,12 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
         while (cursor is not null);
 
         return games;
+    }
+
+    public async Task<LauncherUserProfile> GetCurrentUserAsync(CancellationToken cancellationToken = default)
+    {
+        return await httpClient.GetFromJsonAsync<LauncherUserProfile>(new Uri(baseUri, "api/v1/me"), JsonOptions, cancellationToken).ConfigureAwait(false)
+            ?? throw new HttpRequestException("API returned an empty user profile.");
     }
 
     public async Task<Manifest> GetManifestAsync(string buildId, CancellationToken cancellationToken = default)

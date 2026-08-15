@@ -39,6 +39,7 @@ public partial class ShellViewModel : ObservableObject
     [ObservableProperty] private bool _showOnlyReadyToPlay;
     [ObservableProperty] private string _connectionStatus = "Offline-ready";
     [ObservableProperty] private string _runtimeError = string.Empty;
+    [ObservableProperty] private string _accountDisplayName = "Guest";
 
     public ObservableCollection<SidebarCategory> SidebarCategories { get; }
 
@@ -132,6 +133,9 @@ public partial class ShellViewModel : ObservableObject
     {
         ConnectionStatus = snapshot.ConnectionStatus;
         RuntimeError = snapshot.Error ?? string.Empty;
+        AccountDisplayName = snapshot.User?.Username is { Length: > 0 } username
+            ? $"@{username}"
+            : snapshot.User is not null ? "Account" : "Guest";
         _downloadsPage.ApplyRuntimeJobs(snapshot.DownloadJobs, snapshot.Games);
         UpdateDownloadStatus(snapshot.DownloadJobs);
         if (snapshot.Games.Count == 0) return;

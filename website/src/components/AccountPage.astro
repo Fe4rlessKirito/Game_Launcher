@@ -44,6 +44,7 @@ const registerMode = mode === 'register';
         <p class="account-card-description">{registerMode ? 'Create an account for your Vaultnode library.' : 'Use your Vaultnode email and password.'}</p>
         <div class="account-fields">
           <div class="account-field"><label for="auth-email">Email address</label><input id="auth-email" type="email" autocomplete="email" required /></div>
+          {registerMode && <div class="account-field"><label for="auth-username">Username</label><input id="auth-username" type="text" autocomplete="username" minlength="3" maxlength="24" pattern="[A-Za-z0-9_]+" placeholder="e.g. marko" required /><small>3–24 letters, numbers, or underscores.</small></div>}
           <div class="account-field"><label for="auth-password">Password</label><input id="auth-password" type="password" autocomplete={registerMode ? 'new-password' : 'current-password'} minlength="8" required /></div>
         </div>
         <div class="account-actions">
@@ -56,6 +57,7 @@ const registerMode = mode === 'register';
       <div id="account-panel" hidden class="account-card signed-in-card">
         <p class="account-card-kicker">SIGNED IN</p>
         <h2>Welcome back</h2>
+        <p class="signed-in-username" id="account-username"></p>
         <p class="signed-in-email" id="account-email"></p>
         <p id="launcher-session" class="account-card-description">Checking launcher access…</p>
         <button id="auth-signout" class="account-toggle" type="button">Sign out</button>
@@ -77,9 +79,11 @@ const registerMode = mode === 'register';
   const authPanel = document.querySelector<HTMLElement>('#account-panel');
   const configWarning = document.querySelector<HTMLElement>('#auth-config-warning');
   const emailInput = document.querySelector<HTMLInputElement>('#auth-email');
+  const usernameInput = document.querySelector<HTMLInputElement>('#auth-username');
   const passwordInput = document.querySelector<HTMLInputElement>('#auth-password');
   const authMessage = document.querySelector<HTMLElement>('#auth-message');
   const authSubmit = document.querySelector<HTMLButtonElement>('#auth-submit');
+  const accountUsername = document.querySelector<HTMLElement>('#account-username');
   const accountEmail = document.querySelector<HTMLElement>('#account-email');
   const launcherSession = document.querySelector<HTMLElement>('#launcher-session');
   const signOut = document.querySelector<HTMLButtonElement>('#auth-signout');
@@ -103,6 +107,7 @@ const registerMode = mode === 'register';
     if (session) {
       if (authForm) authForm.hidden = true;
       if (authPanel) authPanel.hidden = false;
+      if (accountUsername) accountUsername.textContent = session.user.user_metadata?.username ? `@${session.user.user_metadata.username}` : 'Username not set';
       if (accountEmail) accountEmail.textContent = session.user.email ?? session.user.id;
       await checkLauncherAccess(session.access_token);
     } else {
@@ -115,10 +120,12 @@ const registerMode = mode === 'register';
     event.preventDefault();
     if (!supabase || !emailInput || !passwordInput) return;
     if (!emailInput.value || passwordInput.value.length < 8) { message('Enter a valid email and an 8-character password.'); return; }
+    const username = usernameInput?.value.trim() ?? '';
+    if (registerMode && !/^[A-Za-z0-9_]{3,24}$/.test(username)) { message('Choose a username with 3–24 letters, numbers, or underscores.'); return; }
     if (authSubmit) authSubmit.disabled = true;
     message(registerMode ? 'Creating account…' : 'Signing in…');
     const result = registerMode
-      ? await supabase.auth.signUp({ email: emailInput.value, password: passwordInput.value, options: { emailRedirectTo: `${window.location.origin}/account/` } })
+      ? await supabase.auth.signUp({ email: emailInput.value, password: passwordInput.value, options: { data: { username }, emailRedirectTo: `${window.location.origin}/account/` } })
       : await supabase.auth.signInWithPassword({ email: emailInput.value, password: passwordInput.value });
     if (authSubmit) authSubmit.disabled = false;
     if (result.error) { message(result.error.message); return; }
@@ -155,6 +162,7 @@ const registerMode = mode === 'register';
   .account-fields { display: grid; gap: 18px; margin-top: 26px; }
   .account-field { display: grid; gap: 8px; }
   .account-field label { color: #c1cedd; font-size: 12px; font-weight: 600; }
+  .account-field small { margin-top: -2px; color: #71869c; font-size: 11px; line-height: 1.4; }
   .account-field input { box-sizing: border-box; width: 100%; height: 44px; padding: 0 12px; border: 1px solid #34465e; border-radius: 6px; outline: none; background: #0d1521; color: var(--text); font: inherit; font-size: 13px; }
   .account-field input:hover { border-color: #4c6480; }
   .account-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(117,224,193,.12); }
@@ -169,6 +177,7 @@ const registerMode = mode === 'register';
   .account-message { min-height: 20px; margin: 14px 0 0; color: #91a6bc; font-size: 12px; line-height: 1.5; }
   .account-notice { padding: 15px 17px; border: 1px solid #765d31; border-radius: 8px; background: #241e15; color: #d5b77b; font-size: 13px; line-height: 1.5; }
   .signed-in-card h2 { margin-top: 12px; }
+  .signed-in-username { margin: 18px 0 0; color: var(--text); font-size: 15px; font-weight: 600; }
   .signed-in-email { margin: 18px 0 0; color: #dce7f3; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
   .signed-in-card .account-toggle { margin-top: 24px; }
   .account-footnote { margin: 15px 2px 0; color: #6f8399; font-size: 11px; line-height: 1.5; }

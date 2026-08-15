@@ -59,7 +59,8 @@ public sealed record LauncherRuntimeSnapshot(
     IReadOnlyList<PersistedDownloadJob> DownloadJobs,
     bool IsOnline,
     string ConnectionStatus,
-    string? Error);
+    string? Error,
+    LauncherUserProfile? User);
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
@@ -80,6 +81,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly LauncherPaths _paths;
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
+    private readonly bool _hasAccessToken;
     private readonly LauncherApiClient _apiClient;
     private readonly LocalStateStore _stateStore;
     private readonly ChunkCache _chunkCache;
@@ -88,7 +90,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly object _downloaderGate = new();
     private DownloadManager? _activeDownloader;
     private IReadOnlyList<GameCatalogItem> _catalog = [];
-    private LauncherRuntimeSnapshot _snapshot = new([], [], false, "Offline-ready", null);
+    private LauncherRuntimeSnapshot _snapshot = new([], [], false, "Offline-ready", null, null);
     private bool _initialized;
 
     public event Action<LauncherRuntimeSnapshot>? SnapshotChanged;
@@ -104,6 +106,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         // the first verified bytes arrive.
         _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         _ownsHttpClient = httpClient is null;
+        _hasAccessToken = !string.IsNullOrWhiteSpace(accessToken);
         if (!string.IsNullOrWhiteSpace(accessToken))
         {
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Trim());
@@ -218,7 +221,23 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
         var games = BuildGames(_catalog, installed);
         var connectionStatus = online ? "Online" : "Offline-ready";
-        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error);
+        LauncherUserProfile? user = null;
+        if (_hasAccessToken)
+        {
+            try
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(TimeSpan.FromSeconds(8));
+                user = await _apiClient.GetCurrentUserAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidDataException or JsonException)
+            {
+                // Catalog access remains usable if the optional profile lookup
+                // fails or the staging token has expired.
+            }
+        }
+
+        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user);
         SnapshotChanged?.Invoke(_snapshot);
         return _snapshot;
     }
