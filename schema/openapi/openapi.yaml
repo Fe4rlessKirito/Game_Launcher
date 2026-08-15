@@ -94,7 +94,7 @@ components:
   schemas:
     PublicStatusResponse:
       type: object
-      required: [status, database_ready, storage_configured, providers, usage, total_used_bytes, pending_restores, probe_interval_seconds, stale, utc]
+      required: [status, database_ready, storage_configured, providers, usage, total_used_bytes, pending_restores, system, probe_interval_seconds, stale, utc]
       properties:
         status: { type: string, enum: [starting, operational, degraded] }
         database_ready: { type: boolean }
@@ -120,6 +120,16 @@ components:
               last_capacity_check: { type: string, format: date-time, nullable: true }
         total_used_bytes: { type: integer, format: int64, minimum: 0 }
         pending_restores: { type: integer, minimum: 0 }
+        system:
+          type: object
+          required: [measured_at]
+          properties:
+            cpu_usage_percent: { type: number, format: double, minimum: 0, maximum: 100, nullable: true }
+            memory_used_bytes: { type: integer, format: int64, minimum: 0, nullable: true }
+            memory_total_bytes: { type: integer, format: int64, minimum: 0, nullable: true }
+            disk_used_bytes: { type: integer, format: int64, minimum: 0, nullable: true }
+            disk_total_bytes: { type: integer, format: int64, minimum: 0, nullable: true }
+            measured_at: { type: string, format: date-time }
         last_probe_at: { type: string, format: date-time, nullable: true }
         last_successful_probe_at: { type: string, format: date-time, nullable: true }
         probe_duration_ms: { type: integer, minimum: 0, nullable: true }

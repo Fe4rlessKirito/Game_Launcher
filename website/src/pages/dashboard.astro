@@ -22,6 +22,13 @@ const jobs = [
     <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">STORAGE COVERAGE</span><span class="metric-icon icon-green">✓</span></div><div class="metric-value" id="coverage-value">—</div><p>Healthy configured providers</p><div class="metric-foot"><span class="metric-good" id="coverage-state">Checking</span><span>public</span></div></article>
   </div>
 
+  <div class="section-heading resources-heading"><div><span class="eyebrow">SERVER RESOURCES</span><h2>Current machine usage</h2></div><span class="section-note">Collected by Mantle · server-side</span></div>
+  <div class="resource-grid">
+    <article class="resource-card card-surface"><div class="resource-head"><span class="resource-icon resource-cpu">CPU</span><strong id="system-cpu-value">—</strong></div><div class="resource-bar"><span id="system-cpu-bar"></span></div><div class="resource-foot"><span>Processor usage</span><small id="system-cpu-detail">Waiting for probe</small></div></article>
+    <article class="resource-card card-surface"><div class="resource-head"><span class="resource-icon resource-memory">RAM</span><strong id="system-memory-value">—</strong></div><div class="resource-bar"><span id="system-memory-bar"></span></div><div class="resource-foot"><span>Memory used</span><small id="system-memory-detail">Waiting for probe</small></div></article>
+    <article class="resource-card card-surface"><div class="resource-head"><span class="resource-icon resource-disk">DISK</span><strong id="system-disk-value">—</strong></div><div class="resource-bar"><span id="system-disk-bar"></span></div><div class="resource-foot"><span>Root disk used</span><small id="system-disk-detail">Waiting for probe</small></div></article>
+  </div>
+
   <div class="section-heading"><div><span class="eyebrow">CURRENTLY RUNNING</span><h2>Activity overview</h2></div><a class="section-link" href="/dashboard/activity/">Open activity →</a></div>
   <div class="activity-grid">
     <article class="activity-card card-surface"><div class="activity-card-head"><div><span class="card-label">WORK QUEUE</span><h3>What the platform is doing</h3></div><span class="queue-count" id="queue-count">—</span></div><div class="job-list" id="job-list">{jobs.map((job) => <div class="job-row" data-job={job.key}><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>

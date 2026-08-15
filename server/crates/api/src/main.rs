@@ -28,9 +28,10 @@ use launcher_storage::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    env,
+    env, fs,
     net::SocketAddr,
     path::PathBuf,
+    process::Command,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -214,12 +215,34 @@ struct PublicStatusResponse {
     usage: Vec<PublicProviderUsageResponse>,
     total_used_bytes: u64,
     pending_restores: usize,
+    system: PublicSystemMetrics,
     last_probe_at: Option<chrono::DateTime<Utc>>,
     last_successful_probe_at: Option<chrono::DateTime<Utc>>,
     probe_duration_ms: Option<u64>,
     probe_interval_seconds: u64,
     stale: bool,
     utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicSystemMetrics {
+    cpu_usage_percent: Option<f64>,
+    memory_used_bytes: Option<u64>,
+    memory_total_bytes: Option<u64>,
+    disk_used_bytes: Option<u64>,
+    disk_total_bytes: Option<u64>,
+    measured_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Default)]
+struct SystemProbeState {
+    previous_cpu: Option<CpuCounters>,
+}
+
+#[derive(Clone, Copy)]
+struct CpuCounters {
+    total: u64,
+    idle: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -778,6 +801,7 @@ fn initial_public_status(storage_configured: bool, poll_seconds: u64) -> PublicS
         usage: Vec::new(),
         total_used_bytes: 0,
         pending_restores: 0,
+        system: initial_system_metrics(),
         last_probe_at: None,
         last_successful_probe_at: None,
         probe_duration_ms: None,
@@ -785,6 +809,84 @@ fn initial_public_status(storage_configured: bool, poll_seconds: u64) -> PublicS
         stale: true,
         utc: Utc::now(),
     }
+}
+
+fn initial_system_metrics() -> PublicSystemMetrics {
+    PublicSystemMetrics {
+        cpu_usage_percent: None,
+        memory_used_bytes: None,
+        memory_total_bytes: None,
+        disk_used_bytes: None,
+        disk_total_bytes: None,
+        measured_at: Utc::now(),
+    }
+}
+
+fn sample_system_metrics(state: &mut SystemProbeState) -> PublicSystemMetrics {
+    let current_cpu = read_cpu_counters();
+    let cpu_usage_percent = current_cpu.and_then(|current| {
+        let usage = state.previous_cpu.and_then(|previous| {
+            let total_delta = current.total.saturating_sub(previous.total);
+            let idle_delta = current.idle.saturating_sub(previous.idle);
+            (total_delta > 0).then(|| {
+                ((total_delta.saturating_sub(idle_delta) as f64 / total_delta as f64) * 100.0)
+                    .clamp(0.0, 100.0)
+            })
+        });
+        state.previous_cpu = Some(current);
+        usage
+    });
+    let memory_total_bytes = proc_meminfo_bytes("MemTotal:");
+    let memory_available_bytes = proc_meminfo_bytes("MemAvailable:");
+    let memory_used_bytes = memory_total_bytes
+        .zip(memory_available_bytes)
+        .map(|(total, available)| total.saturating_sub(available));
+    let (disk_used_bytes, disk_total_bytes) = read_root_disk_usage()
+        .map(|(used, total)| (Some(used), Some(total)))
+        .unwrap_or((None, None));
+    PublicSystemMetrics {
+        cpu_usage_percent,
+        memory_used_bytes,
+        memory_total_bytes,
+        disk_used_bytes,
+        disk_total_bytes,
+        measured_at: Utc::now(),
+    }
+}
+
+fn read_cpu_counters() -> Option<CpuCounters> {
+    let contents = fs::read_to_string("/proc/stat").ok()?;
+    let line = contents.lines().find(|line| line.starts_with("cpu "))?;
+    let values = line
+        .split_whitespace()
+        .skip(1)
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let total = values.iter().copied().sum();
+    let idle =
+        values.get(3).copied().unwrap_or_default() + values.get(4).copied().unwrap_or_default();
+    Some(CpuCounters { total, idle })
+}
+
+fn proc_meminfo_bytes(label: &str) -> Option<u64> {
+    let contents = fs::read_to_string("/proc/meminfo").ok()?;
+    let line = contents.lines().find(|line| line.starts_with(label))?;
+    let kilobytes = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    Some(kilobytes.saturating_mul(1024))
+}
+
+fn read_root_disk_usage() -> Option<(u64, u64)> {
+    let output = Command::new("df").args(["-B1", "-P", "/"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let contents = String::from_utf8_lossy(&output.stdout);
+    let line = contents.lines().skip(1).last()?;
+    let fields = line.split_whitespace().collect::<Vec<_>>();
+    let total = fields.get(1)?.parse::<u64>().ok()?;
+    let used = fields.get(2)?.parse::<u64>().ok()?;
+    Some((used, total))
 }
 
 async fn public_status(State(state): State<AppState>) -> Json<PublicStatusResponse> {
@@ -796,16 +898,18 @@ async fn run_public_status_monitor(state: AppState) {
         poll_seconds = state.public_status_poll_seconds,
         "public telemetry monitor started"
     );
+    let mut system_probe_state = SystemProbeState::default();
     loop {
-        refresh_public_status(&state).await;
+        refresh_public_status(&state, &mut system_probe_state).await;
         tokio::time::sleep(Duration::from_secs(state.public_status_poll_seconds)).await;
     }
 }
 
-async fn refresh_public_status(state: &AppState) {
+async fn refresh_public_status(state: &AppState, system_probe_state: &mut SystemProbeState) {
     let started = Instant::now();
     let probe_at = Utc::now();
     let previous = state.public_status.read().await.clone();
+    let system = sample_system_metrics(system_probe_state);
     let providers = state
         .storage
         .health()
@@ -897,6 +1001,7 @@ async fn refresh_public_status(state: &AppState) {
         usage,
         total_used_bytes,
         pending_restores,
+        system,
         last_probe_at: Some(probe_at),
         last_successful_probe_at,
         probe_duration_ms: Some(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
