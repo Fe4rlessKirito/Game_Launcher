@@ -4,25 +4,25 @@ import OpsFrame from '../components/OpsFrame.astro';
 const providers = [
   { name: 'FileMirage', kind: 'HOT · direct delivery', key: 'filemirage', tone: 'blue' },
   { name: 'Telegram', kind: 'COLD · retained packs', key: 'telegram', tone: 'violet' },
-  { name: 'Buzzheavier', kind: 'HOT · capability gated', key: 'buzzheavier', tone: 'amber' },
+  { name: 'Buzzheavier', kind: 'HOT · secondary mirror', key: 'buzzheavier', tone: 'amber' },
 ];
 
 const jobs = [
   { key: 'restore', title: 'Pack restore queue', detail: 'Public queue status', icon: '↗' },
   { key: 'renewal', title: 'HOT renewal window', detail: '18 day policy', icon: '⟳' },
-  { key: 'provisioning', title: 'Capacity provisioning', detail: 'Administrative state is private', icon: '＋' },
+  { key: 'provisioning', title: 'Capacity checks', detail: 'Service capacity', icon: '＋' },
 ];
 ---
 
 <OpsFrame active="overview" title="Vaultnode operations">
   <div class="overview-grid">
-    <article class="hero-status card-surface"><div class="card-label">SYSTEM STATUS</div><div class="hero-status-row"><div><h2 id="system-status">Checking system</h2><p id="system-detail">Contacting the Mantle control plane…</p></div><div class="system-orb" id="system-orb"><span></span></div></div><div class="hero-meta"><span><i class="status-dot status-dot-live"></i> API <b id="api-state">Checking</b></span><span><i class="status-dot status-dot-muted"></i> Worker <b>Private</b></span><span><i class="status-dot status-dot-muted"></i> Database <b id="database-state">Protected</b></span></div></article>
+    <article class="hero-status card-surface"><div class="card-label">SYSTEM STATUS</div><div class="hero-status-row"><div><h2 id="system-status">Checking system</h2><p id="system-detail">Checking latest status…</p></div><div class="system-orb" id="system-orb"><span></span></div></div><div class="hero-meta"><span><i class="status-dot status-dot-live"></i> API <b id="api-state">Checking</b></span><span><i class="status-dot status-dot-muted"></i> Storage <b id="database-state">Checking</b></span></div></article>
     <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">API LATENCY</span><span class="metric-spark spark-blue"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="metric-value" id="latency-value">—</div><p>Readiness response · last probe</p><div class="metric-foot"><span class="metric-good" id="latency-state">Awaiting probe</span><span id="last-probe">—</span></div></article>
     <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE WORK</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
     <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">STORAGE COVERAGE</span><span class="metric-icon icon-green">✓</span></div><div class="metric-value" id="coverage-value">—</div><p>Healthy configured providers</p><div class="metric-foot"><span class="metric-good" id="coverage-state">Checking</span><span>public</span></div></article>
   </div>
 
-  <div class="section-heading resources-heading"><div><span class="eyebrow">SERVER RESOURCES</span><h2>Current machine usage</h2></div><span class="section-note">Collected by Mantle · server-side</span></div>
+  <div class="section-heading resources-heading"><div><span class="eyebrow">SERVER RESOURCES</span><h2>Current machine usage</h2></div><span class="section-note">Live metrics</span></div>
   <div class="resource-grid">
     <article class="resource-card card-surface"><div class="resource-head"><span class="resource-icon resource-cpu">CPU</span><strong id="system-cpu-value">—</strong></div><div class="resource-bar"><span id="system-cpu-bar"></span></div><div class="resource-foot"><span>Processor usage</span><small id="system-cpu-detail">Waiting for probe</small></div></article>
     <article class="resource-card card-surface"><div class="resource-head"><span class="resource-icon resource-memory">RAM</span><strong id="system-memory-value">—</strong></div><div class="resource-bar"><span id="system-memory-bar"></span></div><div class="resource-foot"><span>Memory used</span><small id="system-memory-detail">Waiting for probe</small></div></article>
@@ -31,8 +31,8 @@ const jobs = [
 
   <div class="section-heading"><div><span class="eyebrow">CURRENTLY RUNNING</span><h2>Activity overview</h2></div><a class="section-link" href="/dashboard/activity/">Open activity →</a></div>
   <div class="activity-grid">
-    <article class="activity-card card-surface"><div class="activity-card-head"><div><span class="card-label">WORK QUEUE</span><h3>What the platform is doing</h3></div><span class="queue-count" id="queue-count">—</span></div><div class="job-list" id="job-list">{jobs.map((job) => <div class="job-row" data-job={job.key}><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>
-    <article class="activity-card card-surface throughput-card"><div class="activity-card-head"><div><span class="card-label">PUBLIC SNAPSHOT</span><h3>What the platform reports</h3></div><span class="time-filter" id="snapshot-age">Live</span></div><div class="public-signal"><div class="signal-row"><span><i class="signal-icon signal-api"></i> API readiness</span><strong id="public-api-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-storage"></i> Storage providers</span><strong id="public-provider-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Restore queue</span><strong id="public-restore-signal">—</strong></div></div><div class="chart-footer"><span><i class="legend-dot blue-dot"></i> Public telemetry</span><strong id="public-snapshot">—</strong></div></article>
+    <article class="activity-card card-surface"><div class="activity-card-head"><div><span class="card-label">WORK QUEUE</span><h3>Current work</h3></div><span class="queue-count" id="queue-count">—</span></div><div class="job-list" id="job-list">{jobs.map((job) => <div class="job-row" data-job={job.key}><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>
+    <article class="activity-card card-surface throughput-card"><div class="activity-card-head"><div><span class="card-label">STATUS</span><h3>System snapshot</h3></div><span class="time-filter" id="snapshot-age">Live</span></div><div class="public-signal"><div class="signal-row"><span><i class="signal-icon signal-api"></i> API</span><strong id="public-api-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-storage"></i> Storage</span><strong id="public-provider-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Restores</span><strong id="public-restore-signal">—</strong></div></div><div class="chart-footer"><span><i class="legend-dot blue-dot"></i> Last update</span><strong id="public-snapshot">—</strong></div></article>
   </div>
 
   <div class="section-heading providers-heading"><div><span class="eyebrow">STORAGE USED</span><h2>Physical packs by provider</h2></div><a href="/dashboard/storage/" class="section-link">View storage →</a></div>

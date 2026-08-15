@@ -26,6 +26,8 @@
 html { background: var(--background); color: var(--text); }
 body { margin: 0; min-width: 320px; font-family: var(--font-sans); }
 a { color: inherit; text-decoration: none; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .site-brand-mark { display: block; width: 36px; height: 36px; object-fit: contain; }
 .grid-noise { background-image: linear-gradient(rgba(117,224,193,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(117,224,193,.06) 1px, transparent 1px); background-size: 40px 40px; }
 
