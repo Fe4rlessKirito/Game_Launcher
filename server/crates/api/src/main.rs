@@ -204,6 +204,33 @@ struct ReadinessResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct PublicStatusResponse {
+    status: &'static str,
+    database_ready: bool,
+    storage_configured: bool,
+    providers: Vec<PublicProviderStatusResponse>,
+    usage: Vec<PublicProviderUsageResponse>,
+    total_used_bytes: u64,
+    pending_restores: usize,
+    utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicProviderStatusResponse {
+    provider: String,
+    tier: StorageTier,
+    healthy: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicProviderUsageResponse {
+    provider: String,
+    tier: StorageTier,
+    used_bytes: u64,
+    last_capacity_check: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize)]
 struct EmailEventResponse {
     accepted: bool,
     duplicate: bool,
@@ -397,6 +424,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/v1/health", get(liveness))
         .route("/v1/ready", get(readiness))
+        .route("/api/v1/public/status", get(public_status))
         .route("/internal/v1/email-events", post(email_events))
         .route("/metrics", get(storage_metrics))
         .route("/api/v1/storage/status", get(storage_status))
@@ -719,6 +747,78 @@ async fn storage_status(
         storage_health: state.storage.health().await,
         accounts,
         pending_restores,
+    }))
+}
+
+async fn public_status(
+    State(state): State<AppState>,
+) -> Result<Json<PublicStatusResponse>, ApiResponseError> {
+    let providers = state
+        .storage
+        .health()
+        .await
+        .into_iter()
+        .map(|provider| PublicProviderStatusResponse {
+            provider: provider.provider,
+            tier: provider.tier,
+            healthy: provider.healthy,
+        })
+        .collect::<Vec<_>>();
+    let accounts = if let Some(database) = &state.database {
+        database
+            .list_storage_accounts(None)
+            .await
+            .map_err(ApiResponseError::from)?
+    } else {
+        Vec::new()
+    };
+    let mut usage_by_provider = HashMap::<String, PublicProviderUsageResponse>::new();
+    for account in accounts {
+        let snapshot = account.snapshot;
+        let entry = usage_by_provider
+            .entry(snapshot.provider_id.clone())
+            .or_insert_with(|| PublicProviderUsageResponse {
+                provider: snapshot.provider_id.clone(),
+                tier: snapshot.tier,
+                used_bytes: 0,
+                last_capacity_check: None,
+            });
+        entry.used_bytes = entry.used_bytes.saturating_add(snapshot.used_bytes);
+        if snapshot.last_capacity_check > entry.last_capacity_check {
+            entry.last_capacity_check = snapshot.last_capacity_check;
+        }
+    }
+    let mut usage = usage_by_provider.into_values().collect::<Vec<_>>();
+    usage.sort_by(|left, right| left.provider.cmp(&right.provider));
+    let total_used_bytes = usage.iter().map(|provider| provider.used_bytes).sum();
+    let pending_restores = if let Some(database) = &state.database {
+        database
+            .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
+            .await
+            .map_err(ApiResponseError::from)?
+            .len()
+    } else {
+        0
+    };
+    let database_ready = if let Some(database) = &state.database {
+        database.ping().await.is_ok()
+    } else {
+        !state.database_required
+    };
+    let storage_configured = !providers.is_empty();
+    Ok(Json(PublicStatusResponse {
+        status: if database_ready && storage_configured {
+            "operational"
+        } else {
+            "degraded"
+        },
+        database_ready,
+        storage_configured,
+        providers,
+        usage,
+        total_used_bytes,
+        pending_restores,
+        utc: Utc::now(),
     }))
 }
 

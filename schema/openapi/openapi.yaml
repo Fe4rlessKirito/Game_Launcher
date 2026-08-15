@@ -22,6 +22,12 @@ paths:
       responses:
         '200': { description: API and critical database readiness }
         '503': { description: A critical dependency is not ready }
+  /api/v1/public/status:
+    get:
+      operationId: publicStatus
+      responses:
+        '200': { description: Sanitized public server status, provider health, aggregate pack usage, and restore queue count }
+        '503': { description: Public status dependencies are unavailable }
   /metrics:
     get:
       operationId: metrics
