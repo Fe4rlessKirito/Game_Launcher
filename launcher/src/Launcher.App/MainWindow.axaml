@@ -101,20 +101,20 @@
             </Grid>
             <Border Background="{DynamicResource SurfaceElevated}" CornerRadius="4" Height="34">
               <Grid ColumnDefinitions="*,28,28">
-                <Button Classes="GamesHeader" ToolTip.Tip="Choose a game library or grouping">
-                  <Button.Flyout>
-                    <Flyout Placement="BottomEdgeAlignedLeft">
-                      <Border Width="210" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="3" Padding="4">
-                        <StackPanel Spacing="1">
-                          <CheckBox Content="{Binding GamesFilterLabel}" Classes="LibraryMenuItem" IsChecked="True" />
-                          <CheckBox Content="Software (0)" Classes="LibraryMenuItem" />
-                          <CheckBox Content="Tools (0)" Classes="LibraryMenuItem" />
-                          <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="4,4" />
-                          <CheckBox Content="Group by Collection" Classes="LibraryMenuItem" IsChecked="True" />
-                          <CheckBox Content="Group by Library" Classes="LibraryMenuItem" />
-                        </StackPanel>
-                      </Border>
-                    </Flyout>
+                  <Button Classes="GamesHeader" ToolTip.Tip="Choose a game library or grouping">
+                    <Button.Flyout>
+                      <Flyout Placement="BottomEdgeAlignedLeft" FlyoutPresenterClasses="LibraryFlyoutPresenter">
+                        <Border Width="210" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="3" Padding="4">
+                          <StackPanel Spacing="1">
+                            <CheckBox Content="{Binding GamesFilterLabel}" Classes="LibraryMenuItem" IsChecked="True" />
+                            <CheckBox Content="Software (0)" Classes="LibraryMenuItem" />
+                            <CheckBox Content="Tools (0)" Classes="LibraryMenuItem" />
+                            <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="4,4" />
+                            <CheckBox Content="Group by Collection" Classes="LibraryMenuItem" IsChecked="True" />
+                            <CheckBox Content="Group by Library" Classes="LibraryMenuItem" />
+                          </StackPanel>
+                        </Border>
+                      </Flyout>
                   </Button.Flyout>
                   <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Text="Games" VerticalAlignment="Center" />
@@ -148,6 +148,7 @@
                   <StackPanel Spacing="2" Margin="0,10,0,0">
                     <Grid ColumnDefinitions="Auto,*,Auto,Auto"
                           Margin="7,0,4,2"
+                          Background="Transparent"
                           DragDrop.AllowDrop="True"
                           DragDrop.DragOver="OnCategoryDragOver"
                           DragDrop.DragLeave="OnCategoryDragLeave"
@@ -160,7 +161,7 @@
                               CornerRadius="4"
                               Margin="-4,-2"
                               IsHitTestVisible="False" />
-                      <Button Command="{Binding $parent[Window].DataContext.ToggleCategoryCommand}" CommandParameter="{Binding}" Classes="CategoryToggle">
+                      <Button Click="OnCategoryToggleClick" Classes="CategoryToggle">
                         <TextBlock Text="{Binding ExpandGlyph}" Classes="CategoryGlyph" />
                       </Button>
                       <TextBlock Grid.Column="1" Text="{Binding Name}" Classes="Eyebrow" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" />
@@ -172,10 +173,7 @@
                         <DataTemplate>
                           <Button Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}"
                                   CommandParameter="{Binding OpenKey}"
-                                  Classes="SidebarGame"
-                                  PointerPressed="OnSidebarGamePointerPressed"
-                                  PointerMoved="OnSidebarGamePointerMoved"
-                                  PointerReleased="OnSidebarGamePointerReleased">
+                                  Classes="SidebarGame">
                             <Button.ContextMenu>
                               <ContextMenu Opened="OnGameContextMenuOpened" />
                             </Button.ContextMenu>

@@ -3,6 +3,7 @@ using System.Linq;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 
 namespace Launcher.App;
@@ -22,6 +23,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        AddHandler(InputElement.PointerPressedEvent, OnSidebarGamePointerPressed, RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(InputElement.PointerMovedEvent, OnSidebarGamePointerMoved, RoutingStrategies.Bubble, handledEventsToo: true);
+        AddHandler(InputElement.PointerReleasedEvent, OnSidebarGamePointerReleased, RoutingStrategies.Bubble, handledEventsToo: true);
         _dragSnapTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
         _dragSnapTimer.Tick += OnDragSnapTick;
     }
@@ -92,9 +96,20 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnCategoryToggleClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Button { DataContext: ViewModels.SidebarCategory category }
+            && DataContext is ViewModels.ShellViewModel viewModel)
+        {
+            viewModel.ToggleCategoryCommand.Execute(category);
+            e.Handled = true;
+        }
+    }
+
     private void OnSidebarGamePointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (sender is not Control { DataContext: ViewModels.SidebarGame game }
+        var source = FindSidebarGameControl(e.Source);
+        if (source?.DataContext is not ViewModels.SidebarGame game
             || e.Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed)
         {
             return;
@@ -103,11 +118,14 @@ public partial class MainWindow : Window
         _draggedGame = game;
         _gameDragStartPoint = e.GetPosition(this);
         _gameDragPointerPressed = e;
+        e.Pointer.Capture(source);
     }
 
     private async void OnSidebarGamePointerMoved(object? sender, PointerEventArgs e)
     {
-        if (_draggedGame is null || _gameDragPointerPressed is null || !e.Properties.IsLeftButtonPressed)
+        if (_draggedGame is null
+            || _gameDragPointerPressed is null
+            || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
         {
             return;
         }
@@ -123,6 +141,7 @@ public partial class MainWindow : Window
         var pointerPressed = _gameDragPointerPressed;
         _draggedGame = null;
         _gameDragPointerPressed = null;
+        e.Pointer.Capture(null);
         e.Handled = true;
 
         try
@@ -139,8 +158,22 @@ public partial class MainWindow : Window
 
     private void OnSidebarGamePointerReleased(object? sender, PointerReleasedEventArgs e)
     {
+        e.Pointer.Capture(null);
         _draggedGame = null;
         _gameDragPointerPressed = null;
+    }
+
+    private static Control? FindSidebarGameControl(object? source)
+    {
+        for (var control = source as Control; control is not null; control = control.Parent as Control)
+        {
+            if (control.DataContext is ViewModels.SidebarGame)
+            {
+                return control;
+            }
+        }
+
+        return null;
     }
 
     private void OnCategoryDragOver(object? sender, DragEventArgs e)

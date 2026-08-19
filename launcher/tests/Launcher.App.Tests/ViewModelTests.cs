@@ -79,6 +79,21 @@ public class ViewModelTests
     }
 
     [Fact]
+    public void SidebarCategoriesCanBeCollapsedAndReopened()
+    {
+        var shell = new ShellViewModel(seedDemoData: false);
+        var uncategorized = shell.SidebarCategories.Single(category => category.Name == "UNCATEGORIZED");
+
+        Assert.True(uncategorized.IsExpanded);
+
+        shell.ToggleCategoryCommand.Execute(uncategorized);
+        Assert.False(uncategorized.IsExpanded);
+
+        shell.ToggleCategoryCommand.Execute(uncategorized);
+        Assert.True(uncategorized.IsExpanded);
+    }
+
+    [Fact]
     public void ReadyToPlayFilterOnlyChangesSidebar()
     {
         var shell = new ShellViewModel();
