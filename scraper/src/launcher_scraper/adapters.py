@@ -12,7 +12,6 @@ _VERSION_RE = re.compile(
     r"(?<![A-Za-z0-9])(?:v(?:ersion)?\s*)?([0-9]{1,4}(?:\.[0-9]{1,4}){1,4}(?:[-+][A-Za-z0-9][A-Za-z0-9._-]*)?)\b",
     re.I,
 )
-_SIZE_RE = re.compile(r"(?<![\w.])([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)\b", re.I)
 _CHECKSUM_RE = re.compile(r"\b(?:sha(?:-?256)?|blake3|md5)\s*[:=]\s*([0-9a-f]{32,128})\b", re.I)
 _DOWNLOAD_RE = re.compile(r"\b(download|direct|installer|portable|mirror|archive|setup|release|get)\b", re.I)
 _ARCHIVE_RE = re.compile(r"\.(?:zip|7z|rar|tar|tgz|tar\.gz|tar\.bz2|exe|msi|iso)(?:$|[?#])", re.I)
@@ -61,15 +60,6 @@ def _extract_version(page: PageSnapshot) -> str:
     if not found:
         return "unknown"
     return max(found, key=lambda value: (len(value.split(".")), len(value), value))
-
-
-def _size_from_text(value: str) -> int | None:
-    match = _SIZE_RE.search(value)
-    if not match:
-        return None
-    amount = float(match.group(1))
-    multiplier = {"b": 1, "kb": 1024, "mb": 1024**2, "gb": 1024**3, "tb": 1024**4}[match.group(2).casefold()]
-    return int(amount * multiplier)
 
 
 def _checksum_from_text(value: str) -> str | None:
@@ -163,7 +153,10 @@ class GenericReleaseAdapter:
         platform = self._platform(source, page)
         architecture = self._architecture(page)
         language = self._language(source, page)
-        reported_size = _size_from_text(page.visible_text)
+        # Human-readable page sizes are commonly rounded or stale. Generic
+        # discovery must not turn them into an exact byte-level requirement;
+        # structured adapters may still provide an exact reported_size.
+        reported_size = None
         reported_checksum = _checksum_from_text(page.visible_text)
         return [
             ReleaseCandidate(
@@ -203,13 +196,6 @@ class GenericReleaseAdapter:
         return tuple(sorted(release.download_candidates, key=sort_key))
 
     def _download_candidates(self, source: SourceDefinition, page: PageSnapshot) -> list[DownloadCandidate]:
-        sidecar_sizes: dict[str, int] = {}
-        for link in page.links:
-            base_name = _sidecar_base_name(link.href)
-            size = _size_from_text(f"{link.text} {link.context}")
-            if base_name and size is not None:
-                sidecar_sizes[base_name] = size
-
         ranked: list[DownloadCandidate] = []
         for link in page.links:
             if _sidecar_base_name(link.href) is not None:
@@ -224,8 +210,7 @@ class GenericReleaseAdapter:
                     url=link.href,
                     label=label[:300],
                     filename=filename,
-                    reported_size=_size_from_text(f"{label} {link.context}")
-                    or sidecar_sizes.get(filename.casefold() if filename else ""),
+                    reported_size=None,
                     reported_checksum=_checksum_from_text(f"{label} {link.context}"),
                     confidence=score,
                     evidence=tuple(evidence),
