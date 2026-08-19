@@ -1,6 +1,6 @@
 # Launcher Platform
 
-Launcher is a content-addressed game distribution platform for builds the operator is authorized to distribute and support. The repository is a deliberately separated monorepo: a native Avalonia client, a Rust control plane and packaging pipeline, a Python analyzer, and a small static Astro site.
+Launcher is a content-addressed game distribution platform for builds the operator is authorized to distribute and support. The repository is a deliberately separated monorepo: a native Avalonia client, a Rust control plane and packaging pipeline, isolated Python analyzer and scraper services, and a small static Astro site.
 
 The current implementation is an extensible v1 foundation with a complete synthetic local flow:
 
@@ -19,6 +19,7 @@ No acquisition, DRM circumvention, license bypass, anti-cheat bypass, account sp
 | Desktop client | `launcher/` | Avalonia UI, local state, download and installation engines |
 | Control plane | `server/` | Axum API, typed domain model, PostgreSQL access, storage and packager |
 | Analyzer | `analyzer/` | Deterministic executable/support-profile discovery |
+| Release scraper | `scraper/` | Bounded source discovery, validated artifact acquisition, and normalizer handoff |
 | Website | `website/` | Static Astro/Tailwind public landing page |
 | Contract | `schema/`, `migrations/`, `docs/` | Manifest, API, database, and operational specifications |
 | Deployment | `deploy/` | Docker Compose PostgreSQL and Caddy configuration |
@@ -42,6 +43,17 @@ python -m venv analyzer/.venv
 analyzer/.venv/Scripts/pip install -e analyzer[dev]
 python -m launcher_analyzer analyze .\path\to\authorized\build --output analysis.json --json
 ```
+
+### Optional release scraper
+
+```powershell
+pip install -e scraper[dev]
+launcher-scraper --store .\scraper-state.db source-add example https://downloads.example.invalid/releases
+launcher-scraper --store .\scraper-state.db discover example
+```
+
+The scraper stops at a validated artifact and `handoff.json`; it does not
+publish or change the launcher client. See [docs/scraper.md](docs/scraper.md).
 
 ### Rust workspace
 

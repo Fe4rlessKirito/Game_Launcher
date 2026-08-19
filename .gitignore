@@ -18,6 +18,9 @@ node_modules/
 dist/
 .astro/
 artifacts/
+scraper-artifacts/
+scraper-diagnostics/
+scraper-state.db*
 storage/
 !server/crates/storage/
 !server/crates/storage/**

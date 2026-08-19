@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from threading import Event
+
+from .diagnostics import DiagnosticsWriter
+from .interpreter import PageInterpreter
+from .jobs import SQLiteJobStore
+from .models import JobStatus, ScrapeJob, ScrapeStatus, SourceDefinition
+from .service import ScrapeOutcome, ScraperService
+
+logger = logging.getLogger("launcher_scraper.scheduler")
+
+
+@dataclass(frozen=True)
+class WorkerResult:
+    job: ScrapeJob
+    outcome: ScrapeOutcome
+
+
+class IngestionScheduler:
+    """Durable source scheduler and lease-based scraper worker."""
+
+    def __init__(
+        self,
+        store: SQLiteJobStore,
+        service: ScraperService,
+        *,
+        worker_id: str = "scraper-worker",
+        lease_seconds: int = 300,
+        output_root: str | Path = "./scraper-artifacts",
+        diagnostics: DiagnosticsWriter | None = None,
+    ) -> None:
+        self.store = store
+        self.service = service
+        self.worker_id = worker_id
+        self.lease_seconds = max(30, lease_seconds)
+        self.output_root = str(output_root)
+        self.diagnostics = diagnostics
+
+    def register_source(self, source: SourceDefinition) -> None:
+        self.store.add_source(source)
+
+    def enqueue_due_sources(self, now: float | None = None) -> list[ScrapeJob]:
+        """Create at most one active job per due source and advance its timer."""
+
+        jobs: list[ScrapeJob] = []
+        checked_at = time.time() if now is None else now
+        for source in self.store.due_sources(checked_at):
+            jobs.append(self.store.enqueue(source.name))
+            self.store.mark_source_checked(source.name, checked_at + source.check_interval_seconds)
+        return jobs
+
+    def run_once(self, *, interpreter: PageInterpreter | None = None) -> WorkerResult | None:
+        self.store.recover_expired()
+        self.enqueue_due_sources()
+        job = self.store.claim(self.worker_id, self.lease_seconds)
+        if job is None:
+            return None
+        source = self.store.get_source(job.source_name)
+        if source is None:
+            outcome = ScrapeOutcome(
+                ScrapeStatus.PERMANENT_FAILURE,
+                message=f"source {job.source_name!r} no longer exists",
+            )
+            self._finish(job, outcome)
+            return WorkerResult(job, outcome)
+        try:
+            discovery = self.service.discover(source, interpreter=interpreter)
+            self._record(job, discovery)
+            if discovery.status == ScrapeStatus.SUCCESS:
+                job.status = JobStatus.ACQUIRING
+                job.stage = "ACQUIRING"
+                self.store.heartbeat(job, self.lease_seconds)
+                outcome = self.service.acquire(
+                    source, self._output_root(), discovery, target_release_id=job.target_release_id
+                )
+            else:
+                outcome = discovery
+            self._finish(job, outcome, source)
+            return WorkerResult(job, outcome)
+        except Exception as error:  # noqa: BLE001 - worker boundary must persist unexpected failures
+            logger.exception("scraper job failed unexpectedly", extra={"job_id": job.id, "source": source.name})
+            outcome = ScrapeOutcome(ScrapeStatus.TEMPORARY_FAILURE, message=f"unexpected scraper failure: {error}")
+            self._finish(job, outcome, source)
+            return WorkerResult(job, outcome)
+
+    def run_forever(
+        self,
+        *,
+        poll_seconds: float = 5.0,
+        stop_event: Event | None = None,
+        interpreter: PageInterpreter | None = None,
+    ) -> None:
+        stop_event = stop_event or Event()
+        while not stop_event.is_set():
+            result = self.run_once(interpreter=interpreter)
+            if result is None:
+                stop_event.wait(max(0.1, poll_seconds))
+
+    def _output_root(self) -> str:
+        return self.output_root
+
+    def _record(self, job: ScrapeJob, outcome: ScrapeOutcome) -> None:
+        job.visited_urls = list(dict.fromkeys(outcome.visited_urls))
+        job.action_history = list(outcome.action_history)
+        job.gemini_calls = outcome.gemini_calls
+        job.browser_actions = outcome.browser_actions
+        job.result_status = outcome.status
+        job.last_error = None if outcome.status == ScrapeStatus.SUCCESS else outcome.message[:4000]
+        self.store.heartbeat(job, self.lease_seconds)
+
+    def _finish(self, job: ScrapeJob, outcome: ScrapeOutcome, source: SourceDefinition | None = None) -> None:
+        self._record(job, outcome)
+        if outcome.artifact is not None:
+            job.resolved_artifact = outcome.artifact.to_dict()
+        if self.diagnostics and source is not None:
+            try:
+                self.diagnostics.write(job.id, source, outcome)
+            except OSError:
+                logger.exception("could not write scraper diagnostics", extra={"job_id": job.id})
+        if outcome.status == ScrapeStatus.SUCCESS:
+            self.store.complete(job)
+            return
+        retry = outcome.status in {ScrapeStatus.RATE_LIMITED, ScrapeStatus.TEMPORARY_FAILURE}
+        self.store.fail(job, outcome.message or outcome.status.value, retry=retry)
