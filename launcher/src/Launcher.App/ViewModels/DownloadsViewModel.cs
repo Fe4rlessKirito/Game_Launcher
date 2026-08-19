@@ -51,6 +51,26 @@ public partial class DownloadsViewModel : ObservableObject
         {
             NetworkRate = "0 B/s";
         }
+
+        var entryIndex = -1;
+        for (var index = 0; index < Scheduled.Count; index++)
+        {
+            if (string.Equals(Scheduled[index].JobId, progress.JobId, StringComparison.Ordinal))
+            {
+                entryIndex = index;
+                break;
+            }
+        }
+        if (entryIndex < 0 || entryIndex >= Scheduled.Count)
+        {
+            LastActionMessage = $"{FormatBytes(progress.DownloadedBytes)} / {FormatBytes(progress.TotalBytes)} · {progress.State}";
+            return;
+        }
+
+        var entry = Scheduled[entryIndex];
+        var detail = FormatProgress(progress.DownloadedBytes, progress.TotalBytes, progress.State);
+        Scheduled[entryIndex] = entry with { Detail = detail, State = progress.State };
+        LastActionMessage = $"{entry.Title} · {detail}";
     }
 
     public void ApplyRuntimeJobs(IReadOnlyList<PersistedDownloadJob> jobs, IReadOnlyList<RuntimeGame> games)
@@ -89,7 +109,7 @@ public partial class DownloadsViewModel : ObservableObject
     [RelayCommand]
     private async Task InstallScheduled(DownloadEntry? entry)
     {
-        if (entry is null || !Scheduled.Remove(entry))
+        if (entry is null || !Scheduled.Any(item => string.Equals(item.JobId, entry.JobId, StringComparison.Ordinal)))
         {
             return;
         }
@@ -105,12 +125,12 @@ public partial class DownloadsViewModel : ObservableObject
             }
             catch (Exception error)
             {
-                Scheduled.Insert(0, entry);
                 LastActionMessage = $"Install failed: {error.Message}";
                 return;
             }
         }
 
+        Scheduled.Remove(entry);
         Completed.Insert(0, entry with
         {
             Detail = $"{entry.Detail} verified",
@@ -155,15 +175,18 @@ public partial class DownloadsViewModel : ObservableObject
         LastActionMessage = "Completed download history cleared.";
     }
 
-    private static string FormatProgress(PersistedDownloadJob job)
+    private static string FormatProgress(PersistedDownloadJob job) =>
+        FormatProgress(job.DownloadedBytes, job.TotalBytes, job.State, job.LastError);
+
+    private static string FormatProgress(long downloadedBytes, long totalBytes, DownloadJobState state, string? lastError = null)
     {
-        var state = job.State switch
+        var stateText = state switch
         {
             DownloadJobState.Ready => "Complete",
-            DownloadJobState.Failed => $"Failed: {job.LastError ?? "unknown error"}",
-            _ => job.State.ToString()
+            DownloadJobState.Failed => $"Failed: {lastError ?? "unknown error"}",
+            _ => state.ToString()
         };
-        return $"{FormatBytes(job.DownloadedBytes)} / {FormatBytes(job.TotalBytes)} · {state}";
+        return $"{FormatBytes(downloadedBytes)} / {FormatBytes(totalBytes)} · {stateText}";
     }
 
     private static string FormatBytes(long bytes)

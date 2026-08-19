@@ -33,6 +33,36 @@ public class DownloadTests
     }
 
     [Fact]
+    public async Task HtmlProviderRedirectsAreFollowedBeforeValidatingChunk()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "launcher-download-redirect-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var raw = Encoding.UTF8.GetBytes("provider redirect fixture");
+            using var compressor = new ZstdSharp.Compressor(3);
+            var encoded = compressor.Wrap(raw).ToArray();
+            var encodedHash = Hashing.ComputeHash(encoded);
+            var chunk = new ChunkReference(Hashing.ComputeHash(raw), raw.Length, encodedHash, encoded.Length, $"chunks/encoded/{encodedHash}.bin");
+            var manifest = new Manifest(1, "redirect-manifest", "redirect-game", "redirect-build", "A", DateTimeOffset.UnixEpoch, ChunkingConfig.Default, EncodingConfig.Default, [new FileRecipe("game.exe", raw.Length, Hashing.ComputeHash(raw), [chunk])], new LaunchProfile("game.exe", ".", [], new Dictionary<string, string>()));
+            var cache = new ChunkCache(Path.Combine(root, "cache"), 4 * 1024 * 1024);
+            await cache.InitializeAsync();
+            var handler = new HtmlRedirectHandler(encoded);
+            using var client = new HttpClient(handler);
+            using var manager = new DownloadManager(client, new LauncherApiClient(client, new Uri("http://launcher/")), cache, 2);
+
+            var summary = await manager.DownloadAsync(manifest, "redirect-job");
+
+            Assert.Equal(1, summary.ChunksDownloaded);
+            Assert.Equal(encoded, await cache.ReadAsync(encodedHash));
+            Assert.Equal(3, handler.GetRequests);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task MirrorFailureFallsBackAndCorruptResponseIsRejected()
     {
         await using var fixture = await DownloadFixture.CreateAsync();
@@ -263,6 +293,53 @@ public class DownloadTests
             {
                 Interlocked.Decrement(ref _activeRequests);
             }
+        }
+    }
+
+    private sealed class HtmlRedirectHandler(byte[] encoded) : HttpMessageHandler
+    {
+        private static readonly string[] InitialUrls = ["http://filemirage.test/file/direct/landing"];
+
+        public int GetRequests { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                var body = JsonSerializer.Serialize(new[]
+                {
+                    new
+                    {
+                        encoded_hash = Hashing.ComputeHash(encoded),
+                        urls = InitialUrls,
+                        expires_at = (DateTimeOffset?)null
+                    }
+                });
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(body, Encoding.UTF8, "application/json")
+                });
+            }
+
+            GetRequests++;
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/file/direct/landing" => Task.FromResult(Html("http://filemirage.test/file/direct/second")),
+                "/file/direct/second" => Task.FromResult(Html("http://filemirage.test/file/direct/bytes")),
+                "/file/direct/bytes" => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(encoded)
+                }),
+                _ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound))
+            };
+        }
+
+        private static HttpResponseMessage Html(string redirectUrl)
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($"<script>window .location.href = \"{redirectUrl}\"</script>", Encoding.UTF8, "text/html")
+            };
         }
     }
 

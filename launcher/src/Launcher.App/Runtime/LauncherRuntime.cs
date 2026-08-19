@@ -249,6 +249,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         {
             await _stateStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await _chunkCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await _stateStore.FailInterruptedDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
             _initialized = true;
         }
 
@@ -261,6 +262,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         {
             await _stateStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await _chunkCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await _stateStore.FailInterruptedDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
             _initialized = true;
         }
 

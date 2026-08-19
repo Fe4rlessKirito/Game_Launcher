@@ -167,6 +167,21 @@ public sealed class LocalStateStore(string databasePath)
         return jobs;
     }
 
+    public async Task<int> FailInterruptedDownloadJobsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE download_jobs SET state = $state, last_error = $last_error, updated_at = $updated_at WHERE state NOT IN ($ready, $failed, $cancelled)";
+        command.Parameters.AddWithValue("$state", DownloadJobState.Failed.ToString());
+        command.Parameters.AddWithValue("$last_error", "Download was interrupted; choose Install to retry.");
+        command.Parameters.AddWithValue("$updated_at", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$ready", DownloadJobState.Ready.ToString());
+        command.Parameters.AddWithValue("$failed", DownloadJobState.Failed.ToString());
+        command.Parameters.AddWithValue("$cancelled", DownloadJobState.Cancelled.ToString());
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task DeleteDownloadJobAsync(string jobId, CancellationToken cancellationToken = default)
     {
         await using var connection = new SqliteConnection(_connectionString);

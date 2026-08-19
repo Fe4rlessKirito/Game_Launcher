@@ -131,7 +131,7 @@ public sealed class DownloadManager(
                     Interlocked.Add(ref reusedBytes, chunk.EncodedSize);
                     Interlocked.Increment(ref reusedChunks);
                 }
-                Report(DownloadJobState.Ready, chunk.EncodedHash);
+                Report(DownloadJobState.Downloading, chunk.EncodedHash);
                 return;
             }
             if (!resolved.TryGetValue(chunk.EncodedHash, out var location) || location.Urls.Count == 0) throw new LauncherOperationException($"No storage locations for chunk {chunk.EncodedHash}.");
@@ -151,7 +151,7 @@ public sealed class DownloadManager(
                 Interlocked.Add(ref preparedBytes, chunk.EncodedSize);
                 Interlocked.Add(ref networkBytes, bytes);
                 Interlocked.Increment(ref downloadedChunks);
-                Report(DownloadJobState.Ready, chunk.EncodedHash);
+                Report(DownloadJobState.Downloading, chunk.EncodedHash);
             }
             finally { _concurrency.Release(); }
         });
@@ -180,7 +180,6 @@ public sealed class DownloadManager(
             var current = Interlocked.Read(ref preparedBytes);
             var rate = Rate();
             progress?.Report(new DownloadProgress(jobId, state, current, totalBytes, rate, rate > 0 ? TimeSpan.FromSeconds(Math.Max(0, totalBytes - current) / rate) : null, hash));
-            _ = SaveJobAsync(new PersistedDownloadJob(jobId, manifest.BuildId, state, current, totalBytes, DateTimeOffset.UtcNow), CancellationToken.None);
         }
 
         double Rate() => stopwatch.Elapsed.TotalSeconds <= 0 ? 0 : preparedBytes / stopwatch.Elapsed.TotalSeconds;
@@ -218,7 +217,7 @@ public sealed class DownloadManager(
         throw new LauncherOperationException($"Chunk download failed after retries: {chunk.EncodedHash}", lastError);
     }
 
-    private async Task<long> DownloadOneUrlAsync(ChunkReference chunk, string url, CancellationToken cancellationToken)
+    private async Task<long> DownloadOneUrlAsync(ChunkReference chunk, string url, CancellationToken cancellationToken, int redirectDepth = 0)
     {
         var partial = cache.GetPartialPath(chunk.EncodedHash);
         var offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
@@ -249,6 +248,11 @@ public sealed class DownloadManager(
         if ((int)response.StatusCode >= 500 || response.StatusCode == System.Net.HttpStatusCode.RequestTimeout) throw new HttpRequestException($"Chunk URL returned {(int)response.StatusCode}.");
         response.EnsureSuccessStatusCode();
 
+        if (IsHtmlResponse(response))
+        {
+            var redirectUrl = await ResolveProviderRedirectAsync(response, url, redirectDepth, cancellationToken).ConfigureAwait(false);
+            return await DownloadOneUrlAsync(chunk, redirectUrl, cancellationToken, redirectDepth + 1).ConfigureAwait(false);
+        }
         var append = offset > 0 && response.StatusCode == System.Net.HttpStatusCode.PartialContent && response.Content.Headers.ContentRange?.From == offset;
         if (offset > 0 && !append) { TryDeletePartial(chunk.EncodedHash); offset = 0; }
         Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
@@ -400,7 +404,7 @@ public sealed class DownloadManager(
         throw new HttpRequestException($"Physical pack download failed after source failover: {pack.PackHash}", lastError);
     }
 
-    private async Task<(byte[] Bytes, long NetworkBytes)> DownloadPackFromSourceAsync(ResolvedPack pack, ResolvedPackSource source, PackCache cache, CancellationToken cancellationToken)
+    private async Task<(byte[] Bytes, long NetworkBytes)> DownloadPackFromSourceAsync(ResolvedPack pack, ResolvedPackSource source, PackCache cache, CancellationToken cancellationToken, int redirectDepth = 0)
     {
         var partial = cache.GetPartialPath(pack.PackHash);
         var offset = File.Exists(partial) ? new FileInfo(partial).Length : 0;
@@ -440,6 +444,11 @@ public sealed class DownloadManager(
             cache.DeletePartial(pack.PackHash);
             throw new InvalidDataException($"Pack URL returned an unexpected content range for {pack.PackHash}.");
         }
+        if (IsHtmlResponse(response))
+        {
+            var redirectUrl = await ResolveProviderRedirectAsync(response, source.Url, redirectDepth, cancellationToken).ConfigureAwait(false);
+            return await DownloadPackFromSourceAsync(pack, source with { Url = redirectUrl }, cache, cancellationToken, redirectDepth + 1).ConfigureAwait(false);
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
         long received = 0;
         await using (var output = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
@@ -466,5 +475,62 @@ public sealed class DownloadManager(
     {
         var value = Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED")?.Trim().ToLowerInvariant();
         return value is not ("0" or "false" or "no" or "off");
+    }
+
+    private static bool IsHtmlResponse(HttpResponseMessage response)
+    {
+        var mediaType = response.Content.Headers.ContentType?.MediaType;
+        return string.Equals(mediaType, "text/html", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(mediaType, "application/xhtml+xml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<string> ResolveProviderRedirectAsync(
+        HttpResponseMessage response,
+        string currentUrl,
+        int redirectDepth,
+        CancellationToken cancellationToken)
+    {
+        const int maxRedirects = 4;
+        if (redirectDepth >= maxRedirects)
+        {
+            throw new InvalidDataException("The storage provider returned too many HTML download redirects.");
+        }
+
+        var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        var marker = html.IndexOf("location.href", StringComparison.OrdinalIgnoreCase);
+        if (marker < 0)
+        {
+            throw new InvalidDataException("The storage provider returned an HTML page instead of file bytes.");
+        }
+
+        var equals = html.IndexOf('=', marker + "location.href".Length);
+        if (equals < 0)
+        {
+            throw new InvalidDataException("The storage provider returned an invalid download redirect.");
+        }
+
+        var quote = html.IndexOfAny(['\'', '"'], equals + 1);
+        if (quote < 0)
+        {
+            throw new InvalidDataException("The storage provider returned an invalid download redirect.");
+        }
+
+        var end = html.IndexOf(html[quote], quote + 1);
+        if (end <= quote)
+        {
+            throw new InvalidDataException("The storage provider returned an invalid download redirect.");
+        }
+
+        var redirectUrl = html[(quote + 1)..end].Trim();
+        if (!Uri.TryCreate(redirectUrl, UriKind.Absolute, out var nextUri)
+            || nextUri.Scheme is not ("http" or "https")
+            || !Uri.TryCreate(currentUrl, UriKind.Absolute, out var currentUri)
+            || !string.Equals(nextUri.Host, currentUri.Host, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(nextUri.AbsoluteUri, currentUri.AbsoluteUri, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("The storage provider returned an unsafe download redirect.");
+        }
+
+        return nextUri.AbsoluteUri;
     }
 }

@@ -88,4 +88,33 @@ public sealed class LocalStateStoreTests
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
+
+    [Fact]
+    public async Task InterruptedDownloadJobsBecomeRetryableFailures()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "launcher-state-recovery-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var store = new LocalStateStore(Path.Combine(root, "launcher.db"));
+            await store.InitializeAsync();
+            await store.SaveDownloadJobAsync(new PersistedDownloadJob("active", "build-active", DownloadJobState.Resolving, 2, 10, DateTimeOffset.UtcNow));
+            await store.SaveDownloadJobAsync(new PersistedDownloadJob("ready", "build-ready", DownloadJobState.Ready, 10, 10, DateTimeOffset.UtcNow));
+            await store.SaveDownloadJobAsync(new PersistedDownloadJob("failed", "build-failed", DownloadJobState.Failed, 2, 10, DateTimeOffset.UtcNow, "network"));
+
+            Assert.Equal(1, await store.FailInterruptedDownloadJobsAsync());
+
+            var jobs = await store.GetDownloadJobsAsync();
+            var active = Assert.Single(jobs, job => job.JobId == "active");
+            Assert.Equal(DownloadJobState.Failed, active.State);
+            Assert.Equal("Download was interrupted; choose Install to retry.", active.LastError);
+            Assert.Equal(DownloadJobState.Ready, Assert.Single(jobs, job => job.JobId == "ready").State);
+            Assert.Equal("network", Assert.Single(jobs, job => job.JobId == "failed").LastError);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
 }

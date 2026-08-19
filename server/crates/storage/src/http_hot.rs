@@ -541,7 +541,7 @@ impl HttpHotStorage {
         let page_url = remote_url.ok_or_else(|| {
             StorageError::Provider("FileMirage upload returned no direct URL".to_owned())
         })?;
-        let url = self.resolve_filemirage_url(&page_url).await?;
+        let url = self.resolve_filemirage_url(&page_url, None).await?;
         self.remember(hash, url, None, pack).await
     }
 
@@ -604,7 +604,7 @@ impl HttpHotStorage {
         let page_url = remote_url.ok_or_else(|| {
             StorageError::Provider("FileMirage upload returned no direct URL".to_owned())
         })?;
-        let url = self.resolve_filemirage_url(&page_url).await?;
+        let url = self.resolve_filemirage_url(&page_url, None).await?;
         self.remember(hash, url, None, pack).await
     }
 
@@ -641,34 +641,65 @@ impl HttpHotStorage {
             })
     }
 
-    async fn resolve_filemirage_url(&self, page_url: &str) -> Result<String, StorageError> {
-        if !matches!(self.kind, HttpHotKind::FileMirage) || page_url.contains("/file/direct/") {
+    async fn resolve_filemirage_url(
+        &self,
+        page_url: &str,
+        probe_range: Option<(u64, u64)>,
+    ) -> Result<String, StorageError> {
+        if !matches!(self.kind, HttpHotKind::FileMirage) {
             return Ok(page_url.to_owned());
         }
         let _slot = self.acquire_slot().await?;
-        let response = self
-            .auth(self.client.get(page_url))
-            .send()
-            .await
-            .map_err(|error| {
+        let mut current_url = page_url.to_owned();
+        for _ in 0..4 {
+            let mut request = self.client.get(&current_url);
+            if let Some((start, end)) = probe_range {
+                request = request.header(reqwest::header::RANGE, format!("bytes={start}-{end}"));
+            }
+            let response = self.auth(request).send().await.map_err(|error| {
                 StorageError::NetworkUnavailable(format!(
                     "FileMirage share page lookup failed: {error}"
                 ))
             })?;
-        if !response.status().is_success() {
-            return Err(StorageError::Provider(format!(
-                "FileMirage share page lookup returned HTTP {}",
-                response.status().as_u16()
-            )));
+            if !response.status().is_success() {
+                return Err(StorageError::Provider(format!(
+                    "FileMirage share page lookup returned HTTP {}",
+                    response.status().as_u16()
+                )));
+            }
+
+            let is_html = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| {
+                    value.starts_with("text/html") || value.starts_with("application/xhtml+xml")
+                });
+            if !is_html {
+                return Ok(current_url);
+            }
+
+            let html = response.text().await.map_err(|error| {
+                StorageError::NetworkUnavailable(format!(
+                    "FileMirage share page body failed: {error}"
+                ))
+            })?;
+            let next_url = extract_filemirage_direct_url(&html).ok_or_else(|| {
+                StorageError::Provider(
+                    "FileMirage share page returned no embedded direct download URL".to_owned(),
+                )
+            })?;
+            if next_url == current_url {
+                return Err(StorageError::Provider(
+                    "FileMirage returned a self-referencing download URL".to_owned(),
+                ));
+            }
+            current_url = next_url;
         }
-        let html = response.text().await.map_err(|error| {
-            StorageError::NetworkUnavailable(format!("FileMirage share page body failed: {error}"))
-        })?;
-        extract_filemirage_direct_url(&html).ok_or_else(|| {
-            StorageError::Provider(
-                "FileMirage share page returned no embedded direct download URL".to_owned(),
-            )
-        })
+
+        Err(StorageError::Provider(
+            "FileMirage returned too many nested download redirects".to_owned(),
+        ))
     }
 
     async fn upload_buzzheavier_bytes(
@@ -772,7 +803,7 @@ impl HttpHotStorage {
             )));
         }
         let reference = self.state_reference(hash, pack)?;
-        let url = self.resolve_filemirage_url(&reference.url).await?;
+        let url = self.resolve_filemirage_url(&reference.url, None).await?;
         let _slot = self.acquire_slot().await?;
         let response = self
             .auth(self.client.get(url))
@@ -823,7 +854,9 @@ impl HttpHotStorage {
             .checked_add(length - 1)
             .ok_or_else(|| StorageError::Provider("pack range overflows".to_owned()))?;
         let reference = self.state_reference(hash, pack)?;
-        let url = self.resolve_filemirage_url(&reference.url).await?;
+        let url = self
+            .resolve_filemirage_url(&reference.url, Some((offset, end)))
+            .await?;
         let _slot = self.acquire_slot().await?;
         let response = self
             .auth(
@@ -915,7 +948,7 @@ impl HttpHotStorage {
             )));
         }
         let reference = self.state_reference(hash, pack)?;
-        let url = self.resolve_filemirage_url(&reference.url).await?;
+        let url = self.resolve_filemirage_url(&reference.url, None).await?;
         Ok(DownloadLocation {
             url,
             expires_at: None,
@@ -934,7 +967,7 @@ impl HttpHotStorage {
             )));
         }
         let reference = self.state_reference(hash, pack)?;
-        let url = self.resolve_filemirage_url(&reference.url).await?;
+        let url = self.resolve_filemirage_url(&reference.url, None).await?;
         let _slot = self.acquire_slot().await?;
         let response = self
             .auth(self.client.get(url))
