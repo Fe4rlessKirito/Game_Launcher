@@ -80,3 +80,22 @@ def test_generic_adapter_prefers_matching_64_bit_artifact_and_ignores_sidecars()
     assert candidates[0].url.endswith("0ad-0.28.0-win64.exe")
     assert candidates[0].reported_size is None
     assert all(not candidate.url.endswith(".torrent") for candidate in candidates)
+
+
+def test_generic_adapter_prefers_portable_archive_over_installer() -> None:
+    page = SemanticDomBuilder().build(
+        """
+        <html><head><title>Example Game 1.5 Windows</title></head>
+        <body>
+        <a href="https://downloads.example/game-installer.exe">Game installer</a>
+        <a href="https://downloads.example/game-portable.zip">game-portable.zip</a>
+        </body></html>
+        """,
+        "https://example.test/releases/game",
+    )
+    source = SourceDefinition("example", page.url, gemini_fallback_allowed=False)
+    adapter = GenericReleaseAdapter()
+    release = adapter.discover(source, page)[0]
+    candidates = adapter.resolve_downloads(source, release)
+
+    assert candidates[0].url.endswith("game-portable.zip")

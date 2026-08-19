@@ -15,6 +15,7 @@ _VERSION_RE = re.compile(
 _CHECKSUM_RE = re.compile(r"\b(?:sha(?:-?256)?|blake3|md5)\s*[:=]\s*([0-9a-f]{32,128})\b", re.I)
 _DOWNLOAD_RE = re.compile(r"\b(download|direct|installer|portable|mirror|archive|setup|release|get)\b", re.I)
 _ARCHIVE_RE = re.compile(r"\.(?:zip|7z|rar|tar|tgz|tar\.gz|tar\.bz2|exe|msi|iso)(?:$|[?#])", re.I)
+_FILENAME_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9._+-]*\.(?:zip|7z|rar|tar|tgz|tar\.gz|tar\.bz2|exe|msi|iso)\b", re.I)
 _AD_RE = re.compile(r"\b(ad|advert|sponsor|casino|vpn|notification|allow|subscribe|click here)\b", re.I)
 
 
@@ -78,6 +79,15 @@ def _candidate_architecture(candidate: DownloadCandidate) -> str:
     return "unknown"
 
 
+def _candidate_kind(candidate: DownloadCandidate) -> str:
+    haystack = f"{candidate.label} {candidate.filename or ''} {candidate.url}".casefold()
+    if any(token in haystack for token in (".zip", ".7z", ".rar", ".tar", ".tgz", ".gz")):
+        return "archive"
+    if any(token in haystack for token in (".exe", ".msi")):
+        return "installer"
+    return "unknown"
+
+
 def _sidecar_base_name(href: str) -> str | None:
     filename = urlparse(href).path.rsplit("/", 1)[-1].casefold()
     for suffix in (".torrent", ".sha256", ".sha1", ".md5", ".sig", ".asc"):
@@ -96,7 +106,7 @@ def _candidate_score(
         score += 0.35
         evidence.append("semantic download indicator")
     if _ARCHIVE_RE.search(href):
-        score += 0.35
+        score += 0.55
         evidence.append("recognized artifact extension")
     if _DOWNLOAD_RE.search(text):
         score += 0.2
@@ -183,15 +193,16 @@ class GenericReleaseAdapter:
     def resolve_downloads(self, source: SourceDefinition, release: ReleaseCandidate) -> tuple[DownloadCandidate, ...]:
         preferred_architecture = release.architecture.casefold()
 
-        def sort_key(candidate: DownloadCandidate) -> tuple[float, int, str]:
+        def sort_key(candidate: DownloadCandidate) -> tuple[int, int, float, str]:
             architecture = _candidate_architecture(candidate)
+            kind_rank = {"archive": 0, "installer": 1, "unknown": 2}[_candidate_kind(candidate)]
             if preferred_architecture in {"x64", "x86", "arm64"}:
                 architecture_rank = (
                     0 if architecture == preferred_architecture else 1 if architecture == "unknown" else 2
                 )
             else:
                 architecture_rank = {"x64": 0, "arm64": 1, "x86": 2, "unknown": 3}[architecture]
-            return (-candidate.confidence, architecture_rank, candidate.url)
+            return (kind_rank, architecture_rank, -candidate.confidence, candidate.url)
 
         return tuple(sorted(release.download_candidates, key=sort_key))
 
@@ -205,6 +216,9 @@ class GenericReleaseAdapter:
                 continue
             label = link.text or link.href.rsplit("/", 1)[-1]
             filename = link.href.rsplit("/", 1)[-1].split("?", 1)[0] or None
+            if filename and filename.casefold() in {"download", "latest"}:
+                filename_match = _FILENAME_RE.search(label)
+                filename = filename_match.group(0) if filename_match else filename
             ranked.append(
                 DownloadCandidate(
                     url=link.href,
@@ -235,10 +249,10 @@ class GenericReleaseAdapter:
     @staticmethod
     def _architecture(page: PageSnapshot) -> str:
         text = f"{page.title} {page.visible_text}".casefold()
-        if any(token in text for token in ("arm64", "aarch64")):
-            return "arm64"
         if any(token in text for token in ("x64", "x86_64", "64-bit", "64 bit")):
             return "x64"
+        if any(token in text for token in ("arm64", "aarch64")):
+            return "arm64"
         if any(token in text for token in ("x86", "32-bit", "32 bit")):
             return "x86"
         return "unknown"
