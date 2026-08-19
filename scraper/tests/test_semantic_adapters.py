@@ -104,7 +104,7 @@ def test_generic_adapter_prefers_portable_archive_over_installer() -> None:
 def test_generic_adapter_prefers_windows_archive_when_download_urls_hide_extensions() -> None:
     page = SemanticDomBuilder().build(
         """
-        <html><head><title>SuperTuxKart 1.5 Windows x64</title></head>
+        <html><head><title>SuperTuxKart - Browse /SuperTuxKart/1.5 at SourceForge.net</title></head>
         <body>
         <a href="https://downloads.example/SuperTuxKart-1.5-linux-riscv64.tar.gz/download">
           SuperTuxKart-1.5-linux-riscv64.tar.gz
@@ -127,4 +127,6 @@ def test_generic_adapter_prefers_windows_archive_when_download_urls_hide_extensi
     release = adapter.discover(source, page)[0]
     candidates = adapter.resolve_downloads(source, release)
 
+    assert release.product_name == "SuperTuxKart"
+    assert release.version == "1.5"
     assert candidates[0].filename == "SuperTuxKart-1.5-win.zip"

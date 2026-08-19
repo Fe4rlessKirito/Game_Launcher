@@ -54,10 +54,12 @@ def normalize_product_name(value: str) -> str:
 
 
 def _extract_version(page: PageSnapshot) -> str:
-    candidates = [page.metadata.get("version", ""), page.title, *page.headings, page.visible_text[:3000]]
-    found: list[str] = []
-    for value in candidates:
-        found.extend(match.group(1) for match in _VERSION_RE.finditer(value))
+    structured_candidates = [page.metadata.get("version", ""), page.title, *page.headings]
+    for value in structured_candidates:
+        found = [match.group(1) for match in _VERSION_RE.finditer(value)]
+        if found:
+            return max(found, key=lambda item: (len(item.split(".")), len(item), item))
+    found = [match.group(1) for match in _VERSION_RE.finditer(page.visible_text[:3000])]
     if not found:
         return "unknown"
     return max(found, key=lambda value: (len(value.split(".")), len(value), value))
@@ -157,7 +159,7 @@ class GenericReleaseAdapter:
         product = page.metadata.get("og:title") or page.metadata.get("twitter:title") or page.title
         if not product and page.headings:
             product = page.headings[0]
-        product = re.sub(r"\s*[|–-]\s*(download|release|official).*$", "", product, flags=re.I).strip()
+        product = re.sub(r"\s*[|–-]\s*(download|release|official|browse)\b.*$", "", product, flags=re.I).strip()
         if not product:
             raise LayoutChanged("release page has no product title")
         version = _extract_version(page)
