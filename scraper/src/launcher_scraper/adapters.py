@@ -88,6 +88,19 @@ def _candidate_kind(candidate: DownloadCandidate) -> str:
     return "unknown"
 
 
+def _candidate_platform(candidate: DownloadCandidate) -> str:
+    haystack = f"{candidate.label} {candidate.filename or ''} {candidate.url}".casefold()
+    if re.search(r"(?<![a-z0-9])win(?:dows)?(?:32|64)?(?![a-z0-9])", haystack):
+        return "windows"
+    if "linux" in haystack:
+        return "linux"
+    if any(token in haystack for token in ("macos", "mac-os", "darwin", "osx")):
+        return "macos"
+    if any(token in haystack for token in ("source", "src")):
+        return "source"
+    return "unknown"
+
+
 def _sidecar_base_name(href: str) -> str | None:
     filename = urlparse(href).path.rsplit("/", 1)[-1].casefold()
     for suffix in (".torrent", ".sha256", ".sha1", ".md5", ".sig", ".asc"):
@@ -105,7 +118,7 @@ def _candidate_score(
     if link_id in downloads:
         score += 0.35
         evidence.append("semantic download indicator")
-    if _ARCHIVE_RE.search(href):
+    if _ARCHIVE_RE.search(href) or _ARCHIVE_RE.search(text):
         score += 0.55
         evidence.append("recognized artifact extension")
     if _DOWNLOAD_RE.search(text):
@@ -192,8 +205,11 @@ class GenericReleaseAdapter:
 
     def resolve_downloads(self, source: SourceDefinition, release: ReleaseCandidate) -> tuple[DownloadCandidate, ...]:
         preferred_architecture = release.architecture.casefold()
+        preferred_platform = source.platform_filters[0].casefold() if source.platform_filters else "unknown"
 
-        def sort_key(candidate: DownloadCandidate) -> tuple[int, int, float, str]:
+        def sort_key(candidate: DownloadCandidate) -> tuple[int, int, int, float, str]:
+            platform = _candidate_platform(candidate)
+            platform_rank = 0 if platform == preferred_platform else 1 if platform == "unknown" else 2
             architecture = _candidate_architecture(candidate)
             kind_rank = {"archive": 0, "installer": 1, "unknown": 2}[_candidate_kind(candidate)]
             if preferred_architecture in {"x64", "x86", "arm64"}:
@@ -202,7 +218,7 @@ class GenericReleaseAdapter:
                 )
             else:
                 architecture_rank = {"x64": 0, "arm64": 1, "x86": 2, "unknown": 3}[architecture]
-            return (kind_rank, architecture_rank, -candidate.confidence, candidate.url)
+            return (platform_rank, kind_rank, architecture_rank, -candidate.confidence, candidate.url)
 
         return tuple(sorted(release.download_candidates, key=sort_key))
 

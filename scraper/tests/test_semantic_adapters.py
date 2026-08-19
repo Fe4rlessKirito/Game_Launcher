@@ -99,3 +99,32 @@ def test_generic_adapter_prefers_portable_archive_over_installer() -> None:
     candidates = adapter.resolve_downloads(source, release)
 
     assert candidates[0].url.endswith("game-portable.zip")
+
+
+def test_generic_adapter_prefers_windows_archive_when_download_urls_hide_extensions() -> None:
+    page = SemanticDomBuilder().build(
+        """
+        <html><head><title>SuperTuxKart 1.5 Windows x64</title></head>
+        <body>
+        <a href="https://downloads.example/SuperTuxKart-1.5-linux-riscv64.tar.gz/download">
+          SuperTuxKart-1.5-linux-riscv64.tar.gz
+        </a>
+        <a href="https://downloads.example/SuperTuxKart-1.5-src.tar.gz/download">
+          SuperTuxKart-1.5-src.tar.gz
+        </a>
+        <a href="https://downloads.example/SuperTuxKart-1.5-installer-x86_64.exe/download">
+          SuperTuxKart-1.5-installer-x86_64.exe
+        </a>
+        <a href="https://downloads.example/SuperTuxKart-1.5-win.zip/download">
+          SuperTuxKart-1.5-win.zip
+        </a>
+        </body></html>
+        """,
+        "https://example.test/releases/supertuxkart",
+    )
+    source = SourceDefinition("stk", page.url, platform_filters=("windows",), gemini_fallback_allowed=False)
+    adapter = GenericReleaseAdapter()
+    release = adapter.discover(source, page)[0]
+    candidates = adapter.resolve_downloads(source, release)
+
+    assert candidates[0].filename == "SuperTuxKart-1.5-win.zip"
