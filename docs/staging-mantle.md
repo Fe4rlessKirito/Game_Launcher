@@ -1,8 +1,9 @@
 # Mantle staging topology and validation
 
 Mantle is the active staging host for Vaultnode. The VPS runs the API,
-PostgreSQL, worker, private Telegram Local Bot API, private Telegram file
-proxy, and Caddy through the repository's Docker Compose files. Only Caddy is
+PostgreSQL, Rust worker, optional release scraper, private Telegram Local Bot
+API, private Telegram file proxy, and Caddy through the repository's Docker
+Compose files. Only Caddy is
 public; PostgreSQL, the worker, and both Telegram services remain private.
 The checked-in `deploy/VpsCaddyfile` remains the HTTP fallback for local or
 IP-only staging. The active Mantle deployment now uses
@@ -43,6 +44,22 @@ The active override keeps FileMirage as HOT and Telegram as physical-pack
 COLD. `LAUNCHER_PACK_COLD_ONLY=true` means Telegram receives physical packs,
 not an additional logical-chunk copy. The Bot API service has no public port;
 the worker uses `http://telegram-bot-api-proxy:8081` over the Compose network.
+The optional scraper uses the same `launcher-storage` volume for its durable
+SQLite state, validated artifacts, and advisory work-status records. Its
+`SCRAPER_STATUS_DIR` must match the API/worker
+`LAUNCHER_WORK_STATUS_DIR`; only the public, redacted work record is exposed
+through `/api/v1/public/status`.
+
+After the scraper service is running, register only operator-authorized
+sources. For example, this adds the official OpenTTD release page without
+enabling localhost access:
+
+```text
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T scraper \
+  launcher-scraper --store /var/lib/launcher/storage/scraper/scraper-state.db \
+  source-add openttd-official https://www.openttd.org/downloads/openttd-releases/latest \
+  --platform windows --no-gemini
+```
 
 ## Operator checks
 

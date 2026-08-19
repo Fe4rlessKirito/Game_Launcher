@@ -11,6 +11,7 @@ from .interpreter import PageInterpreter
 from .jobs import SQLiteJobStore
 from .models import JobStatus, ScrapeJob, ScrapeStatus, SourceDefinition
 from .service import ScrapeOutcome, ScraperService
+from .status import WorkStatusPublisher
 
 logger = logging.getLogger("launcher_scraper.scheduler")
 
@@ -33,6 +34,7 @@ class IngestionScheduler:
         lease_seconds: int = 300,
         output_root: str | Path = "./scraper-artifacts",
         diagnostics: DiagnosticsWriter | None = None,
+        status: WorkStatusPublisher | None = None,
     ) -> None:
         self.store = store
         self.service = service
@@ -40,6 +42,7 @@ class IngestionScheduler:
         self.lease_seconds = max(30, lease_seconds)
         self.output_root = str(output_root)
         self.diagnostics = diagnostics
+        self.status = status
 
     def register_source(self, source: SourceDefinition) -> None:
         self.store.add_source(source)
@@ -50,7 +53,16 @@ class IngestionScheduler:
         jobs: list[ScrapeJob] = []
         checked_at = time.time() if now is None else now
         for source in self.store.due_sources(checked_at):
-            jobs.append(self.store.enqueue(source.name))
+            job = self.store.enqueue(source.name)
+            jobs.append(job)
+            if job.status in {JobStatus.QUEUED, JobStatus.RETRY}:
+                self._publish(
+                    job,
+                    kind="SCRAPER",
+                    state="QUEUED",
+                    source=source,
+                    detail="Waiting for scraper worker",
+                )
             self.store.mark_source_checked(source.name, checked_at + source.check_interval_seconds)
         return jobs
 
@@ -69,12 +81,29 @@ class IngestionScheduler:
             self._finish(job, outcome)
             return WorkerResult(job, outcome)
         try:
+            self._publish(
+                job,
+                kind="SCRAPER",
+                state="DISCOVERING",
+                source=source,
+                detail="Checking the release source",
+            )
             discovery = self.service.discover(source, interpreter=interpreter)
             self._record(job, discovery)
             if discovery.status == ScrapeStatus.SUCCESS:
                 job.status = JobStatus.ACQUIRING
                 job.stage = "ACQUIRING"
                 self.store.heartbeat(job, self.lease_seconds)
+                release = discovery.releases[0] if discovery.releases else None
+                self._publish(
+                    job,
+                    kind="SCRAPER",
+                    state="DOWNLOADING",
+                    source=source,
+                    game=release.product_name if release else None,
+                    version=release.version if release else None,
+                    detail="Downloading and validating the release",
+                )
                 outcome = self.service.acquire(
                     source, self._output_root(), discovery, target_release_id=job.target_release_id
                 )
@@ -124,6 +153,46 @@ class IngestionScheduler:
                 logger.exception("could not write scraper diagnostics", extra={"job_id": job.id})
         if outcome.status == ScrapeStatus.SUCCESS:
             self.store.complete(job)
+            self._clear(job)
             return
         retry = outcome.status in {ScrapeStatus.RATE_LIMITED, ScrapeStatus.TEMPORARY_FAILURE}
         self.store.fail(job, outcome.message or outcome.status.value, retry=retry)
+        self._clear(job)
+
+    def _publish(
+        self,
+        job: ScrapeJob,
+        *,
+        kind: str,
+        state: str,
+        source: SourceDefinition | None = None,
+        game: str | None = None,
+        version: str | None = None,
+        provider: str | None = None,
+        detail: str,
+    ) -> None:
+        if self.status is None:
+            return
+        if game is None and source is not None:
+            metadata_name = source.metadata.get("product_name")
+            game = metadata_name if isinstance(metadata_name, str) and metadata_name.strip() else source.name
+        try:
+            self.status.publish(
+                job.id,
+                kind=kind,
+                state=state,
+                game=game,
+                version=version,
+                provider=provider,
+                detail=detail,
+            )
+        except (OSError, ValueError):
+            logger.exception("could not publish scraper work status", extra={"job_id": job.id})
+
+    def _clear(self, job: ScrapeJob) -> None:
+        if self.status is None:
+            return
+        try:
+            self.status.clear(job.id)
+        except (OSError, ValueError):
+            logger.exception("could not clear scraper work status", extra={"job_id": job.id})

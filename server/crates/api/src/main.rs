@@ -12,6 +12,7 @@ use chrono::Utc;
 use launcher_common::{
     ApiErrorBody, BuildSummary, CatalogPage, ChunkResolutionRequest, GameSummary, HotPackSource,
     Manifest, ManifestSignature, PackResolutionRequest, ResolvedChunk, ResolvedPack,
+    work_status::{WorkStatus, WorkStatusStore},
 };
 use launcher_database::Database;
 use launcher_provisioning::{
@@ -173,6 +174,8 @@ struct AppState {
     supabase_auth: Option<SupabaseAuth>,
     public_status: Arc<RwLock<PublicStatusResponse>>,
     public_status_poll_seconds: u64,
+    work_status_store: WorkStatusStore,
+    work_status_stale_seconds: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -311,6 +314,7 @@ struct PublicStatusResponse {
     usage: Vec<PublicProviderUsageResponse>,
     total_used_bytes: u64,
     pending_restores: usize,
+    active_work: Vec<PublicWorkStatusResponse>,
     system: PublicSystemMetrics,
     last_probe_at: Option<chrono::DateTime<Utc>>,
     last_successful_probe_at: Option<chrono::DateTime<Utc>>,
@@ -318,6 +322,37 @@ struct PublicStatusResponse {
     probe_interval_seconds: u64,
     stale: bool,
     utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PublicWorkStatusResponse {
+    id: String,
+    kind: String,
+    state: String,
+    game: Option<String>,
+    version: Option<String>,
+    provider: Option<String>,
+    detail: String,
+    progress_percent: Option<f32>,
+    created_at: chrono::DateTime<Utc>,
+    updated_at: chrono::DateTime<Utc>,
+}
+
+impl From<WorkStatus> for PublicWorkStatusResponse {
+    fn from(status: WorkStatus) -> Self {
+        Self {
+            id: status.id,
+            kind: status.kind,
+            state: status.state,
+            game: status.game,
+            version: status.version,
+            provider: status.provider,
+            detail: status.detail,
+            progress_percent: status.progress_percent,
+            created_at: status.created_at,
+            updated_at: status.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -528,6 +563,14 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(30)
         .clamp(10, 300);
+    let work_status_dir = env::var_os("LAUNCHER_WORK_STATUS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| storage_root.join("work-status"));
+    let work_status_stale_seconds = env::var("LAUNCHER_WORK_STATUS_STALE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(900)
+        .clamp(60, 86_400);
     let public_status_snapshot = Arc::new(RwLock::new(initial_public_status(
         !storage.providers().is_empty(),
         public_status_poll_seconds,
@@ -558,6 +601,8 @@ async fn main() -> anyhow::Result<()> {
         supabase_auth,
         public_status: public_status_snapshot,
         public_status_poll_seconds,
+        work_status_store: WorkStatusStore::new(work_status_dir),
+        work_status_stale_seconds,
     };
     tokio::spawn(run_public_status_monitor(state.clone()));
     let app = Router::new()
@@ -947,6 +992,7 @@ fn initial_public_status(storage_configured: bool, poll_seconds: u64) -> PublicS
         usage: Vec::new(),
         total_used_bytes: 0,
         pending_restores: 0,
+        active_work: Vec::new(),
         system: initial_system_metrics(),
         last_probe_at: None,
         last_successful_probe_at: None,
@@ -1072,6 +1118,7 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
     let mut usage = previous.usage;
     let mut total_used_bytes = previous.total_used_bytes;
     let mut pending_restores = previous.pending_restores;
+    let mut active_work = previous.active_work;
 
     if let Some(database) = &state.database {
         database_ready = match database.ping().await {
@@ -1123,6 +1170,21 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
             }
         }
     }
+    match state
+        .work_status_store
+        .read_active(Duration::from_secs(state.work_status_stale_seconds))
+    {
+        Ok(statuses) => {
+            active_work = statuses
+                .into_iter()
+                .map(PublicWorkStatusResponse::from)
+                .collect();
+        }
+        Err(error) => {
+            stale = true;
+            warn!(%error, "public telemetry work status probe failed");
+        }
+    }
 
     let storage_configured = !providers.is_empty();
     let status = if database_ready
@@ -1147,6 +1209,7 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
         usage,
         total_used_bytes,
         pending_restores,
+        active_work,
         system,
         last_probe_at: Some(probe_at),
         last_successful_probe_at,
@@ -2615,6 +2678,8 @@ mod tests {
             supabase_auth: None,
             public_status: Arc::new(RwLock::new(initial_public_status(true, 30))),
             public_status_poll_seconds: 30,
+            work_status_store: WorkStatusStore::new("test-work-status"),
+            work_status_stale_seconds: 900,
         };
         let resolved = resolve_chunks(
             State(state),

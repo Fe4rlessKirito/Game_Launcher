@@ -124,6 +124,12 @@ pub struct PackLocationRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackGameRecord {
+    pub title: String,
+    pub display_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoragePackMetric {
     pub provider: String,
     pub storage_class: StorageClass,
@@ -1701,6 +1707,31 @@ impl Database {
                 })
             })
             .collect()
+    }
+
+    pub async fn game_for_pack(
+        &self,
+        pack_hash: &str,
+    ) -> Result<Option<PackGameRecord>, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT g.title, b.display_version
+             FROM build_packs bp
+             JOIN builds b ON b.id=bp.build_id
+             JOIN games g ON g.id=b.game_id
+             WHERE bp.pack_hash=$1
+             ORDER BY (b.state='PUBLISHED') DESC, b.published_at DESC NULLS LAST, b.created_at DESC
+             LIMIT 1",
+        )
+        .bind(pack_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(PackGameRecord {
+                title: row.try_get("title")?,
+                display_version: row.try_get("display_version")?,
+            })
+        })
+        .transpose()
     }
 
     pub async fn storage_pack_metrics(

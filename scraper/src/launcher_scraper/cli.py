@@ -18,6 +18,7 @@ from .models import DownloadCandidate, JobStatus, PlannerBudget, ScrapeStatus, S
 from .scheduler import IngestionScheduler
 from .security import URLPolicy
 from .service import ScrapeOutcome, ScraperService
+from .status import WorkStatusPublisher
 from .validation import ArtifactValidator, DedupIndex, ValidationLimits
 
 logger = logging.getLogger("launcher_scraper")
@@ -292,6 +293,7 @@ def _dispatch(args: argparse.Namespace, store: SQLiteJobStore | None) -> int:
                     enabled=_env_bool("SCRAPER_DIAGNOSTICS_ENABLED", False),
                     max_bytes=_env_int("SCRAPER_DIAGNOSTICS_MAX_BYTES", 512 * 1024),
                 ),
+                status=WorkStatusPublisher(os.environ.get("SCRAPER_STATUS_DIR", "scraper-status")),
             )
             if args.once:
                 result = scheduler.run_once()

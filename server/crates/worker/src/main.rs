@@ -12,7 +12,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
-use launcher_common::{ChunkRef, GameSummary, Manifest, ManifestSignature};
+use launcher_common::{
+    ChunkRef, GameSummary, Manifest, ManifestSignature,
+    work_status::{WorkStatus, WorkStatusStore},
+};
 use launcher_database::Database;
 use launcher_domain::BuildState;
 use launcher_manifests::{
@@ -1344,6 +1347,11 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
         } => {
             let database = command_database().await?;
             let (storage, _) = storage_command_context(&storage_root).await?;
+            let work_status_store = WorkStatusStore::new(
+                env::var_os("LAUNCHER_WORK_STATUS_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| storage_root.join("work-status")),
+            );
             let poll = Duration::from_secs(poll_seconds.clamp(1, 300));
             let mut cold_stream_server = env::var("LAUNCHER_COLD_STREAM_TOKEN")
                 .ok()
@@ -1370,8 +1378,29 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             loop {
                 database.recover_expired_restore_jobs().await?;
                 database.recover_expired_pack_restore_jobs().await?;
-                renew_due_hot_packs(&database, &storage, &worker_id, &storage_root).await?;
+                renew_due_hot_packs(
+                    &database,
+                    &storage,
+                    &worker_id,
+                    &storage_root,
+                    &work_status_store,
+                )
+                .await?;
                 if let Some(job) = database.claim_pack_restore_job(&worker_id, 600).await? {
+                    let status_id = format!("restore-pack-{}", job.id);
+                    write_work_status(
+                        &work_status_store,
+                        WorkStatus::new(
+                            &status_id,
+                            "RESTORE",
+                            "RESTORING",
+                            None,
+                            None,
+                            Some(job.target_provider.clone()),
+                            "Restoring a cold physical pack",
+                            None,
+                        ),
+                    );
                     if let Err(error) = process_pack_restore_job(&database, &storage, &job).await {
                         eprintln!("pack_restore_job={} status=RETRY error={error}", job.id);
                     } else {
@@ -1380,7 +1409,22 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                             job.id, job.pack_hash
                         );
                     }
+                    remove_work_status(&work_status_store, &status_id);
                 } else if let Some(job) = database.claim_restore_job(&worker_id, 600).await? {
+                    let status_id = format!("restore-chunk-{}", job.id);
+                    write_work_status(
+                        &work_status_store,
+                        WorkStatus::new(
+                            &status_id,
+                            "RESTORE",
+                            "RESTORING",
+                            None,
+                            None,
+                            Some(job.target_provider.clone()),
+                            "Restoring a cold logical chunk",
+                            None,
+                        ),
+                    );
                     if let Err(error) = process_restore_job(&database, &storage, &job).await {
                         eprintln!("restore_job={} status=RETRY error={error}", job.id);
                     } else {
@@ -1389,6 +1433,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                             job.id, job.encoded_hash
                         );
                     }
+                    remove_work_status(&work_status_store, &status_id);
                 } else {
                     if let Some(server) = cold_stream_server.as_mut() {
                         tokio::select! {
@@ -2666,6 +2711,7 @@ async fn renew_due_hot_packs(
     storage: &StorageRegistry,
     worker_id: &str,
     storage_root: &Path,
+    work_status_store: &WorkStatusStore,
 ) -> Result<()> {
     let renewal_days = env::var("LAUNCHER_HOT_RENEWAL_DAYS")
         .ok()
@@ -2712,11 +2758,36 @@ async fn renew_due_hot_packs(
                 location.pack_hash,
                 Uuid::new_v4()
             ));
+            let status_id = format!("reupload-{}-{}", location.provider, location.pack_hash);
+            let pack_game = match database.game_for_pack(&location.pack_hash).await {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!(
+                        "work_status=PACK_GAME_LOOKUP_FAILED pack_hash={} error={error}",
+                        location.pack_hash
+                    );
+                    None
+                }
+            };
+            write_work_status(
+                work_status_store,
+                WorkStatus::new(
+                    &status_id,
+                    "REUPLOAD",
+                    "REUPLOADING",
+                    pack_game.as_ref().map(|value| value.title.clone()),
+                    pack_game.map(|value| value.display_version),
+                    Some(location.provider.clone()),
+                    "Reuploading a HOT pack",
+                    None,
+                ),
+            );
             let result =
                 renew_hot_pack_location(database, storage, provider.clone(), &location, &temporary)
                     .await;
             let _ = database.release_pack_lease(lease_id).await;
             let _ = tokio::fs::remove_file(&temporary).await;
+            remove_work_status(work_status_store, &status_id);
             if let Err(error) = result {
                 database
                     .defer_hot_pack_renewal(&location.pack_hash, &location.provider, 3600)
@@ -2734,6 +2805,24 @@ async fn renew_due_hot_packs(
         }
     }
     Ok(())
+}
+
+fn write_work_status(store: &WorkStatusStore, status: WorkStatus) {
+    if let Err(error) = store.write(&status) {
+        eprintln!(
+            "work_status=WRITE_FAILED directory={} error={error}",
+            store.directory().display()
+        );
+    }
+}
+
+fn remove_work_status(store: &WorkStatusStore, id: &str) {
+    if let Err(error) = store.remove(id) {
+        eprintln!(
+            "work_status=REMOVE_FAILED id={id} directory={} error={error}",
+            store.directory().display()
+        );
+    }
 }
 
 async fn renew_hot_pack_location(

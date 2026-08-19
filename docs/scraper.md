@@ -158,11 +158,18 @@ The most important deployment variables are documented in
 | `SCRAPER_MAX_ARTIFACT_BYTES`, `SCRAPER_MAX_ARCHIVE_*` | download and archive bounds |
 | `SCRAPER_TEMP_MAX_BYTES` | aggregate scratch reservation |
 | `SCRAPER_DIAGNOSTICS_*` | optional bounded JSON diagnostics for worker failures |
+| `SCRAPER_STATUS_DIR` | shared active-work status directory read by the public API |
 | `GEMINI_API_KEY` / `SCRAPER_GEMINI_MODEL` | optional structured fallback credentials; never commit values |
 
 `SCRAPER_ENABLED` is a deployment guard for the process entrypoint; the Python
 library itself remains explicit and does not silently scrape sources. Source
 authorization and distribution rights remain operator responsibilities.
+
+When the scraper worker is deployed beside the Rust API, set `SCRAPER_STATUS_DIR`
+to the same mounted directory as `LAUNCHER_WORK_STATUS_DIR`. The public status
+endpoint then reports the current game, release phase, provider, and optional
+progress while a scraper job is queued or active. Terminal records are removed;
+stale records older than `LAUNCHER_WORK_STATUS_STALE_SECONDS` are ignored.
 
 ## Tests
 

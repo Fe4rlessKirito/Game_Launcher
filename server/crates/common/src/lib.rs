@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod work_status;
+
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const MANIFEST_SIGNATURE_SCHEMA_VERSION: u32 = 1;
 

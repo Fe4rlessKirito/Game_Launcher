@@ -4,6 +4,8 @@ services:
       - ../secrets/telegram.env
     environment:
       LAUNCHER_STORAGE_PROVIDERS: filemirage,telegram
+      LAUNCHER_WORK_STATUS_DIR: /var/lib/launcher/storage/work-status
+      LAUNCHER_WORK_STATUS_STALE_SECONDS: "900"
       LAUNCHER_FILEMIRAGE_STATE_FILE: /var/lib/launcher/storage/filemirage-state.json
       LAUNCHER_RESTORE_TARGET_PROVIDER: filemirage
       LAUNCHER_OPERATOR_AUTH_REQUIRED: "true"
@@ -41,6 +43,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       LAUNCHER_STORAGE_ROOT: /var/lib/launcher/storage
+      LAUNCHER_WORK_STATUS_DIR: /var/lib/launcher/storage/work-status
+      LAUNCHER_WORK_STATUS_STALE_SECONDS: "900"
       LAUNCHER_STORAGE_PROVIDERS: filemirage,telegram
       LAUNCHER_FILEMIRAGE_STATE_FILE: /var/lib/launcher/storage/filemirage-state.json
       LAUNCHER_RESTORE_TARGET_PROVIDER: filemirage
@@ -74,6 +78,27 @@ services:
     volumes:
       - launcher-storage:/var/lib/launcher/storage
       - ../secrets/mantle-2026-08-14.private.pem:/run/secrets/mantle-signing-key.pem:ro
+
+  scraper:
+    build:
+      context: ..
+      dockerfile: deploy/scraper.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../secrets/scraper.env
+    environment:
+      SCRAPER_ENABLED: "true"
+      SCRAPER_STATE_DB: /var/lib/launcher/storage/scraper/scraper-state.db
+      SCRAPER_OUTPUT_DIR: /var/lib/launcher/storage/scraper/artifacts
+      SCRAPER_STATUS_DIR: /var/lib/launcher/storage/work-status
+      SCRAPER_BROWSER: http
+      SCRAPER_ALLOW_LOCALHOST: "false"
+    command: ["--store", "/var/lib/launcher/storage/scraper/scraper-state.db", "--output-root", "/var/lib/launcher/storage/scraper/artifacts", "worker", "--poll-seconds", "15"]
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
+      - launcher-storage:/var/lib/launcher/storage
 
   telegram-bot-api:
     build:
