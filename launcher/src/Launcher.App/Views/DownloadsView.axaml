@@ -1,7 +1,6 @@
 <UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Class="Launcher.App.Views.DownloadsView">
-  <Border Background="{DynamicResource DownloadPanel}" MinHeight="700">
-    <StackPanel Spacing="0">
-    <Border Background="{DynamicResource DownloadChart}" Height="176" Padding="28,22" BorderThickness="0" ClipToBounds="True">
+  <Grid RowDefinitions="Auto,*" MinHeight="700">
+    <Border Grid.Row="0" Background="{DynamicResource DownloadChart}" Height="176" Padding="28,22" BorderThickness="0" ClipToBounds="True">
       <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,*">
         <StackPanel Spacing="4">
           <TextBlock Text="DOWNLOAD ACTIVITY" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
@@ -22,18 +21,19 @@
       </Grid>
     </Border>
 
-    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,14,0,0">
+    <StackPanel Grid.Row="1" Spacing="0">
+    <StackPanel Orientation="Horizontal" Spacing="10" Margin="28,18,28,0">
       <TextBlock Text="{Binding LastActionMessage}" Classes="Caption" VerticalAlignment="Center" />
       <Button Content="Pause" Classes="SmallSecondary" Command="{Binding PauseActiveDownloadCommand}" />
       <Button Content="Resume" Classes="SmallSecondary" Command="{Binding ResumeActiveDownloadCommand}" />
     </StackPanel>
 
-    <StackPanel Margin="0,28,0,0" Spacing="12">
+    <StackPanel Margin="28,30,28,0" Spacing="12">
       <Grid ColumnDefinitions="*,Auto"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Up Next" Classes="SectionHeading" /><TextBlock Text="{Binding UpNextCount}" Classes="Caption" VerticalAlignment="Center" /></StackPanel><TextBlock Grid.Column="1" Text="There are no downloads in the queue" Classes="Caption" /></Grid>
       <Border Height="1" Background="{DynamicResource BorderSubtle}" />
     </StackPanel>
 
-    <StackPanel Margin="0,38,0,0" Spacing="12">
+    <StackPanel Margin="28,38,28,0" Spacing="12">
       <Grid ColumnDefinitions="*,Auto"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Scheduled" Classes="SectionHeading" /><TextBlock Text="{Binding ScheduledCount}" Classes="Caption" VerticalAlignment="Center" /></StackPanel><TextBlock Grid.Column="1" Text="Next queued install" Classes="Caption" /></Grid>
       <Border Height="1" Background="{DynamicResource BorderSubtle}" />
       <ItemsControl ItemsSource="{Binding Scheduled}">
@@ -50,7 +50,7 @@
       </ItemsControl>
     </StackPanel>
 
-    <StackPanel Margin="0,38,0,0" Spacing="12">
+    <StackPanel Margin="28,38,28,0" Spacing="12">
       <Grid ColumnDefinitions="*,Auto"><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="Completed" Classes="SectionHeading" /><TextBlock Text="{Binding CompletedCount}" Classes="Caption" VerticalAlignment="Center" /></StackPanel><Button Grid.Column="1" Content="Clear All" Classes="SmallSecondary" Command="{Binding ClearCompletedCommand}" /></Grid>
       <Border Height="1" Background="{DynamicResource BorderSubtle}" />
       <ItemsControl ItemsSource="{Binding Completed}">
@@ -67,5 +67,5 @@
       </ItemsControl>
     </StackPanel>
     </StackPanel>
-  </Border>
+  </Grid>
 </UserControl>
