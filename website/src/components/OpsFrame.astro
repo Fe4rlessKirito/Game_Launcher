@@ -8,11 +8,13 @@ interface Props {
 }
 
 const { active, title } = Astro.props;
+const dashboardCacheVersion = '1';
+const dashboardHref = (path: string) => `${path}?v=${dashboardCacheVersion}`;
 const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: string }> = [
-  { key: 'overview', label: 'Overview', icon: 'overview', href: '/dashboard/' },
-  { key: 'activity', label: 'Activity', icon: 'activity', href: '/dashboard/activity/' },
-  { key: 'storage', label: 'Storage', icon: 'storage', href: '/dashboard/storage/' },
-  { key: 'providers', label: 'Providers', icon: 'providers', href: '/dashboard/providers/' },
+  { key: 'overview', label: 'Overview', icon: 'overview', href: dashboardHref('/dashboard/') },
+  { key: 'activity', label: 'Activity', icon: 'activity', href: dashboardHref('/dashboard/activity/') },
+  { key: 'storage', label: 'Storage', icon: 'storage', href: dashboardHref('/dashboard/storage/') },
+  { key: 'providers', label: 'Providers', icon: 'providers', href: dashboardHref('/dashboard/providers/') },
 ];
 ---
 
@@ -44,6 +46,7 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
 
     const root = document.querySelector<HTMLElement>('.ops-shell');
     const apiBase = root?.dataset.apiBase || 'https://vaultnode.pp.ua';
+    const opsPage = root?.dataset.opsPage || 'overview';
     const text = (selector: string, value: string) => { const element = document.querySelector<HTMLElement>(selector); if (element) element.textContent = value; };
     const workKind = (kind: string) => ({ SCRAPER: 'Release ingestion', REUPLOAD: 'HOT reupload', RESTORE: 'Storage restore' } as Record<string, string>)[kind] || 'Active operation';
     const workState = (state: string) => ({ QUEUED: 'Queued', DISCOVERING: 'Checking source', DOWNLOADING: 'Downloading', VALIDATING: 'Validating', RESTORING: 'Restoring', REUPLOADING: 'Reuploading' } as Record<string, string>)[state] || state;
@@ -58,7 +61,7 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
       const game = current.game || (current.kind === 'REUPLOAD' ? 'HOT pack renewal' : 'Active operation');
       const version = current.version ? 'Version ' + current.version : '';
       const count = items.length > 1 ? String(items.length) + ' active' : '1 active';
-      text('#live-work-kind', workKind(current.kind)); text('#live-work-game', game); text('#live-work-version', version); text('#live-work-state', workState(current.state)); text('#live-work-detail', current.detail || 'Working'); text('#live-work-provider', current.provider || ''); text('#live-work-count', count); text('#public-work-signal', count);
+      text('#live-work-kind', workKind(current.kind)); text('#live-work-game', game); text('#live-work-version', version); text('#live-work-state', workState(current.state)); text('#live-work-detail', current.detail || 'Working'); text('#live-work-provider', current.provider || 'Pending provider'); text('#live-work-count', count); text('#public-work-signal', count);
       const icon = document.querySelector<HTMLElement>('#live-work-icon'); if (icon) { icon.className = 'job-icon job-' + current.kind.toLowerCase(); icon.textContent = current.kind === 'REUPLOAD' ? '⟳' : current.kind === 'RESTORE' ? '↗' : '↓'; }
       const progressWrap = document.querySelector<HTMLElement>('#live-work-progress-wrap'); const progressBar = document.querySelector<HTMLElement>('#live-work-progress'); const progressLabel = document.querySelector<HTMLElement>('#live-work-progress-label');
       if (progressWrap && progressBar && progressLabel && current.progress_percent != null) { progressWrap.hidden = false; progressBar.style.width = String(Math.max(0, Math.min(100, current.progress_percent))) + '%'; progressLabel.textContent = current.progress_percent.toFixed(0) + '%'; } else if (progressWrap) progressWrap.hidden = true;
@@ -76,8 +79,13 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
         const healthyProviders = publicStatus.providers.filter((provider) => provider.healthy).length;
         const pending = publicStatus.pending_restores || 0;
         const activeWork = publicStatus.active_work || [];
+        const activeWorkCount = activeWork.length || pending;
+        const activeMetricCount = opsPage === 'storage' || opsPage === 'providers' ? pending : activeWorkCount;
+        const workMetricState = opsPage === 'storage' || opsPage === 'providers'
+          ? (pending ? 'Restore queue active' : 'No restore jobs')
+          : (activeWorkCount ? `${activeWorkCount} active operation${activeWorkCount === 1 ? '' : 's'}` : 'No active operations');
         renderActiveWork(activeWork);
-        const operational = publicStatus.status === 'operational'; const healthLabel = operational ? 'Operational' : 'Degraded'; text('#live-label', healthLabel); text('#system-status', healthLabel); text('#system-detail', `Updated ${now}`); text('#api-state', 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#cluster-status', healthLabel); text('#sidebar-health', healthLabel); text('#sidebar-sync', `Updated ${now}`); text('#footer-sync', `Updated ${now}`); text('#latency-state', 'Healthy response'); text('#active-work', `${pending}`); text('#queue-count', pending ? `${pending} active` : 'clear'); text('#work-state', pending ? 'Restore queue active' : 'No restore jobs'); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Provider health'); text('#activity-note', `Updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', now); text('#snapshot-age', 'Updated just now');
+        const operational = publicStatus.status === 'operational'; const healthLabel = operational ? 'Operational' : 'Degraded'; text('#live-label', healthLabel); text('#system-status', healthLabel); text('#system-detail', `Updated ${now}`); text('#api-state', 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#cluster-status', healthLabel); text('#sidebar-health', healthLabel); text('#sidebar-sync', `Updated ${now}`); text('#footer-sync', `Updated ${now}`); text('#latency-state', 'Healthy response'); text('#active-work', `${activeMetricCount}`); text('#queue-count', activeWorkCount ? `${activeWorkCount} active` : pending ? `${pending} queued` : 'clear'); text('#work-state', workMetricState); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Provider health'); text('#activity-note', `Updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', now); text('#snapshot-age', 'Updated just now');
         document.querySelector('#system-orb')?.classList.add('orb-online');
 
         const usageByProvider = new Map<string, number>();
@@ -114,7 +122,9 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
         text('#system-disk-value', system?.disk_used_bytes == null ? '—' : formatBytes(system.disk_used_bytes)); text('#system-disk-detail', system?.disk_total_bytes == null ? 'Unavailable' : `${formatBytes(system.disk_total_bytes)} total`); setBar('#system-disk-bar', diskPercent);
         ['filemirage', 'telegram', 'buzzheavier'].forEach((key) => { const card = document.querySelector<HTMLElement>(`[data-provider="${key}"]`); if (!card) return; const used = usageByProvider.get(key) || 0; const usage = card.querySelector<HTMLElement>('.provider-usage'); if (usage) usage.textContent = formatBytes(used); const detail = card.querySelector<HTMLElement>('.provider-detail'); if (detail) detail.textContent = totalUsed ? `${((used / totalUsed) * 100).toFixed(0)}% of stored data` : 'No packs stored'; const bar = card.querySelector<HTMLElement>('.provider-bar span'); if (bar) bar.style.width = totalUsed ? `${Math.max(used ? 4 : 0, (used / totalUsed) * 100)}%` : '0%'; });
         const hot = publicStatus.providers.filter((provider) => provider.tier === 'HOT' && provider.healthy).length; const cold = publicStatus.providers.filter((provider) => provider.tier === 'COLD' && provider.healthy).length; text('#hot-health', hot ? `${hot} healthy` : 'Needs attention'); text('#cold-health', cold ? `${cold} healthy` : 'Needs attention');
-        publicStatus.providers.forEach((provider) => { const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => provider.provider.toLowerCase().includes(candidate)); if (!key) return; const card = document.querySelector<HTMLElement>(`[data-provider="${key}"]`); if (!card) return; const badge = card.querySelector<HTMLElement>('.provider-status'); if (badge) { badge.className = `provider-status ${provider.healthy ? 'status-good' : 'status-bad'}`; badge.innerHTML = `<i></i> ${provider.healthy ? 'Healthy' : 'Degraded'}`; } const detailStatus = card.querySelector<HTMLElement>('.provider-detail-status'); if (detailStatus) detailStatus.textContent = provider.healthy ? 'Healthy and reachable' : 'Degraded'; });
+        const reportedProviders = new Set<string>();
+        publicStatus.providers.forEach((provider) => { const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => provider.provider.toLowerCase().includes(candidate)); if (!key) return; reportedProviders.add(key); const card = document.querySelector<HTMLElement>(`[data-provider="${key}"]`); if (!card) return; const badge = card.querySelector<HTMLElement>('.provider-status'); if (badge) { badge.className = `provider-status ${provider.healthy ? 'status-good' : 'status-bad'}`; badge.innerHTML = `<i></i> ${provider.healthy ? 'Healthy' : 'Degraded'}`; } const detailStatus = card.querySelector<HTMLElement>('.provider-detail-status'); if (detailStatus) detailStatus.textContent = provider.healthy ? 'Healthy and reachable' : 'Degraded'; });
+        document.querySelectorAll<HTMLElement>('[data-provider]').forEach((card) => { const key = card.dataset.provider; if (!key || reportedProviders.has(key)) return; const badge = card.querySelector<HTMLElement>('.provider-status'); if (badge) { badge.className = 'provider-status status-unknown'; badge.innerHTML = '<i></i> Not configured'; } const detailStatus = card.querySelector<HTMLElement>('.provider-detail-status'); if (detailStatus) detailStatus.textContent = 'Not configured'; });
         document.querySelectorAll<HTMLElement>('.job-row').forEach((row) => { const jobState = row.querySelector<HTMLElement>('.job-state'); if (jobState) jobState.textContent = row.dataset.job === 'restore' ? (pending ? `${pending} queued` : 'Queue clear') : 'Standing by'; });
       } catch (error) {
         text('#live-label', 'Unavailable'); text('#system-status', 'Unavailable'); text('#system-detail', 'Could not load the latest status'); text('#cluster-status', 'Unavailable'); text('#sidebar-health', 'Unavailable'); text('#sidebar-sync', 'Update failed'); text('#footer-sync', 'Update failed'); text('#activity-note', 'Update failed');

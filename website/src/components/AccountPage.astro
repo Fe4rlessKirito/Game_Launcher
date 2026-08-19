@@ -32,7 +32,7 @@ const registerMode = mode === 'register';
     </div>
 
     <div class="account-form-wrap">
-      <div id="auth-config-warning" hidden class="account-notice">Account sign-in is not configured yet.</div>
+      <div id="auth-config-warning" hidden class="account-notice"><span>Account sign-in is not configured yet.</span><a class="account-notice-link" href={registerMode ? '/account/' : '/account/register/'}>{registerMode ? 'Back to sign in' : 'Create account'}</a></div>
       <form id="auth-form" class="account-card" novalidate>
         <div class="account-card-heading">
           <div>
@@ -206,6 +206,8 @@ const registerMode = mode === 'register';
   .account-action-link { display: inline-flex; align-items: center; text-decoration: none; }
   .account-message { min-height: 20px; margin: 14px 0 0; color: #91a6bc; font-size: 12px; line-height: 1.5; }
   .account-notice { padding: 15px 17px; border: 1px solid #765d31; border-radius: 8px; background: #241e15; color: #d5b77b; font-size: 13px; line-height: 1.5; }
+  .account-notice-link { display: inline-flex; margin-top: 10px; color: #e8c989; font-size: 12px; font-weight: 600; text-decoration: none; }
+  .account-notice-link:hover { color: #fff0c6; text-decoration: underline; }
   .signed-in-card h2 { margin-top: 12px; }
   .signed-in-username { margin: 18px 0 0; color: var(--text); font-size: 15px; font-weight: 600; }
   .signed-in-email { margin: 18px 0 0; color: #dce7f3; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
