@@ -52,3 +52,31 @@ def test_generic_adapter_ranks_artifact_links_and_normalizes_release() -> None:
     assert release.best_download is not None
     assert release.best_download.url.endswith("game.zip")
     assert "casino" not in release.best_download.label.casefold()
+
+
+def test_generic_adapter_prefers_matching_64_bit_artifact_and_sidecar_size() -> None:
+    page = SemanticDomBuilder().build(
+        """
+        <html><head><title>0 A.D. Release 28 Windows</title></head>
+        <body>
+        <a href="https://releases.example/0ad-0.28.0-win32.exe">Not working? Try the direct download instead.</a>
+        <a href="https://releases.example/0ad-0.28.0-win64.exe">Not working? Try the direct download instead.</a>
+        <a href="https://releases.example/0ad-0.28.0-win32.exe.torrent">
+          32-bit Windows Torrent download (1.518 GB .exe installer)
+        </a>
+        <a href="https://releases.example/0ad-0.28.0-win64.exe.torrent">
+          64-bit Windows Torrent download (1.542 GB .exe installer)
+        </a>
+        </body></html>
+        """,
+        "https://example.test/download/win/",
+    )
+    source = SourceDefinition("0ad", page.url, gemini_fallback_allowed=False)
+    adapter = GenericReleaseAdapter()
+    release = adapter.discover(source, page)[0]
+    candidates = adapter.resolve_downloads(source, release)
+
+    assert release.architecture == "x64"
+    assert candidates[0].url.endswith("0ad-0.28.0-win64.exe")
+    assert candidates[0].reported_size == 1_655_709_892
+    assert all(not candidate.url.endswith(".torrent") for candidate in candidates)

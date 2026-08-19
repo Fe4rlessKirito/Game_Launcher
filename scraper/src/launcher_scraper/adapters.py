@@ -77,6 +77,25 @@ def _checksum_from_text(value: str) -> str | None:
     return match.group(1).casefold() if match else None
 
 
+def _candidate_architecture(candidate: DownloadCandidate) -> str:
+    haystack = f"{candidate.label} {candidate.filename or ''} {candidate.url}".casefold()
+    if any(token in haystack for token in ("arm64", "aarch64")):
+        return "arm64"
+    if any(token in haystack for token in ("x64", "x86_64", "amd64", "win64", "64-bit", "64 bit")):
+        return "x64"
+    if any(token in haystack for token in ("x86", "i386", "win32", "32-bit", "32 bit")):
+        return "x86"
+    return "unknown"
+
+
+def _sidecar_base_name(href: str) -> str | None:
+    filename = urlparse(href).path.rsplit("/", 1)[-1].casefold()
+    for suffix in (".torrent", ".sha256", ".sha1", ".md5", ".sig", ".asc"):
+        if filename.endswith(suffix):
+            return filename[: -len(suffix)]
+    return None
+
+
 def _candidate_score(
     source: SourceDefinition, text: str, href: str, link_id: str, downloads: tuple[str, ...]
 ) -> tuple[float, list[str]]:
@@ -169,21 +188,44 @@ class GenericReleaseAdapter:
         ]
 
     def resolve_downloads(self, source: SourceDefinition, release: ReleaseCandidate) -> tuple[DownloadCandidate, ...]:
-        return tuple(sorted(release.download_candidates, key=lambda item: (-item.confidence, item.url)))
+        preferred_architecture = release.architecture.casefold()
+
+        def sort_key(candidate: DownloadCandidate) -> tuple[float, int, str]:
+            architecture = _candidate_architecture(candidate)
+            if preferred_architecture in {"x64", "x86", "arm64"}:
+                architecture_rank = (
+                    0 if architecture == preferred_architecture else 1 if architecture == "unknown" else 2
+                )
+            else:
+                architecture_rank = {"x64": 0, "arm64": 1, "x86": 2, "unknown": 3}[architecture]
+            return (-candidate.confidence, architecture_rank, candidate.url)
+
+        return tuple(sorted(release.download_candidates, key=sort_key))
 
     def _download_candidates(self, source: SourceDefinition, page: PageSnapshot) -> list[DownloadCandidate]:
+        sidecar_sizes: dict[str, int] = {}
+        for link in page.links:
+            base_name = _sidecar_base_name(link.href)
+            size = _size_from_text(f"{link.text} {link.context}")
+            if base_name and size is not None:
+                sidecar_sizes[base_name] = size
+
         ranked: list[DownloadCandidate] = []
         for link in page.links:
+            if _sidecar_base_name(link.href) is not None:
+                continue
             score, evidence = _candidate_score(source, link.text, link.href, link.id, page.downloads_detected)
             if score < self.minimum_download_confidence:
                 continue
             label = link.text or link.href.rsplit("/", 1)[-1]
+            filename = link.href.rsplit("/", 1)[-1].split("?", 1)[0] or None
             ranked.append(
                 DownloadCandidate(
                     url=link.href,
                     label=label[:300],
-                    filename=link.href.rsplit("/", 1)[-1].split("?", 1)[0] or None,
-                    reported_size=_size_from_text(f"{label} {link.context}"),
+                    filename=filename,
+                    reported_size=_size_from_text(f"{label} {link.context}")
+                    or sidecar_sizes.get(filename.casefold() if filename else ""),
                     reported_checksum=_checksum_from_text(f"{label} {link.context}"),
                     confidence=score,
                     evidence=tuple(evidence),
@@ -210,10 +252,10 @@ class GenericReleaseAdapter:
         text = f"{page.title} {page.visible_text}".casefold()
         if any(token in text for token in ("arm64", "aarch64")):
             return "arm64"
-        if any(token in text for token in ("x86", "32-bit", "32 bit")) and "x64" not in text:
-            return "x86"
         if any(token in text for token in ("x64", "x86_64", "64-bit", "64 bit")):
             return "x64"
+        if any(token in text for token in ("x86", "32-bit", "32 bit")):
+            return "x86"
         return "unknown"
 
     @staticmethod

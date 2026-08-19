@@ -193,7 +193,7 @@ class ScraperService:
                 ScrapeStatus.NOT_FOUND,
                 "requested release was not discovered",
             )
-        candidates = tuple(sorted(release.download_candidates, key=lambda item: (-item.confidence, item.url)))
+        candidates = self._adapter_for(source).resolve_downloads(source, release)
         if not candidates:
             return self._with_metrics(
                 discovery,
