@@ -157,7 +157,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .ops-sidebar { background: rgba(11, 18, 27, .94); box-shadow: 14px 0 38px rgba(0, 0, 0, .12); }
 .ops-brand-image { width: 37px; height: 37px; }
 .ops-cluster { background: rgba(18, 29, 42, .72); }
-.nav-mark { position: relative; display: inline-grid; flex: 0 0 18px; place-items: center; width: 18px; height: 18px; color: currentColor; }
+.nav-mark { position: relative; display: inline-grid; flex: 0 0 18px; place-items: center; width: 18px; height: 18px; border: 1px solid #334b60; border-radius: 5px; background: rgba(15, 29, 41, .62); color: #7891a7; transition: border-color .18s ease, background .18s ease, color .18s ease, box-shadow .18s ease; }
 .nav-mark-overview { border: 1px solid currentColor; border-radius: 5px; }
 .nav-mark-overview::before { width: 4px; height: 4px; border-radius: 1px; background: currentColor; box-shadow: 6px 0 currentColor, 0 6px currentColor, 6px 6px currentColor; content: ''; }
 .nav-mark-activity::before { width: 14px; height: 10px; border-bottom: 1.5px solid currentColor; border-left: 1.5px solid currentColor; transform: skewY(-28deg); content: ''; }
@@ -167,6 +167,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .nav-mark-providers::before { width: 14px; height: 1px; background: currentColor; box-shadow: 0 -5px currentColor, 0 5px currentColor; content: ''; }
 .ops-nav-link { gap: 11px; }
 .ops-nav-link.active { background: rgba(74, 128, 165, .16); box-shadow: inset 2px 0 var(--ops-blue), 0 5px 18px rgba(0, 0, 0, .08); }
+.ops-nav-link:hover .nav-mark, .ops-nav-link.active .nav-mark { border-color: rgba(98, 185, 255, .78); background: rgba(31, 66, 88, .72); color: #bdeaff; box-shadow: 0 0 0 3px rgba(98, 185, 255, .06); }
+.ops-nav-link:not(.active):hover .nav-mark { color: #a9c0d0; }
 .ops-topbar { align-items: center; padding-bottom: 24px; }
 .topbar-title h1 { margin: 7px 0 0; color: #edf4fb; font-size: clamp(25px, 3vw, 35px); font-weight: 650; letter-spacing: -.04em; }
 .topbar-title p { margin: 7px 0 0; color: #7f93a8; font-size: 11px; }
