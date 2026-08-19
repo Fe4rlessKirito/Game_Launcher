@@ -1,32 +1,32 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 const principles = [
-  ['Verified updates', 'Only the bytes that changed need to move, and every download is checked before install.'],
-  ['Direct delivery', 'The launcher downloads from available mirrors while the service stays lightweight.'],
-  ['Safe installs', 'Interrupted downloads and repairs resume without leaving a broken installation behind.'],
+  ['Incremental updates', 'Only changed chunks move, keeping updates smaller and easier to resume.'],
+  ['Mirror-aware delivery', 'The launcher can use available mirrors while the control plane stays lightweight.'],
+  ['Repairable installs', 'Interrupted downloads and file repairs finish without leaving a broken library behind.'],
 ];
 ---
 <BaseLayout>
   <section class="grid-noise relative overflow-hidden border-y border-border">
     <div class="mx-auto grid max-w-6xl gap-16 px-6 py-24 lg:grid-cols-[1.08fr_.92fr] lg:px-10 lg:py-32">
       <div class="relative z-10">
-        <p class="mb-6 text-xs font-semibold tracking-[0.24em] text-accent">A CALMER WAY TO SHIP BUILDS</p>
-        <h1 class="max-w-3xl text-5xl font-semibold leading-[1.03] tracking-[-0.04em] text-copy sm:text-7xl">A launcher built around <span class="text-accent">trustworthy bytes.</span></h1>
-        <p class="mt-8 max-w-xl text-lg leading-8 text-muted">A desktop launcher for authorized game libraries, built for reliable installs, small updates, verified repairs, and offline play.</p>
-        <div class="mt-10 flex flex-wrap gap-3"><a href="/download" class="rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-background transition hover:brightness-110">Explore the foundation</a><a href="#architecture" class="rounded-lg border border-border bg-surface px-5 py-3 text-sm font-semibold text-copy transition hover:border-accent">See how it works</a></div>
+        <p class="mb-6 text-xs font-semibold tracking-[0.24em] text-accent">LAUNCHER INFRASTRUCTURE</p>
+        <h1 class="max-w-3xl text-5xl font-semibold leading-[1.03] tracking-[-0.04em] text-copy sm:text-7xl">Install less. <span class="text-accent">Verify more.</span></h1>
+        <p class="mt-8 max-w-xl text-lg leading-8 text-muted">Vaultnode keeps authorized game libraries dependable with small updates, resumable downloads, and repairable installs.</p>
+        <div class="mt-10 flex flex-wrap gap-3"><a href="/download" class="rounded-lg bg-accent px-5 py-3 text-sm font-semibold text-background transition hover:brightness-110">View the launcher</a><a href="#architecture" class="rounded-lg border border-border bg-surface px-5 py-3 text-sm font-semibold text-copy transition hover:border-accent">Read the architecture</a></div>
       </div>
       <div class="relative flex min-h-[340px] items-center justify-center">
         <div class="absolute h-72 w-72 rounded-full bg-accent/10 blur-3xl"></div>
         <div class="relative w-full max-w-md rounded-2xl border border-border bg-surface/90 p-5 shadow-2xl shadow-black/20">
-          <div class="mb-6 flex items-center justify-between"><span class="text-xs font-semibold tracking-[0.2em] text-accent">INSTALL PIPELINE</span><span class="rounded-full bg-accent-soft px-2.5 py-1 text-[10px] font-semibold text-accent">READY</span></div>
+          <div class="mb-6 flex items-center justify-between"><span class="text-xs font-semibold tracking-[0.2em] text-accent">DELIVERY PIPELINE</span><span class="rounded-full bg-accent-soft px-2.5 py-1 text-[10px] font-semibold text-accent">READY</span></div>
           {['Resolve metadata', 'Reuse local chunks', 'Verify encoded bytes', 'Commit installation'].map((step, index) => <div class="flex items-center gap-4 border-t border-border py-4"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-elevated text-xs font-semibold text-accent">0{index + 1}</span><span class="text-sm text-copy">{step}</span><span class="ml-auto text-xs text-muted">{index < 3 ? 'done' : 'next'}</span></div>)}
         </div>
       </div>
     </div>
   </section>
   <section id="architecture" class="mx-auto max-w-6xl px-6 py-24 lg:px-10">
-    <div class="max-w-2xl"><p class="text-xs font-semibold tracking-[0.24em] text-accent">DESIGNED TO LAST</p><h2 class="mt-5 text-4xl font-semibold tracking-[-0.03em] text-copy">Small control traffic. Verifiable content.</h2><p class="mt-5 text-lg leading-8 text-muted">Each boundary has one job, so storage providers, launcher UX, and ingestion can evolve independently.</p></div>
+    <div class="max-w-2xl"><p class="text-xs font-semibold tracking-[0.24em] text-accent">THE APPROACH</p><h2 class="mt-5 text-4xl font-semibold tracking-[-0.03em] text-copy">Predictable delivery, from source to install.</h2><p class="mt-5 text-lg leading-8 text-muted">The launcher, ingest pipeline, and storage providers stay separate so each part can be verified on its own.</p></div>
     <div class="mt-14 grid gap-4 md:grid-cols-3">{principles.map(([title, body], index) => <article class="rounded-2xl border border-border bg-surface p-6"><div class="text-sm font-semibold text-accent">0{index + 1}</div><h3 class="mt-12 text-xl font-semibold text-copy">{title}</h3><p class="mt-3 text-sm leading-6 text-muted">{body}</p></article>)}</div>
   </section>
-  <section class="border-y border-border bg-surface/40"><div class="mx-auto grid max-w-6xl gap-10 px-6 py-20 lg:grid-cols-2 lg:px-10"><div><p class="text-xs font-semibold tracking-[0.24em] text-accent">THE FOUNDATION</p><h2 class="mt-5 text-3xl font-semibold text-copy">Simple for players. Solid underneath.</h2></div><div class="grid gap-3 text-sm text-muted sm:grid-cols-2"><span class="rounded-lg border border-border bg-surface px-4 py-3">Desktop launcher</span><span class="rounded-lg border border-border bg-surface px-4 py-3">Small updates</span><span class="rounded-lg border border-border bg-surface px-4 py-3">Verified repairs</span><span class="rounded-lg border border-border bg-surface px-4 py-3">Offline-ready installs</span></div></div></section>
+  <section class="border-y border-border bg-surface/40"><div class="mx-auto grid max-w-6xl gap-10 px-6 py-20 lg:grid-cols-2 lg:px-10"><div><p class="text-xs font-semibold tracking-[0.24em] text-accent">THE FOUNDATION</p><h2 class="mt-5 text-3xl font-semibold text-copy">Simple for players. Predictable underneath.</h2></div><div class="grid gap-3 text-sm text-muted sm:grid-cols-2"><span class="rounded-lg border border-border bg-surface px-4 py-3">Desktop launcher</span><span class="rounded-lg border border-border bg-surface px-4 py-3">Incremental updates</span><span class="rounded-lg border border-border bg-surface px-4 py-3">Verified repairs</span><span class="rounded-lg border border-border bg-surface px-4 py-3">Offline-ready installs</span></div></div></section>
 </BaseLayout>

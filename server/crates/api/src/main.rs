@@ -358,6 +358,7 @@ impl From<WorkStatus> for PublicWorkStatusResponse {
 #[derive(Debug, Clone, Serialize)]
 struct PublicSystemMetrics {
     cpu_usage_percent: Option<f64>,
+    cpu_core_usage_percent: Option<Vec<f64>>,
     memory_used_bytes: Option<u64>,
     memory_total_bytes: Option<u64>,
     disk_used_bytes: Option<u64>,
@@ -368,12 +369,18 @@ struct PublicSystemMetrics {
 #[derive(Default)]
 struct SystemProbeState {
     previous_cpu: Option<CpuCounters>,
+    previous_cpu_cores: Vec<CpuCounters>,
 }
 
 #[derive(Clone, Copy)]
 struct CpuCounters {
     total: u64,
     idle: u64,
+}
+
+struct CpuSnapshot {
+    aggregate: CpuCounters,
+    cores: Vec<CpuCounters>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1006,6 +1013,7 @@ fn initial_public_status(storage_configured: bool, poll_seconds: u64) -> PublicS
 fn initial_system_metrics() -> PublicSystemMetrics {
     PublicSystemMetrics {
         cpu_usage_percent: None,
+        cpu_core_usage_percent: None,
         memory_used_bytes: None,
         memory_total_bytes: None,
         disk_used_bytes: None,
@@ -1015,19 +1023,29 @@ fn initial_system_metrics() -> PublicSystemMetrics {
 }
 
 fn sample_system_metrics(state: &mut SystemProbeState) -> PublicSystemMetrics {
-    let current_cpu = read_cpu_counters();
-    let cpu_usage_percent = current_cpu.and_then(|current| {
-        let usage = state.previous_cpu.and_then(|previous| {
-            let total_delta = current.total.saturating_sub(previous.total);
-            let idle_delta = current.idle.saturating_sub(previous.idle);
-            (total_delta > 0).then(|| {
-                ((total_delta.saturating_sub(idle_delta) as f64 / total_delta as f64) * 100.0)
-                    .clamp(0.0, 100.0)
-            })
-        });
-        state.previous_cpu = Some(current);
-        usage
-    });
+    let (cpu_usage_percent, cpu_core_usage_percent) = match read_cpu_counters() {
+        Some(current) => {
+            let cpu_usage_percent = state
+                .previous_cpu
+                .and_then(|previous| calculate_cpu_usage_percent(current.aggregate, previous));
+            let cpu_core_usage_percent = if !current.cores.is_empty()
+                && current.cores.len() == state.previous_cpu_cores.len()
+            {
+                current
+                    .cores
+                    .iter()
+                    .zip(state.previous_cpu_cores.iter())
+                    .map(|(current, previous)| calculate_cpu_usage_percent(*current, *previous))
+                    .collect()
+            } else {
+                None
+            };
+            state.previous_cpu = Some(current.aggregate);
+            state.previous_cpu_cores = current.cores;
+            (cpu_usage_percent, cpu_core_usage_percent)
+        }
+        None => (None, None),
+    };
     let memory_total_bytes = proc_meminfo_bytes("MemTotal:");
     let memory_available_bytes = proc_meminfo_bytes("MemAvailable:");
     let memory_used_bytes = memory_total_bytes
@@ -1038,6 +1056,7 @@ fn sample_system_metrics(state: &mut SystemProbeState) -> PublicSystemMetrics {
         .unwrap_or((None, None));
     PublicSystemMetrics {
         cpu_usage_percent,
+        cpu_core_usage_percent,
         memory_used_bytes,
         memory_total_bytes,
         disk_used_bytes,
@@ -1046,9 +1065,16 @@ fn sample_system_metrics(state: &mut SystemProbeState) -> PublicSystemMetrics {
     }
 }
 
-fn read_cpu_counters() -> Option<CpuCounters> {
-    let contents = fs::read_to_string("/proc/stat").ok()?;
-    let line = contents.lines().find(|line| line.starts_with("cpu "))?;
+fn calculate_cpu_usage_percent(current: CpuCounters, previous: CpuCounters) -> Option<f64> {
+    let total_delta = current.total.saturating_sub(previous.total);
+    let idle_delta = current.idle.saturating_sub(previous.idle);
+    (total_delta > 0).then(|| {
+        ((total_delta.saturating_sub(idle_delta) as f64 / total_delta as f64) * 100.0)
+            .clamp(0.0, 100.0)
+    })
+}
+
+fn parse_cpu_counters(line: &str) -> Option<CpuCounters> {
     let values = line
         .split_whitespace()
         .skip(1)
@@ -1059,6 +1085,27 @@ fn read_cpu_counters() -> Option<CpuCounters> {
     let idle =
         values.get(3).copied().unwrap_or_default() + values.get(4).copied().unwrap_or_default();
     Some(CpuCounters { total, idle })
+}
+
+fn read_cpu_counters() -> Option<CpuSnapshot> {
+    let contents = fs::read_to_string("/proc/stat").ok()?;
+    let aggregate = contents
+        .lines()
+        .find(|line| line.starts_with("cpu "))
+        .and_then(parse_cpu_counters)?;
+    let mut cores = contents
+        .lines()
+        .filter_map(|line| {
+            let label = line.split_whitespace().next()?;
+            let index = label.strip_prefix("cpu")?.parse::<usize>().ok()?;
+            Some((index, parse_cpu_counters(line)?))
+        })
+        .collect::<Vec<_>>();
+    cores.sort_by_key(|(index, _)| *index);
+    Some(CpuSnapshot {
+        aggregate,
+        cores: cores.into_iter().map(|(_, counters)| counters).collect(),
+    })
 }
 
 fn proc_meminfo_bytes(label: &str) -> Option<u64> {
@@ -2571,6 +2618,20 @@ impl IntoResponse for ApiResponseError {
 mod tests {
     use super::*;
     use launcher_common::{ChunkRef, ChunkingConfig, EncodingConfig, FileRecipe, LaunchProfile};
+
+    #[test]
+    fn cpu_usage_calculation_is_bounded() {
+        let previous = CpuCounters {
+            total: 1_000,
+            idle: 700,
+        };
+        let current = CpuCounters {
+            total: 1_200,
+            idle: 800,
+        };
+        assert_eq!(calculate_cpu_usage_percent(current, previous), Some(50.0));
+        assert_eq!(calculate_cpu_usage_percent(previous, current), None);
+    }
 
     #[test]
     fn operator_token_comparison_requires_exact_bytes() {

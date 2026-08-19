@@ -16,11 +16,11 @@ const productName = 'Vaultnode';
     <title>{title}</title>
   </head>
   <body class:list={{ 'page-no-chrome': !chrome }}>
-    {chrome && <header class="mx-auto flex max-w-6xl items-center justify-between px-6 py-7 lg:px-10">
-      <a href="/" class="flex items-center gap-3 text-sm font-semibold tracking-[0.18em] text-copy"><img class="site-brand-mark" src="/assets/vaultnode-mark.png" alt="" /> {productName.toUpperCase()}</a>
-      <nav aria-label="Primary navigation" class="flex items-center gap-6 text-sm text-muted"><a href="/#architecture" class="transition hover:text-copy">Overview</a><a href="/dashboard/" class="transition hover:text-copy">Status</a><a href="/account/" class="transition hover:text-copy">Account</a><a href="/download/" class="rounded-lg border border-border bg-surface px-4 py-2 text-copy transition hover:border-accent">Download</a></nav>
+    {chrome && <header class="site-header mx-auto flex max-w-6xl items-center justify-between px-6 py-7 lg:px-10">
+      <a href="/" class="site-brand"><img class="site-brand-mark" src="/assets/vaultnode-mark.png" alt="" /><span><strong>{productName.toUpperCase()}</strong><small>LAUNCHER INFRASTRUCTURE</small></span></a>
+      <nav aria-label="Primary navigation" class="site-nav"><a href="/#architecture" class="site-nav-link">Overview</a><a href="/dashboard/" class="site-nav-link">Status</a><a href="/account/" class="site-nav-link">Account</a><a href="/download/" class="site-nav-cta">Download</a></nav>
     </header>}
     <main><slot /></main>
-    {chrome && <footer class="mx-auto flex max-w-6xl flex-col gap-3 border-t border-border px-6 py-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between lg:px-10"><span>{productName} · neutral internal branding</span><span>Authorized content only.</span></footer>}
+    {chrome && <footer class="site-footer mx-auto flex max-w-6xl flex-col gap-3 border-t border-border px-6 py-8 text-xs text-muted sm:flex-row sm:items-center sm:justify-between lg:px-10"><span>{productName} · authorized distribution</span><span>Built for reliable installs.</span></footer>}
   </body>
 </html>
