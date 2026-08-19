@@ -9,10 +9,15 @@ namespace Launcher.App;
 
 public partial class MainWindow : Window
 {
+    private const string GameDragDataPrefix = "vaultnode-game:";
     private readonly DispatcherTimer _dragSnapTimer;
     private PixelPoint _dragStartPosition;
     private bool _dragMoved;
     private int _dragSnapTicks;
+    private Point _gameDragStartPoint;
+    private PointerPressedEventArgs? _gameDragPointerPressed;
+    private ViewModels.SidebarGame? _draggedGame;
+    private ViewModels.SidebarCategory? _activeDropCategory;
 
     public MainWindow()
     {
@@ -84,6 +89,125 @@ public partial class MainWindow : Window
         {
             viewModel.CancelAddGameCommand.Execute(null);
             e.Handled = true;
+        }
+    }
+
+    private void OnSidebarGamePointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control { DataContext: ViewModels.SidebarGame game }
+            || e.Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed)
+        {
+            return;
+        }
+
+        _draggedGame = game;
+        _gameDragStartPoint = e.GetPosition(this);
+        _gameDragPointerPressed = e;
+    }
+
+    private async void OnSidebarGamePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_draggedGame is null || _gameDragPointerPressed is null || !e.Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        var position = e.GetPosition(this);
+        if (Math.Abs(position.X - _gameDragStartPoint.X) < 6
+            && Math.Abs(position.Y - _gameDragStartPoint.Y) < 6)
+        {
+            return;
+        }
+
+        var game = _draggedGame;
+        var pointerPressed = _gameDragPointerPressed;
+        _draggedGame = null;
+        _gameDragPointerPressed = null;
+        e.Handled = true;
+
+        try
+        {
+            var transfer = new DataTransfer();
+            transfer.Add(DataTransferItem.CreateText(GameDragDataPrefix + game.OpenKey));
+            await DragDrop.DoDragDropAsync(pointerPressed, transfer, DragDropEffects.Move);
+        }
+        finally
+        {
+            SetActiveDropCategory(null);
+        }
+    }
+
+    private void OnSidebarGamePointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _draggedGame = null;
+        _gameDragPointerPressed = null;
+    }
+
+    private void OnCategoryDragOver(object? sender, DragEventArgs e)
+    {
+        var category = (sender as Control)?.DataContext as ViewModels.SidebarCategory;
+        var viewModel = DataContext as ViewModels.ShellViewModel;
+        var canDrop = category is not null
+            && viewModel is not null
+            && TryGetDraggedGameId(e.DataTransfer, out var gameId)
+            && viewModel.CanMoveGameToCategory(gameId, category);
+        e.DragEffects = canDrop ? DragDropEffects.Move : DragDropEffects.None;
+        SetActiveDropCategory(canDrop ? category : null);
+        e.Handled = true;
+    }
+
+    private void OnCategoryDragLeave(object? sender, DragEventArgs e)
+    {
+        if (sender is Control { DataContext: ViewModels.SidebarCategory category }
+            && ReferenceEquals(_activeDropCategory, category))
+        {
+            SetActiveDropCategory(null);
+        }
+    }
+
+    private void OnCategoryDrop(object? sender, DragEventArgs e)
+    {
+        var category = (sender as Control)?.DataContext as ViewModels.SidebarCategory;
+        var viewModel = DataContext as ViewModels.ShellViewModel;
+        var moved = category is not null
+            && viewModel is not null
+            && TryGetDraggedGameId(e.DataTransfer, out var gameId)
+            && viewModel.MoveGameToCategory(gameId, category);
+        e.DragEffects = moved ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+        SetActiveDropCategory(null);
+    }
+
+    private static bool TryGetDraggedGameId(IDataTransfer dataTransfer, out string gameId)
+    {
+        var text = dataTransfer.TryGetText();
+        if (text is not null && text.StartsWith(GameDragDataPrefix, StringComparison.Ordinal)
+            && text.Length > GameDragDataPrefix.Length)
+        {
+            gameId = text[GameDragDataPrefix.Length..];
+            return true;
+        }
+
+        gameId = string.Empty;
+        return false;
+    }
+
+    private void SetActiveDropCategory(ViewModels.SidebarCategory? category)
+    {
+        if (ReferenceEquals(_activeDropCategory, category))
+        {
+            return;
+        }
+
+        if (_activeDropCategory is not null)
+        {
+            _activeDropCategory.IsDropTarget = false;
+        }
+
+        _activeDropCategory = category;
+        if (_activeDropCategory is not null)
+        {
+            _activeDropCategory.IsDropTarget = true;
         }
     }
 

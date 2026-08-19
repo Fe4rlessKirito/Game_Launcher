@@ -59,7 +59,7 @@ public class ViewModelTests
 
         shell.NavigateCommand.Execute("Library");
         Assert.Null(shell.SelectedCollection);
-        Assert.Equal(2, shell.VisibleSidebarCategories.Count);
+        Assert.Equal(3, shell.VisibleSidebarCategories.Count);
     }
 
     [Fact]
@@ -145,13 +145,16 @@ public class ViewModelTests
             await shell.InitializeRuntimeAsync(runtime);
 
             var favorites = shell.SidebarCategories[0];
+            var uncategorized = shell.SidebarCategories[1];
             var library = Assert.IsType<LibraryViewModel>(shell.CurrentPage);
             Assert.Equal(["Favorite Game"], favorites.Games.Select(game => game.Title));
+            Assert.Equal(["Other Game"], uncategorized.Games.Select(game => game.Title));
             Assert.Equal(["Favorite Game", "Other Game"], library.Games.Select(game => game.Title));
 
             await shell.RemoveGameFromLibraryAsync(favorites.Games[0]);
 
             Assert.Empty(favorites.Games);
+            Assert.Equal(["Other Game"], uncategorized.Games.Select(game => game.Title));
             Assert.Equal(["Other Game"], library.Games.Select(game => game.Title));
             Assert.Contains("steam:10", runtime.Snapshot.ExcludedGameIds!);
         }
@@ -161,6 +164,24 @@ public class ViewModelTests
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void UncategorizedGamesCanBeMovedIntoAUserCollection()
+    {
+        var shell = new ShellViewModel(seedDemoData: false);
+        var uncategorized = shell.SidebarCategories[1];
+        var game = new SidebarGame("Asterfall", "AF", "Not installed", GameId: "asterfall");
+        uncategorized.Games.Add(game);
+
+        shell.NewCategoryName = "Co-op";
+        shell.CommitCategoryCommand.Execute(null);
+        var collection = shell.SidebarCategories.Single(category => category.Name == "Co-op");
+
+        Assert.True(shell.CanMoveGameToCategory(game.OpenKey, collection));
+        Assert.True(shell.MoveGameToCategory(game.OpenKey, collection));
+        Assert.Empty(uncategorized.Games);
+        Assert.Contains(game, collection.Games);
     }
 
     private sealed class EmptyCatalogHandler : HttpMessageHandler

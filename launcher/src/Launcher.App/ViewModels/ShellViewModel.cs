@@ -13,6 +13,8 @@ namespace Launcher.App.ViewModels;
 
 public partial class ShellViewModel : ObservableObject
 {
+    private const string FavoritesCategoryName = "FAVORITES";
+    private const string UncategorizedCategoryName = "UNCATEGORIZED";
     private LauncherRuntime? _runtime;
     private RuntimeGame[] _runtimeGames = [];
     private readonly HomeViewModel _homePage = new();
@@ -70,13 +72,14 @@ public partial class ShellViewModel : ObservableObject
     {
         SidebarCategories =
         [
-            new SidebarCategory("FAVORITES", false, seedDemoData ? new[]
+            new SidebarCategory(FavoritesCategoryName, false, seedDemoData ? new[]
             {
                 new SidebarGame("Synthetic Game", "SG", "Installed", 4),
                 new SidebarGame("Build Playground", "BP", "Ready to install", 3),
                 new SidebarGame("Asterfall", "AF", "Not installed", 2),
                 new SidebarGame("Northstar", "NS", "Not installed", 1)
-            } : [])
+            } : []),
+            new SidebarCategory(UncategorizedCategoryName, false)
         ];
         _collectionsPage = new CollectionsViewModel(SidebarCategories);
         _currentPage = _libraryPage;
@@ -163,7 +166,8 @@ public partial class ShellViewModel : ObservableObject
         _libraryPage.ApplyRuntimeGames(visibleGames);
         OnPropertyChanged(nameof(GamesFilterLabel));
 
-        foreach (var category in SidebarCategories.Where(category => category.IsUserCreated))
+        var userCategories = SidebarCategories.Where(category => category.IsUserCreated).ToArray();
+        foreach (var category in userCategories)
         {
             foreach (var game in category.Games.Where(game => _excludedGameIds.Contains(game.OpenKey)).ToArray())
             {
@@ -173,16 +177,18 @@ public partial class ShellViewModel : ObservableObject
             category.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
         }
 
-        var favorites = SidebarCategories.FirstOrDefault(category => !category.IsUserCreated);
+        var favorites = FindSystemCategory(FavoritesCategoryName);
         if (favorites is not null)
         {
             favorites.Games.Clear();
             foreach (var game in visibleGames.Where(game => game.IsSteamGame && game.SteamInstall?.IsFavorite == true))
             {
-                favorites.Games.Add(new SidebarGame(game.Title, game.Monogram, game.StatusText, RecentActivityOrder(game), game.Id, game.BuildId, game.IconArtworkSource ?? game.ArtworkSource, game.IsSteamGame));
+                favorites.Games.Add(CreateSidebarGame(game));
             }
             favorites.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
         }
+
+        RefreshUncategorizedCategory(userCategories);
 
         OnPropertyChanged(nameof(SidebarGames));
         if (CurrentPage is GameDetailsViewModel details && (_currentTarget.GameId ?? _currentTarget.Title) is { } gameKey)
@@ -190,6 +196,53 @@ public partial class ShellViewModel : ObservableObject
             details.ApplyRuntimeGame(_runtime?.FindGame(gameKey));
         }
     }
+
+    private SidebarCategory? FindSystemCategory(string name) =>
+        SidebarCategories.FirstOrDefault(category => !category.IsUserCreated
+            && string.Equals(category.Name, name, StringComparison.OrdinalIgnoreCase));
+
+    private void RefreshUncategorizedCategory(IReadOnlyList<SidebarCategory>? userCategories = null)
+    {
+        var uncategorized = FindSystemCategory(UncategorizedCategoryName);
+        if (uncategorized is null)
+        {
+            return;
+        }
+
+        var categories = userCategories ?? SidebarCategories.Where(category => category.IsUserCreated).ToArray();
+        var categorizedGameIds = categories
+            .SelectMany(category => category.Games)
+            .Select(game => game.OpenKey)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var favoriteGameIds = _runtimeGames
+            .Where(game => game.IsSteamGame && game.SteamInstall?.IsFavorite == true)
+            .Select(game => game.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        uncategorized.Games.Clear();
+        foreach (var game in _runtimeGames)
+        {
+            if (favoriteGameIds.Contains(game.Id) || categorizedGameIds.Contains(game.Id))
+            {
+                continue;
+            }
+
+            uncategorized.Games.Add(CreateSidebarGame(game));
+        }
+
+        uncategorized.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+    }
+
+    private static SidebarGame CreateSidebarGame(RuntimeGame game) =>
+        new(
+            game.Title,
+            game.Monogram,
+            game.StatusText,
+            RecentActivityOrder(game),
+            game.Id,
+            game.BuildId,
+            game.IconArtworkSource ?? game.ArtworkSource,
+            game.IsSteamGame);
 
     private void UpdateDownloadStatus(IReadOnlyList<PersistedDownloadJob> jobs)
     {
@@ -401,6 +454,7 @@ public partial class ShellViewModel : ObservableObject
         if (category is not null && category.IsUserCreated)
         {
             SidebarCategories.Remove(category);
+            RefreshUncategorizedCategory();
             if (ReferenceEquals(SelectedCollection, category))
             {
                 ClearCollectionSelection();
@@ -449,10 +503,10 @@ public partial class ShellViewModel : ObservableObject
             return;
         }
 
-        var favorites = SidebarCategories.FirstOrDefault(category => !category.IsUserCreated)
+        var uncategorized = FindSystemCategory(UncategorizedCategoryName)
             ?? SidebarCategories.First();
-        favorites.Games.Add(new SidebarGame(name, BuildMonogram(name), "Not installed"));
-        favorites.ApplyFilter(SearchQuery);
+        uncategorized.Games.Add(new SidebarGame(name, BuildMonogram(name), "Not installed"));
+        uncategorized.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
         OnPropertyChanged(nameof(SidebarGames));
         OnPropertyChanged(nameof(GamesFilterLabel));
         CancelAddGame();
@@ -464,9 +518,73 @@ public partial class ShellViewModel : ObservableObject
             && !category.Games.Any(existing => string.Equals(existing.OpenKey, game.OpenKey, StringComparison.OrdinalIgnoreCase)))
         {
             category.Games.Add(game);
-            category.ApplyFilter(SearchQuery);
+            var uncategorized = FindSystemCategory(UncategorizedCategoryName);
+            if (uncategorized is not null)
+            {
+                foreach (var uncategorizedGame in uncategorized.Games
+                    .Where(existing => string.Equals(existing.OpenKey, game.OpenKey, StringComparison.OrdinalIgnoreCase))
+                    .ToArray())
+                {
+                    uncategorized.Games.Remove(uncategorizedGame);
+                }
+            }
+
+            category.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+            uncategorized?.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
             category.IsExpanded = true;
+            OnPropertyChanged(nameof(SidebarGames));
         }
+    }
+
+    public bool CanMoveGameToCategory(string? gameId, SidebarCategory? category)
+    {
+        if (string.IsNullOrWhiteSpace(gameId) || category is null || !category.IsUserCreated)
+        {
+            return false;
+        }
+
+        if (SidebarCategories.Any(candidate =>
+                string.Equals(candidate.Name, FavoritesCategoryName, StringComparison.OrdinalIgnoreCase)
+                && candidate.Games.Any(game => string.Equals(game.OpenKey, gameId, StringComparison.OrdinalIgnoreCase))))
+        {
+            return false;
+        }
+
+        return SidebarCategories.Any(candidate =>
+            (candidate.IsUserCreated || string.Equals(candidate.Name, UncategorizedCategoryName, StringComparison.OrdinalIgnoreCase))
+            && candidate.Games.Any(game => string.Equals(game.OpenKey, gameId, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    public bool MoveGameToCategory(string? gameId, SidebarCategory? category)
+    {
+        if (!CanMoveGameToCategory(gameId, category) || category is null)
+        {
+            return false;
+        }
+
+        var game = SidebarCategories
+            .SelectMany(candidate => candidate.Games)
+            .First(candidate => string.Equals(candidate.OpenKey, gameId, StringComparison.OrdinalIgnoreCase));
+        foreach (var source in SidebarCategories.Where(candidate =>
+            candidate.IsUserCreated
+            || string.Equals(candidate.Name, UncategorizedCategoryName, StringComparison.OrdinalIgnoreCase)))
+        {
+            foreach (var existing in source.Games
+                .Where(candidate => string.Equals(candidate.OpenKey, gameId, StringComparison.OrdinalIgnoreCase))
+                .ToArray())
+            {
+                source.Games.Remove(existing);
+            }
+
+            source.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+        }
+
+        category.Games.Add(game);
+        category.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+        category.IsExpanded = true;
+        RefreshUncategorizedCategory();
+        OnPropertyChanged(nameof(SidebarGames));
+        return true;
     }
 
     public Task RemoveGameFromLibraryAsync(SidebarGame game) =>
@@ -731,6 +849,9 @@ public partial class SidebarCategory : ObservableObject
 
     [ObservableProperty]
     private bool _isExpanded = true;
+
+    [ObservableProperty]
+    private bool _isDropTarget;
 
     partial void OnIsExpandedChanged(bool value) => OnPropertyChanged(nameof(ExpandGlyph));
 

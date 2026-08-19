@@ -146,7 +146,20 @@
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
                   <StackPanel Spacing="2" Margin="0,10,0,0">
-                    <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="7,0,4,2">
+                    <Grid ColumnDefinitions="Auto,*,Auto,Auto"
+                          Margin="7,0,4,2"
+                          DragDrop.AllowDrop="True"
+                          DragDrop.DragOver="OnCategoryDragOver"
+                          DragDrop.DragLeave="OnCategoryDragLeave"
+                          DragDrop.Drop="OnCategoryDrop">
+                      <Border Grid.ColumnSpan="4"
+                              IsVisible="{Binding IsDropTarget}"
+                              Background="{DynamicResource AccentSoft}"
+                              BorderBrush="{DynamicResource AccentPrimary}"
+                              BorderThickness="1"
+                              CornerRadius="4"
+                              Margin="-4,-2"
+                              IsHitTestVisible="False" />
                       <Button Command="{Binding $parent[Window].DataContext.ToggleCategoryCommand}" CommandParameter="{Binding}" Classes="CategoryToggle">
                         <TextBlock Text="{Binding ExpandGlyph}" Classes="CategoryGlyph" />
                       </Button>
@@ -157,7 +170,12 @@
                     <ItemsControl IsVisible="{Binding IsExpanded}" ItemsSource="{Binding VisibleGames}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                          <Button Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}" CommandParameter="{Binding OpenKey}" Classes="SidebarGame">
+                          <Button Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}"
+                                  CommandParameter="{Binding OpenKey}"
+                                  Classes="SidebarGame"
+                                  PointerPressed="OnSidebarGamePointerPressed"
+                                  PointerMoved="OnSidebarGamePointerMoved"
+                                  PointerReleased="OnSidebarGamePointerReleased">
                             <Button.ContextMenu>
                               <ContextMenu Opened="OnGameContextMenuOpened" />
                             </Button.ContextMenu>
