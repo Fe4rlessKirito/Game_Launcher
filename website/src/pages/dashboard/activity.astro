@@ -2,24 +2,47 @@
 import OpsFrame from '../../components/OpsFrame.astro';
 
 const jobs = [
-  { key: 'restore', title: 'Pack restore queue', detail: 'Public queue status', icon: '↗' },
-  { key: 'renewal', title: 'HOT renewal window', detail: '18 day renewal policy', icon: '⟳' },
-  { key: 'provisioning', title: 'Capacity checks', detail: 'Service capacity', icon: '＋' },
+  { key: 'restore', step: '01', title: 'Pack restore queue', detail: 'Recover a HOT location from Telegram', icon: '↗' },
+  { key: 'renewal', step: '02', title: 'HOT renewal window', detail: 'Refresh direct mirrors after 18 days', icon: '⟳' },
+  { key: 'provisioning', step: '03', title: 'Capacity checks', detail: 'Confirm provider headroom before work', icon: '＋' },
+];
+
+const pipeline = [
+  { step: '01', label: 'Detect', detail: 'Find the next authorized operation' },
+  { step: '02', label: 'Prepare', detail: 'Validate source and package bytes' },
+  { step: '03', label: 'Deliver', detail: 'Place packs on the delivery path' },
+  { step: '04', label: 'Verify', detail: 'Read back and record the result' },
 ];
 ---
 
 <OpsFrame active="activity" title="Activity">
-  <div class="page-intro"><div><span class="eyebrow">LIVE WORKLOAD</span><h2>Activity overview</h2><p>Current health and workload.</p></div><span class="page-chip">Auto-refresh</span></div>
+  <div class="page-intro activity-intro">
+    <div><span class="eyebrow">WORK QUEUE</span><h2>What Vaultnode is doing now</h2><p>Live workload for ingestion, reupload, restore, and capacity checks.</p></div>
+    <span class="page-chip"><i class="live-chip-dot"></i>Live · 15s</span>
+  </div>
 
-  <div class="overview-grid activity-metrics">
-    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">API LATENCY</span><span class="metric-spark spark-blue"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="metric-value" id="latency-value">—</div><p>Readiness response · last probe</p><div class="metric-foot"><span class="metric-good" id="latency-state">Awaiting probe</span><span id="last-probe">—</span></div></article>
-    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE WORK</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
-    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">SYSTEM STATUS</span><span class="metric-icon icon-green">✓</span></div><div class="metric-value" id="system-status">—</div><p id="system-detail">Checking latest status…</p><div class="metric-foot"><span class="metric-good" id="api-state">Checking</span><span id="activity-updated">—</span></div></article>
+  <div class="overview-grid activity-metrics activity-metric-strip">
+    <article class="metric-card card-surface activity-metric-card"><div class="metric-heading"><span class="card-label">API LATENCY</span><span class="metric-spark spark-blue"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div><div class="metric-value" id="latency-value">—</div><p>Readiness response · last probe</p><div class="metric-foot"><span class="metric-good" id="latency-state">Awaiting probe</span><span id="last-probe">—</span></div></article>
+    <article class="metric-card card-surface activity-metric-card"><div class="metric-heading"><span class="card-label">ACTIVE WORK</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
+    <article class="metric-card card-surface activity-metric-card"><div class="metric-heading"><span class="card-label">SYSTEM STATUS</span><span class="metric-icon icon-green">✓</span></div><div class="metric-value" id="system-status">—</div><p id="system-detail">Checking latest status…</p><div class="metric-foot"><span class="metric-good" id="api-state">Checking</span><span id="activity-updated">—</span></div></article>
   </div>
 
   <div class="activity-grid activity-page-grid">
-    <article class="active-operation-card card-surface" id="live-work-card" aria-live="polite"><div class="activity-card-head"><div><span class="card-label">ACTIVE OPERATION</span><h3 id="live-work-kind">Standing by</h3></div><span class="queue-count" id="live-work-count">—</span></div><div class="active-operation-body"><span class="job-icon job-scraper" id="live-work-icon">↗</span><div class="active-operation-copy"><strong id="live-work-game">Queue clear</strong><small id="live-work-version"></small><p id="live-work-state">No active scraper or reupload</p><span id="live-work-detail">Waiting for the next authorized operation.</span></div><span class="job-state" id="live-work-provider"></span></div><div class="active-operation-progress" id="live-work-progress-wrap" hidden><div class="progress-track"><span id="live-work-progress"></span></div><small id="live-work-progress-label"></small></div></article>
-    <article class="activity-card card-surface"><div class="activity-card-head"><div><span class="card-label">WORK QUEUE</span><h3>Current work</h3></div><span class="queue-count" id="queue-count">—</span></div><div class="job-list">{jobs.map((job) => <div class="job-row" data-job={job.key}><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>
-    <article class="activity-card card-surface throughput-card"><div class="activity-card-head"><div><span class="card-label">STATUS</span><h3>System snapshot</h3></div><span class="time-filter" id="snapshot-age">Live</span></div><div class="public-signal"><div class="signal-row"><span><i class="signal-icon signal-api"></i> API</span><strong id="public-api-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-storage"></i> Storage</span><strong id="public-provider-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Restores</span><strong id="public-restore-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Work</span><strong id="public-work-signal">—</strong></div></div><div class="chart-footer"><span><i class="legend-dot blue-dot"></i> Last update</span><strong id="public-snapshot">—</strong></div></article>
+    <article class="active-operation-card activity-focus-card card-surface" id="live-work-card" aria-live="polite">
+      <div class="activity-card-head"><div><span class="card-label">ACTIVE OPERATION</span><h3 id="live-work-kind">Standing by</h3></div><span class="live-state-chip"><i class="live-chip-dot"></i><span id="live-work-count">—</span></span></div>
+      <div class="active-operation-body">
+        <div class="operation-visual"><span class="job-icon job-scraper" id="live-work-icon">↓</span><span class="operation-visual-ring"></span></div>
+        <div class="active-operation-copy"><strong id="live-work-game">Queue clear</strong><small id="live-work-version"></small><p id="live-work-state">No active scraper or reupload</p><span id="live-work-detail">Waiting for the next authorized operation.</span></div>
+        <div class="operation-side-facts"><div><span>Provider</span><strong id="live-work-provider">—</strong></div><div><span>Visibility</span><strong>Public status</strong></div></div>
+      </div>
+      <div class="active-operation-progress" id="live-work-progress-wrap" hidden><div class="progress-track"><span id="live-work-progress"></span></div><small id="live-work-progress-label"></small></div>
+    </article>
+    <article class="activity-card activity-lanes-card card-surface"><div class="activity-card-head"><div><span class="card-label">OPERATIONAL LANES</span><h3>Work queue</h3></div><span class="queue-count" id="queue-count">—</span></div><p class="card-lede">The background jobs that keep delivery ready.</p><div class="job-list">{jobs.map((job) => <div class="job-row activity-lane-row" data-job={job.key}><span class="lane-index">{job.step}</span><span class={`job-icon job-${job.key}`}>{job.icon}</span><span class="job-copy"><strong>{job.title}</strong><small>{job.detail}</small></span><span class="job-state">—</span></div>)}</div></article>
+    <article class="activity-card activity-snapshot-card card-surface throughput-card"><div class="activity-card-head"><div><span class="card-label">PUBLIC SIGNAL</span><h3>System snapshot</h3></div><span class="time-filter" id="snapshot-age">Live</span></div><p class="card-lede">The same read-only state visible to the launcher.</p><div class="public-signal"><div class="signal-row"><span><i class="signal-icon signal-api"></i> API</span><strong id="public-api-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-storage"></i> Storage</span><strong id="public-provider-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Restores</span><strong id="public-restore-signal">—</strong></div><div class="signal-row"><span><i class="signal-icon signal-restore"></i> Work</span><strong id="public-work-signal">—</strong></div></div><div class="chart-footer"><span><i class="legend-dot blue-dot"></i> Last update</span><strong id="public-snapshot">—</strong></div></article>
   </div>
+
+  <section class="activity-pipeline card-surface">
+    <div class="section-heading"><div><span class="eyebrow">DELIVERY PIPELINE</span><h2>From request to verified bytes</h2></div><span class="section-note">Operational sequence</span></div>
+    <div class="pipeline-track">{pipeline.map((stage, index) => <div class="pipeline-stage"><span class="pipeline-step">{stage.step}</span><div><strong>{stage.label}</strong><small>{stage.detail}</small></div>{index < pipeline.length - 1 && <span class="pipeline-arrow" aria-hidden="true">→</span>}</div>)}</div>
+  </section>
 </OpsFrame>

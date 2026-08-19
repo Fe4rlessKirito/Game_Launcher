@@ -2,14 +2,21 @@
 import OpsFrame from '../../components/OpsFrame.astro';
 
 const providers = [
-  { name: 'FileMirage', tier: 'HOT', kind: 'Direct pack delivery', key: 'filemirage', tone: 'blue', note: 'Primary hot mirror' },
-  { name: 'Telegram', tier: 'COLD', kind: 'Retained physical-pack archive', key: 'telegram', tone: 'violet', note: 'Recovery source' },
-  { name: 'Buzzheavier', tier: 'HOT', kind: 'Secondary mirror', key: 'buzzheavier', tone: 'amber', note: 'Secondary delivery' },
+  { order: '01', name: 'FileMirage', tier: 'HOT', kind: 'Direct pack delivery', key: 'filemirage', tone: 'blue', note: 'Primary hot mirror', detail: 'Fast path for launcher downloads' },
+  { order: '02', name: 'Telegram', tier: 'COLD', kind: 'Retained physical-pack archive', key: 'telegram', tone: 'violet', note: 'Recovery source', detail: 'Durable fallback for restore work' },
+  { order: '03', name: 'Buzzheavier', tier: 'HOT', kind: 'Secondary mirror', key: 'buzzheavier', tone: 'amber', note: 'Optional delivery', detail: 'Capability-gated secondary path' },
 ];
 ---
 
 <OpsFrame active="providers" title="Providers">
-  <div class="page-intro"><div><span class="eyebrow">STORAGE PROVIDERS</span><h2>Provider availability</h2><p>Current availability and stored usage.</p></div><span class="page-chip">Read-only</span></div>
+  <div class="page-intro providers-intro">
+    <div><span class="eyebrow">PROVIDER NETWORK</span><h2>Where delivery is sourced</h2><p>Availability, role, and stored usage for every configured provider.</p></div>
+    <span class="page-chip">Read-only · live</span>
+  </div>
 
-  <div class="provider-detail-grid">{providers.map((provider) => <article class={`provider-detail-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-detail-head"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><span class="provider-status status-unknown"><i></i> Checking</span></div><div><span class="card-label">{provider.tier} PROVIDER</span><h2>{provider.name}</h2><p>{provider.kind}</p></div><div class="provider-capability"><span><strong>Status</strong><b class="provider-detail-status">Checking</b></span><span><strong>Role</strong><b>{provider.note}</b></span><span><strong>Stored usage</strong><b class="provider-usage">—</b></span></div></article>)}</div>
+  <section class="provider-network-summary card-surface"><div class="network-summary-copy"><span class="eyebrow">NETWORK HEALTH</span><h2>One delivery policy, multiple storage paths.</h2><p>Vaultnode checks each provider independently and keeps the fast path separate from the retained recovery copy.</p></div><div class="network-summary-stats"><div><span>Healthy providers</span><strong id="coverage-value">—</strong><small id="coverage-state">Checking</small></div><div><span>Stored bytes</span><strong id="total-used">—</strong><small>Across configured tiers</small></div><div><span>Restore queue</span><strong id="active-work">—</strong><small id="work-state">Checking</small></div></div></section>
+
+  <div class="provider-detail-grid provider-network-grid">{providers.map((provider) => <article class={`provider-detail-card provider-network-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-detail-head"><span class="provider-order">{provider.order}</span><span class="provider-status status-unknown"><i></i> Checking</span></div><div class="provider-network-identity"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><div><span class="provider-tier-badge">{provider.tier} PROVIDER</span><h2>{provider.name}</h2><p>{provider.kind}</p></div></div><div class="provider-route-note"><span class="route-line"></span><span>{provider.detail}</span></div><div class="provider-capability"><span><strong>Status</strong><b class="provider-detail-status">Checking</b></span><span><strong>Role</strong><b>{provider.note}</b></span><span><strong>Stored usage</strong><b class="provider-usage">—</b></span></div><div class="provider-network-footer"><span>Public health signal</span><span class="provider-footer-mark"></span></div></article>)}</div>
+
+  <section class="provider-routing-card card-surface"><div class="section-heading"><div><span class="eyebrow">ROUTING POLICY</span><h2>How the launcher chooses a path</h2></div><span class="section-note">Deterministic order</span></div><div class="routing-steps"><div class="routing-step"><span class="routing-index">01</span><div><strong>Serve from HOT</strong><p>Use a healthy direct mirror for normal installs and updates.</p></div></div><div class="routing-step"><span class="routing-index">02</span><div><strong>Try the secondary mirror</strong><p>Use the optional HOT provider when the primary path is unavailable.</p></div></div><div class="routing-step"><span class="routing-index">03</span><div><strong>Recover from COLD</strong><p>Restore the HOT package from Telegram when delivery needs repair.</p></div></div></div></section>
 </OpsFrame>

@@ -2,24 +2,31 @@
 import OpsFrame from '../../components/OpsFrame.astro';
 
 const providers = [
-  { name: 'FileMirage', kind: 'HOT · direct delivery', key: 'filemirage', tone: 'blue' },
-  { name: 'Telegram', kind: 'COLD · retained packs', key: 'telegram', tone: 'violet' },
-  { name: 'Buzzheavier', kind: 'HOT · capability gated', key: 'buzzheavier', tone: 'amber' },
+  { name: 'FileMirage', kind: 'Direct delivery', tier: 'HOT', key: 'filemirage', tone: 'blue', role: 'Primary mirror' },
+  { name: 'Telegram', kind: 'Retained physical-pack archive', tier: 'COLD', key: 'telegram', tone: 'violet', role: 'Recovery source' },
+  { name: 'Buzzheavier', kind: 'Secondary delivery', tier: 'HOT', key: 'buzzheavier', tone: 'amber', role: 'Optional mirror' },
 ];
 ---
 
 <OpsFrame active="storage" title="Storage">
-  <div class="page-intro"><div><span class="eyebrow">STORAGE INVENTORY</span><h2>Where the physical packs live</h2><p>Live usage across configured storage providers.</p></div><span class="page-chip">Live usage</span></div>
-
-  <div class="overview-grid storage-metrics">
-    <article class="hero-status card-surface"><div class="card-label">STORAGE COVERAGE</div><div class="hero-status-row"><div><h2 id="coverage-value">—</h2><p>Healthy configured providers</p></div><div class="system-orb" id="system-orb"><span></span></div></div><div class="hero-meta"><span><i class="status-dot status-dot-live"></i> Public provider health <b id="coverage-state">Checking</b></span></div></article>
-    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">TOTAL USED</span><span class="metric-icon icon-green">▣</span></div><div class="metric-value" id="total-used">—</div><p>Reported physical pack bytes</p><div class="metric-foot"><span class="metric-good">Aggregate only</span><span id="storage-updated">—</span></div></article>
-    <article class="metric-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE RESTORES</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
+  <div class="page-intro storage-intro">
+    <div><span class="eyebrow">STORAGE MAP</span><h2>The delivery surface</h2><p>See where physical packs are placed, how much they hold, and which tier is healthy.</p></div>
+    <span class="page-chip"><i class="live-chip-dot"></i>Inventory · live</span>
   </div>
 
+  <section class="storage-overview-grid">
+    <article class="storage-coverage-card hero-status card-surface"><div class="storage-card-heading"><div><span class="card-label">STORAGE COVERAGE</span><h3>Configured delivery points</h3></div><span class="status-badge"><i class="status-dot status-dot-live"></i>Live</span></div><div class="storage-coverage-main"><div><strong id="coverage-value">—</strong><p>Healthy configured providers</p></div><div class="coverage-gauge" id="system-orb"><span></span><small>Provider health</small></div></div><div class="storage-card-footer"><span><i class="status-dot status-dot-live"></i> Public provider health</span><strong id="coverage-state">Checking</strong></div></article>
+    <div class="storage-stat-stack">
+      <article class="metric-card storage-stat-card card-surface"><div class="metric-heading"><span class="card-label">TOTAL USED</span><span class="metric-icon icon-green">▣</span></div><div class="metric-value" id="total-used">—</div><p>Reported physical pack bytes</p><div class="metric-foot"><span class="metric-good">Across all tiers</span><span id="storage-updated">—</span></div></article>
+      <article class="metric-card storage-stat-card card-surface"><div class="metric-heading"><span class="card-label">ACTIVE RESTORES</span><span class="metric-icon icon-violet">↯</span></div><div class="metric-value" id="active-work">—</div><p>Restore jobs in the queue</p><div class="metric-foot"><span class="metric-good" id="work-state">Checking</span><span>now</span></div></article>
+    </div>
+  </section>
+
   <div class="section-heading providers-heading"><div><span class="eyebrow">PUBLIC USAGE</span><h2>Physical packs by provider</h2></div><span class="section-note" id="activity-note">Public status · live</span></div>
-  <div class="provider-grid">{providers.map((provider) => <article class={`provider-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-top"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><span class="provider-status status-unknown"><i></i> Checking</span></div><h3>{provider.name}</h3><p>{provider.kind}</p><div class="provider-bar" aria-label={`${provider.name} share of stored data`}><span></span></div><div class="provider-bottom"><span class="provider-detail">Checking public usage</span><strong class="provider-usage">—</strong></div></article>)}</div>
+  <div class="provider-grid storage-provider-grid">{providers.map((provider) => <article class={`provider-card storage-provider-card card-surface provider-${provider.tone}`} data-provider={provider.key}><div class="provider-top"><div class="provider-identity"><span class={`provider-logo logo-${provider.tone}`}>{provider.name.slice(0, 1)}</span><span><strong>{provider.name}</strong><small>{provider.tier} · {provider.role}</small></span></div><span class="provider-status status-unknown"><i></i> Checking</span></div><p class="provider-kind">{provider.kind}</p><div class="provider-usage-line"><span>Share of stored bytes</span><strong class="provider-usage">—</strong></div><div class="provider-bar" aria-label={`${provider.name} share of stored data`}><span></span></div><div class="provider-bottom"><span class="provider-detail">Checking public usage</span><span class="provider-tier-label">{provider.tier}</span></div></article>)}</div>
+
+  <section class="storage-flow card-surface"><div class="storage-flow-copy"><span class="eyebrow">DELIVERY PATH</span><h2>Fast path first. Archive always.</h2><p>Physical packs are the byte store. Logical chunks stay as manifest metadata while delivery and recovery follow the configured tier policy.</p></div><div class="storage-flow-steps"><div class="storage-flow-step"><span>01</span><strong>Package</strong><small>Build one verified physical pack</small></div><span class="storage-flow-arrow">→</span><div class="storage-flow-step"><span>02</span><strong>Serve</strong><small>Use a healthy HOT mirror first</small></div><span class="storage-flow-arrow">→</span><div class="storage-flow-step"><span>03</span><strong>Recover</strong><small>Fall back to the retained archive</small></div></div></section>
 
   <div class="section-heading storage-heading"><div><span class="eyebrow">STORAGE POLICY</span><h2>Tier health</h2></div><span class="section-note">Live status</span></div>
-  <div class="tier-row"><article class="tier-card card-surface"><div class="tier-icon tier-hot">H</div><div><span class="card-label">HOT</span><h3>Fast delivery</h3><p>Direct pack downloads</p></div><strong id="hot-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-cold">C</div><div><span class="card-label">COLD</span><h3>Retained archive</h3><p>Telegram physical-pack store</p></div><strong id="cold-health">—</strong></article><article class="tier-card card-surface"><div class="tier-icon tier-archive">R</div><div><span class="card-label">RENEWAL</span><h3>Next window</h3><p>HOT locations renewed after 18 days</p></div><strong>18d</strong></article></div>
+  <div class="tier-row storage-policy-grid"><article class="tier-card storage-policy-card card-surface"><div class="tier-icon tier-hot">H</div><div><span class="card-label">HOT</span><h3>Fast delivery</h3><p>FileMirage direct packs</p></div><strong id="hot-health">—</strong></article><article class="tier-card storage-policy-card card-surface"><div class="tier-icon tier-cold">C</div><div><span class="card-label">COLD</span><h3>Retained archive</h3><p>Telegram physical-pack store</p></div><strong id="cold-health">—</strong></article><article class="tier-card storage-policy-card card-surface"><div class="tier-icon tier-archive">R</div><div><span class="card-label">RENEWAL</span><h3>Next window</h3><p>HOT locations renewed after 18 days</p></div><strong>18d</strong></article></div>
 </OpsFrame>
