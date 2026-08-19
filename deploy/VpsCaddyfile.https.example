@@ -30,6 +30,7 @@
     }
     handle {
         root * /srv/vaultnode-website
+        header Cache-Control "no-cache, must-revalidate"
         try_files {path} {path}/index.html /index.html
         file_server
     }
