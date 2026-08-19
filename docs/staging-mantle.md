@@ -64,8 +64,7 @@ scripts/mantle-healthcheck.sh
 
 Do not use that exception for a public release.
 
-From the workstation, the Mantle-aware scripts use SSH and never require a
-Railway CLI:
+From the workstation, the Mantle-aware scripts use SSH:
 
 ```powershell
 .\scripts\staging\telegram-smoke.ps1 -Mantle `

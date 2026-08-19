@@ -752,6 +752,36 @@ impl Database {
         Ok(())
     }
 
+    pub async fn get_pack_chunk(
+        &self,
+        pack_hash: &str,
+        encoded_hash: &str,
+    ) -> Result<Option<PackChunkRecord>, DatabaseError> {
+        let row = sqlx::query(
+            "SELECT pack_hash, encoded_hash, raw_hash, raw_size, encoded_offset,
+                    encoded_size, compression_id, flags
+             FROM pack_chunks
+             WHERE pack_hash=$1 AND encoded_hash=$2",
+        )
+        .bind(pack_hash)
+        .bind(encoded_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(PackChunkRecord {
+                pack_hash: row.try_get("pack_hash")?,
+                encoded_hash: row.try_get("encoded_hash")?,
+                raw_hash: row.try_get("raw_hash")?,
+                raw_size: row.try_get("raw_size")?,
+                encoded_offset: row.try_get("encoded_offset")?,
+                encoded_size: row.try_get("encoded_size")?,
+                compression_id: row.try_get("compression_id")?,
+                flags: row.try_get("flags")?,
+            })
+        })
+        .transpose()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn add_pack_location(
         &self,

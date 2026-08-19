@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using Launcher.Core;
 using Launcher.Manifests;
 using Launcher.Networking;
@@ -30,7 +31,8 @@ public sealed class DownloadManager(
     LocalStateStore? stateStore = null,
     DownloadFailureInjection? failureInjection = null,
     PackCache? packCache = null,
-    bool? packDownloadEnabled = null) : IDisposable
+    bool? packDownloadEnabled = null,
+    double? sparseRelayThreshold = null) : IDisposable
 {
     private readonly SemaphoreSlim _pauseGate = new(1, 1);
     private readonly SemaphoreSlim _concurrency = new(Math.Clamp(maxConcurrency, 1, 32));
@@ -69,7 +71,20 @@ public sealed class DownloadManager(
             try
             {
                 await packCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
-                var packResult = await DownloadPacksAsync(manifest.BuildId, uniqueChunks, packCache, cancellationToken).ConfigureAwait(false);
+                var uncachedChunks = new List<ChunkReference>(uniqueChunks.Length);
+                foreach (var chunk in uniqueChunks)
+                {
+                    if (await cache.ReadAsync(chunk.EncodedHash, cancellationToken).ConfigureAwait(false) is null)
+                    {
+                        uncachedChunks.Add(chunk);
+                    }
+                }
+                var packResult = await DownloadPacksAsync(
+                    manifest.BuildId,
+                    uncachedChunks,
+                    packCache,
+                    uncachedChunks.Count < uniqueChunks.Length,
+                    cancellationToken).ConfigureAwait(false);
                 Interlocked.Add(ref networkBytes, packResult.NetworkBytes);
                 Interlocked.Add(ref physicalPackNetworkBytes, packResult.NetworkBytes);
                 Interlocked.Add(ref physicalPackLogicalBytes, packResult.LogicalBytes);
@@ -271,7 +286,12 @@ public sealed class DownloadManager(
 
     private Task SaveJobAsync(PersistedDownloadJob job, CancellationToken cancellationToken) => stateStore is null ? Task.CompletedTask : stateStore.SaveDownloadJobAsync(job, cancellationToken);
 
-    private async Task<(long NetworkBytes, long LogicalBytes)> DownloadPacksAsync(string buildId, IReadOnlyList<ChunkReference> chunks, PackCache physicalCache, CancellationToken cancellationToken)
+    private async Task<(long NetworkBytes, long LogicalBytes)> DownloadPacksAsync(
+        string buildId,
+        IReadOnlyList<ChunkReference> chunks,
+        PackCache physicalCache,
+        bool allowSparseRelay,
+        CancellationToken cancellationToken)
     {
         var missing = chunks.Select(chunk => chunk.EncodedHash).Distinct(StringComparer.Ordinal).ToArray();
         if (missing.Length == 0) return (0, 0);
@@ -281,11 +301,25 @@ public sealed class DownloadManager(
         var requested = missing.ToHashSet(StringComparer.Ordinal);
         long networkBytes = 0;
         long logicalBytes = 0;
+        var sparseThreshold = sparseRelayThreshold ?? ReadSparseRelayThreshold();
         foreach (var pack in packs.OrderBy(pack => pack.EncodedSize).ThenBy(pack => pack.PackHash, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
             var covered = pack.ChunkHashes.Where(requested.Contains).ToArray();
             if (covered.Length == 0 || pack.Sources.Count == 0) continue;
+            var coveredLogicalBytes = covered.Sum(hash => chunks.First(chunk => chunk.EncodedHash == hash).EncodedSize);
+            var canRelaySparse = pack.Sources.Any(source => source.RangeSupported);
+            if (allowSparseRelay
+                && sparseThreshold > 0
+                && pack.EncodedSize > 0
+                && canRelaySparse
+                && (double)coveredLogicalBytes / pack.EncodedSize < sparseThreshold)
+            {
+                // The normal chunk resolver will return the API-owned sparse
+                // relay URL for these hashes. Keep the full FileMirage pack
+                // path for installs or updates that need most of the pack.
+                continue;
+            }
             var cached = await physicalCache.ReadAsync(pack.PackHash, cancellationToken).ConfigureAwait(false);
             var bytes = cached;
             if (bytes is null)
@@ -323,6 +357,14 @@ public sealed class DownloadManager(
             if (requested.Count == 0) break;
         }
         return (networkBytes, logicalBytes);
+    }
+
+    private static double ReadSparseRelayThreshold()
+    {
+        var configured = Environment.GetEnvironmentVariable("LAUNCHER_PACK_SPARSE_RELAY_THRESHOLD");
+        return double.TryParse(configured, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            ? Math.Clamp(value, 0, 1)
+            : 0.5;
     }
 
     private async Task<(byte[] Bytes, long NetworkBytes)> DownloadPackWithRetryAsync(ResolvedPack pack, PackCache cache, Func<Task<ResolvedPack?>> refreshPack, CancellationToken cancellationToken)

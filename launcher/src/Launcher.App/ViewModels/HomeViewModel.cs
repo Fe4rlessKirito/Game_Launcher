@@ -1,3 +1,4 @@
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Launcher.App.ViewModels;
@@ -35,5 +36,20 @@ public partial class HomeViewModel : ObservableObject
 }
 
 public sealed record FeaturedGame(string Title, string Description, string Badge, string Monogram);
-public sealed record HomeGame(string Title, string Subtitle, string Monogram, string Action);
+public sealed record HomeGame(
+    string Title,
+    string Subtitle,
+    string Monogram,
+    string Action,
+    string? ArtworkSource = null,
+    string? GameId = null,
+    bool IsSteamGame = false)
+{
+    public string OpenKey => GameId ?? Title;
+    public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
+    public Bitmap? ArtworkImage => ArtworkLoader.Load(ArtworkSource);
+    public bool HasArtworkImage => ArtworkImage is not null;
+    public bool ShowMonogram => !HasArtwork;
+    public bool ShowSteamBadge => IsSteamGame;
+}
 public sealed record HomeActivity(string Title, string Detail, string Time, string Tone);

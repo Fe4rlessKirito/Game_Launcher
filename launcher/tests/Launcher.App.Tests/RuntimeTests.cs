@@ -39,7 +39,11 @@ public sealed class RuntimeTests
     {
         var root = Path.Combine(Path.GetTempPath(), "vaultnode-runtime-test", Guid.NewGuid().ToString("N"));
         using var client = new HttpClient(new CatalogHandler()) { BaseAddress = new Uri("http://launcher/") };
-        var runtime = new LauncherRuntime(new LauncherSettings(ApiBaseUrl: "http://launcher/"), root, client);
+        var runtime = new LauncherRuntime(
+            new LauncherSettings(ApiBaseUrl: "http://launcher/"),
+            root,
+            client,
+            steamDiscovery: () => SteamLibrarySnapshot.Empty);
 
         try
         {

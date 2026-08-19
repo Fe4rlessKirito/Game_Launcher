@@ -4,7 +4,7 @@ The control plane treats storage placement as a policy decision. A logical
 `StorageClass` is independent from a provider:
 
 ```text
-HOT     -> Railway/S3 pool
+HOT     -> FileMirage direct-download pool
 COLD    -> Telegram pack store (operator-owned channel)
 ARCHIVE -> reserved for a future provider
 ```
@@ -15,7 +15,10 @@ serve the same class. Telegram is the required staging COLD pool. Other COLD
 adapters, including MEGA, remain optional and are not part of the staging gate.
 
 `StorageTier` remains a source-compatible alias for `StorageClass` while
-operators migrate scripts.
+operators migrate scripts. Mantle is the active API/worker deployment target;
+FileMirage is the active HOT data plane and Telegram is the retained COLD
+store. Local and S3-compatible pools remain supported compatibility providers,
+and S3-compatible pools remain optional compatibility providers.
 
 The relevant environment variables are:
 

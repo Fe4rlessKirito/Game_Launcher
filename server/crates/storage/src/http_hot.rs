@@ -803,6 +803,65 @@ impl HttpHotStorage {
             })
     }
 
+    async fn read_remote_range(
+        &self,
+        hash: &str,
+        offset: u64,
+        length: u64,
+        pack: bool,
+    ) -> Result<Vec<u8>, StorageError> {
+        if !self.direct_download_proven || !self.range_requests_proven {
+            return Err(StorageError::Unavailable(format!(
+                "{} ranged download is not proven",
+                self.kind.provider_type()
+            )));
+        }
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        let end = offset
+            .checked_add(length - 1)
+            .ok_or_else(|| StorageError::Provider("pack range overflows".to_owned()))?;
+        let reference = self.state_reference(hash, pack)?;
+        let url = self.resolve_filemirage_url(&reference.url).await?;
+        let _slot = self.acquire_slot().await?;
+        let response = self
+            .auth(
+                self.client
+                    .get(url)
+                    .header(reqwest::header::RANGE, format!("bytes={offset}-{end}")),
+            )
+            .send()
+            .await
+            .map_err(|error| {
+                StorageError::NetworkUnavailable(format!(
+                    "{} ranged download failed: {error}",
+                    self.kind.provider_type()
+                ))
+            })?;
+        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(StorageError::Provider(format!(
+                "{} ranged download returned HTTP {}, expected 206",
+                self.kind.provider_type(),
+                response.status().as_u16()
+            )));
+        }
+        let bytes = response.bytes().await.map_err(|error| {
+            StorageError::NetworkUnavailable(format!(
+                "{} ranged download body failed: {error}",
+                self.kind.provider_type()
+            ))
+        })?;
+        if bytes.len() as u64 != length {
+            return Err(StorageError::Provider(format!(
+                "{} ranged download returned {} bytes, expected {length}",
+                self.kind.provider_type(),
+                bytes.len()
+            )));
+        }
+        Ok(bytes.to_vec())
+    }
+
     async fn delete_remote(&self, hash: &str, pack: bool) -> Result<(), StorageError> {
         if !self.delete_proven {
             return Err(StorageError::Provider(format!(
@@ -960,6 +1019,17 @@ impl StorageProvider for FileMirageStorage {
         verify_pack_bytes(hash, &bytes)?;
         Ok(bytes)
     }
+    async fn read_pack_range(
+        &self,
+        hash: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        validate_pack_hash(hash)?;
+        self.inner
+            .read_remote_range(hash, offset, length, true)
+            .await
+    }
     async fn read_pack_stream(&self, hash: &str) -> Result<StorageByteStream, StorageError> {
         validate_pack_hash(hash)?;
         self.inner.read_remote_stream(hash, true).await
@@ -1031,6 +1101,17 @@ impl StorageProvider for BuzzheavierStorage {
         let bytes = self.inner.read_remote(hash, true).await?;
         verify_pack_bytes(hash, &bytes)?;
         Ok(bytes)
+    }
+    async fn read_pack_range(
+        &self,
+        hash: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        validate_pack_hash(hash)?;
+        self.inner
+            .read_remote_range(hash, offset, length, true)
+            .await
     }
     async fn read_pack_stream(&self, hash: &str) -> Result<StorageByteStream, StorageError> {
         validate_pack_hash(hash)?;
@@ -1167,6 +1248,14 @@ fn unique_suffix() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode, header},
+        response::Response,
+        routing::any,
+    };
+    use tokio::net::TcpListener;
 
     fn state_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("vaultnode-{name}-{}.json", unique_suffix()))
@@ -1193,6 +1282,72 @@ mod tests {
         assert!(!capabilities.delete);
         assert!(!capabilities.stable_urls);
         assert!(!capabilities.expiring_urls);
+    }
+
+    #[tokio::test]
+    async fn filemirage_pack_range_reads_only_the_requested_bytes() {
+        let payload = b"0123456789".to_vec();
+        let app = Router::new().fallback(any({
+            let payload = payload.clone();
+            move |request: Request<Body>| {
+                let payload = payload.clone();
+                async move {
+                    if request
+                        .headers()
+                        .get(header::RANGE)
+                        .and_then(|value| value.to_str().ok())
+                        != Some("bytes=2-5")
+                    {
+                        return Response::builder()
+                            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                            .body(Body::empty())
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header(header::CONTENT_LENGTH, 4)
+                        .body(Body::from(payload[2..6].to_vec()))
+                        .unwrap()
+                }
+            }
+        }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let state_path = state_file("filemirage-range");
+        let storage = FileMirageStorage::new(FileMirageStorageConfig {
+            provider_id: "filemirage".to_owned(),
+            base_url: format!("http://{address}"),
+            upload_server_url: None,
+            api_token: None,
+            state_file: state_path.clone(),
+            upload_chunk_bytes: 99 * 1024 * 1024,
+            request_timeout: Duration::from_secs(30),
+            max_concurrent_requests: 2,
+            delete_proven: false,
+        })
+        .unwrap();
+        let pack_hash = "a".repeat(64);
+        storage
+            .inner
+            .remember(
+                &pack_hash,
+                format!("http://{address}/file/direct/test"),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            storage.read_pack_range(&pack_hash, 2, 4).await.unwrap(),
+            b"2345"
+        );
+
+        server.abort();
+        let _ = tokio::fs::remove_file(state_path).await;
     }
 
     #[test]

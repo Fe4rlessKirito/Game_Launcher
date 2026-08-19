@@ -43,6 +43,13 @@ packs rather than a second copy of every logical chunk. HOT redundancy is
 carried by physical pack replicas. Set `LAUNCHER_PACK_CANONICAL=false` only
 for a migration deployment that still publishes logical HOT objects.
 
+For sparse update and repair, the launcher compares the missing encoded bytes
+in each pack with the pack's encoded size. If the ratio is below
+`LAUNCHER_PACK_SPARSE_RELAY_THRESHOLD` (default `0.5`), the API reads the
+indexed ranges from the verified HOT pack and relays only those chunks. Set the
+value to `0` to disable sparse selection and always prefer direct packs when a
+pack source is available. Historical COLD packs remain full-pack API streams.
+
 ## HOT retention renewal
 
 FileMirage's free tier expires files after a period of inactivity. The worker

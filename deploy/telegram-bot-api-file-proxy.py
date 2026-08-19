@@ -2,9 +2,9 @@
 """Private streaming proxy for the local Telegram Bot API file paths.
 
 In --local mode getFile returns an absolute path inside the Bot API
-container. The restore worker is a separate Railway service, so it cannot
-read that path directly. This proxy keeps the Bot API private and exposes
-only files below its configured data/temp directories over the same private
+container. The restore worker is a separate container, so it cannot read
+that path directly. This proxy keeps the Bot API private and exposes only
+files below its configured data/temp directories over the private Compose
 service port used by the worker.
 """
 

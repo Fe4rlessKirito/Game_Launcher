@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Net.Http.Headers;
+using System.Diagnostics;
 using Launcher.Core;
 using Launcher.Downloads;
 using Launcher.Installation;
@@ -22,12 +23,18 @@ public sealed record RuntimeGame(
     GameState State,
     string InstallRoot,
     GameCatalogItem? Catalog,
-    InstalledGame? Installed)
+    InstalledGame? Installed,
+    SteamGameInstall? SteamInstall = null,
+    string? ArtworkSource = null,
+    string? IconArtworkSource = null)
 {
-    public bool IsInstalled => Installed is not null;
+    public bool IsSteamGame => SteamInstall is not null;
+    public bool IsInstalled => Installed is not null || IsSteamGame;
     public bool HasBuild => !string.IsNullOrWhiteSpace(BuildId);
 
-    public string StatusText => State switch
+    public string StatusText => IsSteamGame
+        ? "Installed"
+        : State switch
     {
         GameState.Launchable or GameState.Installed => "Installed",
         GameState.UpdateAvailable => "Update available",
@@ -60,13 +67,17 @@ public sealed record LauncherRuntimeSnapshot(
     bool IsOnline,
     string ConnectionStatus,
     string? Error,
-    LauncherUserProfile? User);
+    LauncherUserProfile? User,
+    SteamLibrarySnapshot? Steam = null);
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
     // The public release endpoint must be HTTPS. Operators can override it
     // with LAUNCHER_API_BASE_URL or the local settings file during cutover.
     private const string DefaultMantleApiBaseUrl = "https://vaultnode.pp.ua";
+    private const string DefaultSupabaseUrl = "https://mywavagbkgjfqitkimcp.supabase.co";
+    // This is Supabase's browser-safe publishable key, not a service-role secret.
+    private const string DefaultSupabasePublishableKey = "sb_publishable_TkuLTCPZIozOSZMbDqDLSQ_4qNh8Fwq";
     private const string LegacyLocalApiBaseUrl = "http://127.0.0.1:8080";
     private const string LegacyMantleIpApiBaseUrl = "http://5.231.32.191";
     private static readonly IReadOnlyDictionary<string, string> DefaultMantleTrustedManifestKeys =
@@ -79,13 +90,15 @@ public sealed class LauncherRuntime : IAsyncDisposable
         };
     private readonly LauncherSettings _settings;
     private readonly LauncherPaths _paths;
-    private readonly HttpClient _httpClient;
-    private readonly bool _ownsHttpClient;
-    private readonly bool _hasAccessToken;
+    private readonly HttpClient _apiHttpClient;
+    private readonly HttpClient _downloadHttpClient;
+    private readonly bool _ownsApiHttpClient;
+    private string? _accessToken;
     private readonly LauncherApiClient _apiClient;
     private readonly LocalStateStore _stateStore;
     private readonly ChunkCache _chunkCache;
     private readonly PackCache _packCache;
+    private readonly Func<SteamLibrarySnapshot> _steamDiscovery;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly object _downloaderGate = new();
     private DownloadManager? _activeDownloader;
@@ -96,7 +109,12 @@ public sealed class LauncherRuntime : IAsyncDisposable
     public event Action<LauncherRuntimeSnapshot>? SnapshotChanged;
     public event Action<DownloadProgress>? ProgressChanged;
 
-    public LauncherRuntime(LauncherSettings settings, string stateRoot, HttpClient? httpClient = null, string? accessToken = null)
+    public LauncherRuntime(
+        LauncherSettings settings,
+        string stateRoot,
+        HttpClient? httpClient = null,
+        string? accessToken = null,
+        Func<SteamLibrarySnapshot>? steamDiscovery = null)
     {
         _settings = settings;
         _paths = LauncherPaths.FromRoot(stateRoot);
@@ -104,21 +122,63 @@ public sealed class LauncherRuntime : IAsyncDisposable
         // and restore requests must be allowed to stream a physical pack;
         // FileMirage can legitimately take longer than eight seconds before
         // the first verified bytes arrive.
-        _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        _ownsHttpClient = httpClient is null;
-        _hasAccessToken = !string.IsNullOrWhiteSpace(accessToken);
-        if (!string.IsNullOrWhiteSpace(accessToken))
-        {
-            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.Trim());
-        }
-        _apiClient = new LauncherApiClient(_httpClient, ParseBaseUri(settings.ApiBaseUrl));
+        _apiHttpClient = httpClient ?? CreateStreamingHttpClient();
+        _downloadHttpClient = CreateStreamingHttpClient();
+        _ownsApiHttpClient = httpClient is null;
+        SetAccessToken(accessToken);
+        _apiClient = new LauncherApiClient(_apiHttpClient, ParseBaseUri(settings.ApiBaseUrl));
         _stateStore = new LocalStateStore(_paths.DatabasePath);
         _chunkCache = new ChunkCache(_paths.CachePath, Math.Max(1, settings.CacheSizeBytes));
         var packCacheBytes = Math.Clamp(settings.CacheSizeBytes / 2, 512L * 1024 * 1024, 2L * 1024 * 1024 * 1024);
         _packCache = new PackCache(Path.Combine(_paths.Root, "pack-cache"), packCacheBytes);
+        _steamDiscovery = steamDiscovery ?? (() => SteamLibraryDiscovery.Discover());
     }
 
     public LauncherRuntimeSnapshot Snapshot => _snapshot;
+
+    public bool IsAuthenticated => !string.IsNullOrWhiteSpace(_accessToken);
+
+    public async Task<LauncherUserProfile> SignInAsync(
+        string email,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        SetAccessToken(null);
+        var authClient = CreateSupabaseAuthClient();
+
+        var session = await authClient.SignInWithPasswordAsync(email, password, cancellationToken).ConfigureAwait(false);
+        SetAccessToken(session.AccessToken);
+        try
+        {
+            var snapshot = await RefreshAsync(cancellationToken).ConfigureAwait(false);
+            return snapshot.User ?? throw new InvalidOperationException("The launcher API did not return an account profile.");
+        }
+        catch
+        {
+            SetAccessToken(null);
+            throw;
+        }
+    }
+
+    public async Task<LauncherUserProfile> UpdateUsernameAsync(
+        string username,
+        CancellationToken cancellationToken = default)
+    {
+        if (_accessToken is not { Length: > 0 } accessToken)
+        {
+            throw new InvalidOperationException("Sign in before changing your username.");
+        }
+
+        await CreateSupabaseAuthClient().UpdateUsernameAsync(accessToken, username, cancellationToken).ConfigureAwait(false);
+        var snapshot = await RefreshAsync(cancellationToken).ConfigureAwait(false);
+        return snapshot.User ?? throw new InvalidOperationException("The launcher API did not return the updated account profile.");
+    }
+
+    public async Task SignOutAsync(CancellationToken cancellationToken = default)
+    {
+        SetAccessToken(null);
+        await RefreshAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     public static async Task<LauncherRuntime> CreateDefaultAsync(CancellationToken cancellationToken = default)
     {
@@ -219,10 +279,11 @@ public sealed class LauncherRuntime : IAsyncDisposable
             error = exception.Message;
         }
 
-        var games = BuildGames(_catalog, installed);
+        var steam = _steamDiscovery();
+        var games = BuildGames(_catalog, installed, steam.Games);
         var connectionStatus = online ? "Online" : "Offline-ready";
         LauncherUserProfile? user = null;
-        if (_hasAccessToken)
+        if (IsAuthenticated)
         {
             try
             {
@@ -237,7 +298,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
             }
         }
 
-        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user);
+        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam);
         SnapshotChanged?.Invoke(_snapshot);
         return _snapshot;
     }
@@ -278,7 +339,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
                     && (_settings.TrustedManifestKeysPem is null || _settings.TrustedManifestKeysPem.Count == 0));
 
             using var downloader = new DownloadManager(
-                _httpClient,
+                _downloadHttpClient,
                 _apiClient,
                 _chunkCache,
                 Math.Clamp(_settings.ConcurrentDownloads, 1, 32),
@@ -355,7 +416,13 @@ public sealed class LauncherRuntime : IAsyncDisposable
     public Task LaunchAsync(string gameId)
     {
         var game = FindGame(gameId) ?? throw new LauncherOperationException($"Game was not found: {gameId}");
+        if (game.SteamInstall is not null)
+        {
+            return SteamLauncher.LaunchAsync(game.SteamInstall);
+        }
+
         if (game.Installed is null) throw new LauncherOperationException($"{game.Title} is not installed.");
+
         var manifest = ManifestJson.Deserialize(game.Installed.ManifestJson);
         _ = Installer.Launch(manifest, game.Installed.InstallRoot);
         return Task.CompletedTask;
@@ -364,11 +431,15 @@ public sealed class LauncherRuntime : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _operationGate.Dispose();
-        if (_ownsHttpClient) _httpClient.Dispose();
+        _downloadHttpClient.Dispose();
+        if (_ownsApiHttpClient) _apiHttpClient.Dispose();
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private static List<RuntimeGame> BuildGames(IReadOnlyList<GameCatalogItem> catalog, IReadOnlyList<InstalledGame> installed)
+    private static List<RuntimeGame> BuildGames(
+        IReadOnlyList<GameCatalogItem> catalog,
+        IReadOnlyList<InstalledGame> installed,
+        IReadOnlyList<SteamGameInstall> steamGames)
     {
         var games = new List<RuntimeGame>(catalog.Count + installed.Count);
         var matchedInstalled = new HashSet<string>(StringComparer.Ordinal);
@@ -394,7 +465,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 state,
                 local?.InstallRoot ?? string.Empty,
                 item,
-                local));
+                local,
+                ArtworkSource: item.CoverImageUrl ?? item.HeroImageUrl));
         }
 
         foreach (var local in installed.Where(game => !matchedInstalled.Contains(game.GameId)))
@@ -411,7 +483,34 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 GameState.Launchable,
                 local.InstallRoot,
                 null,
-                local));
+                local,
+                ArtworkSource: null));
+        }
+
+        foreach (var steamGame in steamGames)
+        {
+            var id = $"steam:{steamGame.AppId}";
+            if (games.Any(game => string.Equals(game.Id, id, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            games.Add(new RuntimeGame(
+                id,
+                id,
+                steamGame.Name,
+                "Installed through Steam. Steam manages this installation and its updates.",
+                BuildMonogram(steamGame.Name),
+                null,
+                "Steam",
+                steamGame.SizeBytes,
+                GameState.Launchable,
+                steamGame.InstallRoot,
+                null,
+                null,
+                steamGame,
+                steamGame.ArtworkPath,
+                steamGame.IconArtworkPath));
         }
 
         return games;
@@ -436,6 +535,29 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
         return new Uri(uri.ToString().TrimEnd('/') + "/", UriKind.Absolute);
     }
+
+    private void SetAccessToken(string? accessToken)
+    {
+        _accessToken = string.IsNullOrWhiteSpace(accessToken) ? null : accessToken.Trim();
+        _apiHttpClient.DefaultRequestHeaders.Authorization = _accessToken is null
+            ? null
+            : new AuthenticationHeaderValue("Bearer", _accessToken);
+    }
+
+    private SupabaseAuthClient CreateSupabaseAuthClient()
+    {
+        var supabaseUrl = Environment.GetEnvironmentVariable("LAUNCHER_SUPABASE_URL");
+        var publishableKey = Environment.GetEnvironmentVariable("LAUNCHER_SUPABASE_ANON_KEY");
+        return new SupabaseAuthClient(
+            _apiHttpClient,
+            ParseBaseUri(string.IsNullOrWhiteSpace(supabaseUrl) ? DefaultSupabaseUrl : supabaseUrl),
+            string.IsNullOrWhiteSpace(publishableKey) ? DefaultSupabasePublishableKey : publishableKey.Trim());
+    }
+
+    private static HttpClient CreateStreamingHttpClient() => new()
+    {
+        Timeout = TimeSpan.FromMinutes(10),
+    };
 
     private static bool IsLegacyApiBaseUrl(string? value)
     {

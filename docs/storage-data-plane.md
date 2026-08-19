@@ -24,6 +24,22 @@ index, extracts only the requested logical chunks, verifies each encoded hash,
 and places those chunks in the existing install cache. The pack itself is a
 bounded temporary cache and may be evicted after the install operation.
 
+For updates and repairs, the launcher first asks the pack resolver only for
+chunks that are absent from its verified local cache. If the missing logical
+bytes are below `LAUNCHER_PACK_SPARSE_RELAY_THRESHOLD` of a candidate HOT pack
+(default `0.5`), it uses `POST /api/v1/builds/{build_id}/resolve` and receives
+an API-owned chunk URL. The API reads only the indexed byte range from a
+verified HOT physical pack, checks the encoded BLAKE3 hash, and returns that
+chunk. When the missing ratio is above the threshold, the launcher downloads
+the full pack directly from FileMirage. This keeps full installs and large
+updates on the direct path while avoiding a full-pack transfer for small
+repairs.
+
+The sparse relay is build-scoped and only serves hashes present in a published
+latest-build manifest. It never exposes FileMirage credentials, provider URLs,
+or Telegram metadata to the launcher. Historical builds continue to use the
+bounded COLD pack stream because Telegram is not a client-facing range source.
+
 `GET /api/v1/storage/providers` exposes provider capabilities for operators.
 `launcher-admin storage probe` is offline by default; `--live` is an explicit
 network/credential health probe.

@@ -576,6 +576,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/builds/{id}/manifest", get(get_manifest))
         .route("/api/v1/builds/{id}/signature", get(get_signature))
         .route("/api/v1/builds/{id}/resolve", post(resolve_chunks))
+        .route(
+            "/api/v1/builds/{build_id}/chunks/{encoded_hash}",
+            get(stream_hot_chunk),
+        )
         .route("/api/v1/builds/{id}/packs/resolve", post(resolve_packs))
         .route(
             "/api/v1/builds/{build_id}/cold-packs/{pack_hash}",
@@ -1064,7 +1068,7 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
         })
         .collect::<Vec<_>>();
     let mut stale = false;
-    let mut database_ready = if state.database_required { false } else { true };
+    let mut database_ready = !state.database_required;
     let mut usage = previous.usage;
     let mut total_used_bytes = previous.total_used_bytes;
     let mut pending_restores = previous.pending_restores;
@@ -1623,6 +1627,39 @@ async fn resolve_chunks(
                 }
             }
         }
+        if build_is_latest
+            && urls.is_empty()
+            && state.packs_enabled
+            && let Some(database) = &state.database
+        {
+            let hot_packs = database
+                .get_hot_pack_sources_for_chunks(std::slice::from_ref(&hash))
+                .await
+                .map_err(ApiResponseError::from)?;
+            let relay_available = hot_packs
+                .get(&hash)
+                .into_iter()
+                .flat_map(|sources| sources.iter())
+                .any(|source| {
+                    let Some(provider) = state.storage.provider(&source.location.provider) else {
+                        return false;
+                    };
+                    let Some(pool) = state.storage.pool_for_provider(provider.provider_id()) else {
+                        return false;
+                    };
+                    pool.storage_class == StorageTier::Hot
+                        && pool.enabled
+                        && provider.capabilities().range_requests
+                });
+            if relay_available {
+                urls.push(format!(
+                    "{}/api/v1/builds/{}/chunks/{}",
+                    state.public_base_url.trim_end_matches('/'),
+                    build_id,
+                    hash
+                ));
+            }
+        }
         if !build_is_latest && urls.is_empty() && state.packs_enabled && cold_stream_enabled {
             if let Some(database) = &state.database {
                 let cold_packs = database
@@ -1712,6 +1749,143 @@ async fn resolve_chunks(
         });
     }
     Ok(Json(response))
+}
+
+async fn stream_hot_chunk(
+    State(state): State<AppState>,
+    Path((build_id, encoded_hash)): Path<(String, String)>,
+) -> Result<Response, ApiResponseError> {
+    if !state.packs_enabled {
+        return Err(ApiResponseError::temporary(
+            "pack_storage_disabled",
+            "sparse chunk relay is disabled with physical pack storage disabled",
+            60,
+        ));
+    }
+    if encoded_hash.len() != 64
+        || !encoded_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(ApiResponseError::bad_request(
+            "encoded hash must be 64 lowercase hexadecimal characters",
+        ));
+    }
+    let Some(database) = &state.database else {
+        return Err(ApiResponseError::temporary(
+            "database_unavailable",
+            "sparse chunk relay requires the metadata database",
+            15,
+        ));
+    };
+    let Some(manifest) = database
+        .get_manifest(&build_id)
+        .await
+        .map_err(ApiResponseError::from)?
+    else {
+        return Err(ApiResponseError::not_found("build"));
+    };
+    if !manifest.files.iter().any(|file| {
+        file.chunks
+            .iter()
+            .any(|chunk| chunk.encoded_hash == encoded_hash)
+    }) {
+        return Err(ApiResponseError::bad_request(
+            "chunk is not referenced by the requested build",
+        ));
+    }
+    if !database
+        .is_latest_published_build(&build_id)
+        .await
+        .map_err(ApiResponseError::from)?
+    {
+        return Err(ApiResponseError::not_found("historical sparse chunk"));
+    }
+
+    let sources = database
+        .get_hot_pack_sources_for_chunks(std::slice::from_ref(&encoded_hash))
+        .await
+        .map_err(ApiResponseError::from)?;
+    let mut last_error = None;
+    for source in sources
+        .get(&encoded_hash)
+        .into_iter()
+        .flat_map(|items| items.iter())
+    {
+        let Some(provider) = state.storage.provider(&source.location.provider) else {
+            continue;
+        };
+        let Some(pool) = state.storage.pool_for_provider(provider.provider_id()) else {
+            continue;
+        };
+        if pool.storage_class != StorageTier::Hot
+            || !pool.enabled
+            || !provider.capabilities().range_requests
+        {
+            continue;
+        }
+        let Some(chunk) = database
+            .get_pack_chunk(&source.pack_hash, &encoded_hash)
+            .await
+            .map_err(ApiResponseError::from)?
+        else {
+            continue;
+        };
+        let offset = match u64::try_from(chunk.encoded_offset) {
+            Ok(value) => value,
+            Err(_) => {
+                last_error = Some("pack chunk offset is negative".to_owned());
+                continue;
+            }
+        };
+        let length = match u64::try_from(chunk.encoded_size) {
+            Ok(value) => value,
+            Err(_) => {
+                last_error = Some("pack chunk size is negative".to_owned());
+                continue;
+            }
+        };
+        match provider
+            .read_pack_range(&source.pack_hash, offset, length)
+            .await
+        {
+            Ok(bytes)
+                if bytes.len() as u64 == length
+                    && blake3::hash(&bytes).to_hex().as_str() == encoded_hash =>
+            {
+                let response = Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_LENGTH, bytes.len().to_string())
+                    .body(Body::from(bytes))
+                    .map_err(|error| {
+                        ApiResponseError::internal(&format!(
+                            "could not build sparse chunk response: {error}"
+                        ))
+                    })?;
+                return Ok(response);
+            }
+            Ok(bytes) => {
+                last_error = Some(format!(
+                    "provider {} returned an invalid sparse chunk ({} bytes)",
+                    provider.provider_id(),
+                    bytes.len()
+                ));
+            }
+            Err(error) => last_error = Some(error.to_string()),
+        }
+    }
+    Err(ApiResponseError::temporary(
+        "sparse_relay_unavailable",
+        &format!(
+            "no verified HOT pack range is available for sparse chunk relay{}",
+            last_error
+                .as_deref()
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default()
+        ),
+        15,
+    ))
 }
 
 async fn resolve_packs(

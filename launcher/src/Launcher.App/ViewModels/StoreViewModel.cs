@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Launcher.App.Runtime;
 
@@ -19,6 +20,7 @@ public partial class StoreViewModel : ObservableObject
     public void ApplyRuntimeGames(IReadOnlyList<RuntimeGame> games)
     {
         _allGames = games
+            .Where(game => !game.IsSteamGame)
             .Select(game => new StoreGame(
                 game.Id,
                 game.Title,
@@ -26,7 +28,8 @@ public partial class StoreViewModel : ObservableObject
                 game.DisplayVersion,
                 game.SizeDisplay,
                 game.Monogram,
-                game.StatusText))
+                game.StatusText,
+                game.ArtworkSource))
             .OrderBy(game => game.Title, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         ApplySearch();
@@ -57,4 +60,13 @@ public sealed record StoreGame(
     string Version,
     string Size,
     string Monogram,
-    string Status);
+    string Status,
+    string? ArtworkSource = null,
+    bool IsSteamGame = false)
+{
+    public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
+    public Bitmap? ArtworkImage => ArtworkLoader.Load(ArtworkSource);
+    public bool HasArtworkImage => ArtworkImage is not null;
+    public bool ShowMonogram => !HasArtwork;
+    public bool ShowSteamBadge => IsSteamGame;
+}

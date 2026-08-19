@@ -11,6 +11,7 @@
         <Button Content="Profile" Classes="SettingsNavItem" Classes.active="{Binding IsProfileSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Profile" />
         <Button Content="General" Classes="SettingsNavItem" Classes.active="{Binding IsGeneralSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="General" />
         <Button Content="Downloads" Classes="SettingsNavItem" Classes.active="{Binding IsDownloadsSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Downloads" />
+        <Button Content="Steam" Classes="SettingsNavItem" Classes.active="{Binding IsSteamSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Steam" />
         <Button Content="Appearance" Classes="SettingsNavItem" Classes.active="{Binding IsAppearanceSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Appearance" />
         <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="8,8" />
         <Button Content="Advanced" Classes="SettingsNavItem" Classes.active="{Binding IsAdvancedSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Advanced" />
@@ -40,6 +41,30 @@
               <Button Content="Default" Classes="SmallSecondary" Command="{Binding ClearProfileImageCommand}" />
             </StackPanel>
           </Grid>
+        </Border>
+        <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+          <StackPanel Spacing="16">
+            <StackPanel Spacing="4">
+              <TextBlock Text="Vaultnode account" Classes="HeadingMedium" />
+              <TextBlock Text="Sign in to connect this launcher to your library." Classes="Caption" />
+            </StackPanel>
+            <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12">
+              <TextBlock Text="Email address" Classes="Caption" VerticalAlignment="Center" />
+              <TextBox Grid.Column="1" Text="{Binding AccountEmail, Mode=TwoWay}" IsEnabled="{Binding IsNotSignedIn}" PlaceholderText="Email address" />
+              <TextBlock Grid.Row="1" Text="Password" Classes="Caption" VerticalAlignment="Center" />
+              <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding AccountPassword, Mode=TwoWay}" PasswordChar="●" IsEnabled="{Binding IsNotSignedIn}" PlaceholderText="Password" />
+              <TextBlock Grid.Row="2" Text="Username" Classes="Caption" VerticalAlignment="Center" IsVisible="{Binding IsSignedIn}" />
+              <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Spacing="8" IsVisible="{Binding IsSignedIn}">
+                <TextBox Width="220" Text="{Binding AccountUsername, Mode=TwoWay}" PlaceholderText="Username" />
+                <Button Content="Save" Classes="SmallSecondary" Command="{Binding SaveUsernameCommand}" IsEnabled="{Binding CanSubmitAuth}" />
+              </StackPanel>
+              <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Spacing="10">
+                <Button Content="Sign in" Classes="Primary" Command="{Binding SignInCommand}" IsVisible="{Binding IsNotSignedIn}" IsEnabled="{Binding CanSubmitAuth}" />
+                <Button Content="Sign out" Classes="SmallSecondary" Command="{Binding SignOutCommand}" IsVisible="{Binding IsSignedIn}" IsEnabled="{Binding CanSubmitAuth}" />
+                <TextBlock Text="{Binding AuthStatus}" Classes="Caption" VerticalAlignment="Center" TextWrapping="Wrap" />
+              </StackPanel>
+            </Grid>
+          </StackPanel>
         </Border>
       </StackPanel>
 
@@ -85,6 +110,41 @@
         </Border>
       </StackPanel>
 
+      <StackPanel IsVisible="{Binding IsSteamSelected}" Spacing="18">
+        <StackPanel Spacing="4">
+          <TextBlock Text="Steam" Classes="HeadingLarge" />
+          <TextBlock Text="See the Steam games installed on this PC without sharing Steam credentials." Classes="Caption" TextWrapping="Wrap" />
+        </StackPanel>
+        <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+          <StackPanel Spacing="16">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+              <StackPanel Spacing="4">
+                <TextBlock Text="{Binding SteamStatus}" Classes="HeadingMedium" />
+                <TextBlock Text="{Binding SteamLibrarySummary}" Classes="Caption" TextWrapping="Wrap" />
+              </StackPanel>
+              <Button Grid.Column="1" Content="Refresh" Classes="SmallSecondary" Command="{Binding RefreshSteamCommand}" VerticalAlignment="Center" />
+            </Grid>
+            <Border IsVisible="{Binding HasSteamGames}" Background="{DynamicResource SurfaceSecondary}" CornerRadius="8" Padding="16">
+              <StackPanel Spacing="10">
+                <TextBlock Text="Installed games" Classes="BodyStrong" />
+                <ItemsControl ItemsSource="{Binding SteamGames}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" Margin="0,2">
+                        <TextBlock Text="{Binding Name}" Classes="BodyStrong" />
+                        <TextBlock Grid.Row="1" Text="{Binding InstallRoot}" Classes="Caption" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="1" Text="{Binding SizeDisplay}" Classes="Caption" VerticalAlignment="Center" Margin="16,0,0,0" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Border>
+            <TextBlock Text="Steam discovery is local only. Vaultnode authorization and catalog access remain separate." Classes="Caption" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+
       <StackPanel IsVisible="{Binding IsAppearanceSelected}" Spacing="18">
         <StackPanel Spacing="4">
           <TextBlock Text="Appearance" Classes="HeadingLarge" />
@@ -97,12 +157,15 @@
 
             <StackPanel Grid.Row="1" Spacing="3" VerticalAlignment="Center">
               <TextBlock Text="Accent color" Classes="BodyStrong" />
-              <TextBlock Text="Use a hex color such as #1A9FFF." Classes="Caption" />
+              <TextBlock Text="Choose an accent from the color spectrum or palette." Classes="Caption" />
             </StackPanel>
-            <Grid Grid.Row="1" Grid.Column="1" ColumnDefinitions="*,32" ColumnSpacing="10">
-              <TextBox Text="{Binding AccentColor}" />
-              <Border Grid.Column="1" Width="28" Height="28" CornerRadius="5" Background="{DynamicResource AccentPrimary}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" VerticalAlignment="Center" />
-            </Grid>
+            <ColorPicker Grid.Row="1"
+                         Grid.Column="1"
+                         Width="240"
+                         HorizontalAlignment="Left"
+                         Color="{Binding AccentColorValue, Mode=TwoWay}"
+                         IsAlphaEnabled="False"
+                         IsHexInputVisible="False" />
 
             <StackPanel Grid.Row="2" Spacing="3" VerticalAlignment="Center">
               <TextBlock Text="Compact layout" Classes="BodyStrong" />

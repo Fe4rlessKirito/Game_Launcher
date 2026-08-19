@@ -21,6 +21,7 @@ use std::sync::{
 use std::time::Duration;
 use std::{collections::HashMap, env};
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::Semaphore;
 
 mod http_hot;
@@ -249,6 +250,29 @@ pub trait StorageProvider: Send + Sync {
         Err(StorageError::Provider(
             "physical pack reads are not supported by this provider".to_owned(),
         ))
+    }
+    /// Read a bounded byte range from an immutable physical pack. Providers
+    /// with native range support should override this to avoid downloading the
+    /// complete pack for a sparse repair relay. The default keeps compatibility
+    /// with providers that only expose whole-object reads.
+    async fn read_pack_range(
+        &self,
+        pack_hash: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        let bytes = self.read_pack(pack_hash).await?;
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| StorageError::Provider("pack range overflows".to_owned()))?;
+        let start = usize::try_from(offset)
+            .map_err(|_| StorageError::Provider("pack range offset is too large".to_owned()))?;
+        let end = usize::try_from(end)
+            .map_err(|_| StorageError::Provider("pack range end is too large".to_owned()))?;
+        bytes
+            .get(start..end)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| StorageError::Provider("pack range is outside the object".to_owned()))
     }
     async fn read_pack_stream(&self, pack_hash: &str) -> Result<StorageByteStream, StorageError> {
         let bytes = self.read_pack(pack_hash).await?;
@@ -895,6 +919,22 @@ impl StorageProvider for LocalStorage {
     async fn read_pack(&self, pack_hash: &str) -> Result<Vec<u8>, StorageError> {
         let bytes = tokio::fs::read(self.pack_path(pack_hash)?).await?;
         verify_pack_bytes(pack_hash, &bytes)?;
+        Ok(bytes)
+    }
+
+    async fn read_pack_range(
+        &self,
+        pack_hash: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        validate_pack_hash(pack_hash)?;
+        let length = usize::try_from(length)
+            .map_err(|_| StorageError::Provider("pack range is too large".to_owned()))?;
+        let mut file = tokio::fs::File::open(self.pack_path(pack_hash)?).await?;
+        file.seek(SeekFrom::Start(offset)).await?;
+        let mut bytes = vec![0_u8; length];
+        file.read_exact(&mut bytes).await?;
         Ok(bytes)
     }
 
@@ -1604,6 +1644,44 @@ impl StorageProvider for S3CompatibleStorage {
         let bytes = self.read_remote(&self.pack_key(pack_hash)?).await?;
         verify_pack_bytes(pack_hash, &bytes)?;
         Ok(bytes)
+    }
+
+    async fn read_pack_range(
+        &self,
+        pack_hash: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, StorageError> {
+        validate_pack_hash(pack_hash)?;
+        if length == 0 {
+            return Ok(Vec::new());
+        }
+        let end = offset
+            .checked_add(length - 1)
+            .ok_or_else(|| StorageError::Provider("pack range overflows".to_owned()))?;
+        let _slot = self.acquire_request_slot().await?;
+        let response = self
+            .client
+            .get_object()
+            .bucket(&self.config.bucket)
+            .key(self.pack_key(pack_hash)?)
+            .range(format!("bytes={offset}-{end}"))
+            .send()
+            .await
+            .map_err(|error| StorageError::Provider(error.to_string()))?;
+        let bytes = response
+            .body
+            .collect()
+            .await
+            .map_err(|error| StorageError::Provider(error.to_string()))?
+            .into_bytes();
+        if bytes.len() as u64 != length {
+            return Err(StorageError::Provider(format!(
+                "S3 pack range returned {} bytes, expected {length}",
+                bytes.len()
+            )));
+        }
+        Ok(bytes.to_vec())
     }
 
     async fn head_encoded(&self, encoded_hash: &str) -> Result<Option<u64>, StorageError> {

@@ -1,7 +1,7 @@
 # Live Mantle staging validation
 
 Validation date: 2026-08-15. This checklist records the current Mantle
-deployment, not the retired Railway setup.
+deployment and its FileMirage HOT/Telegram COLD topology.
 
 ## PASS
 

@@ -76,8 +76,9 @@ Every pool records:
 | `enabled` / `status` | Operator placement gate and aggregate health (`READY`, `DEGRADED`, `NEEDS_CAPACITY`, `UNAVAILABLE`, `DISABLED`). |
 | `provisioning_mode` | `DISABLED`, `MANUAL`, or `AUTOMATIC`. |
 
-The current `mega-cold` pool is manual. The current Railway HOT pool is an S3
-pool. Provider order is never used as a substitute for class or pool policy.
+The current `mega-cold` pool is manual. The active HOT pool is FileMirage;
+local and S3-compatible pools remain supported compatibility providers.
+Provider order is never used as a substitute for class or pool policy.
 See [storage classes and policy](storage-tiers.md) for replica requirements,
 publication gating, and restore behavior.
 

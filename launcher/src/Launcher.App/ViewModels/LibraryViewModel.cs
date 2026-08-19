@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Launcher.Core;
 using Launcher.App.Runtime;
@@ -20,10 +21,10 @@ public partial class LibraryViewModel : ObservableObject
     public void ApplyRuntimeGames(IReadOnlyList<RuntimeGame> games)
     {
         _allGames = games
-            .Select(game => new GameTile(game.Title, game.StatusText, game.DisplayVersion, game.Monogram, game.State, game.Id))
+            .Select(game => new GameTile(game.Title, game.StatusText, game.DisplayVersion, game.Monogram, game.State, game.Id, game.IconArtworkSource ?? game.ArtworkSource, game.IsSteamGame))
             .ToArray();
         _allRecentlyPlayed = games
-            .Select(game => new HomeGame(game.Title, game.StatusText, game.Monogram, game.IsInstalled ? "Play" : "Explore"))
+            .Select(game => new HomeGame(game.Title, game.StatusText, game.Monogram, game.IsInstalled ? "Play" : "Explore", game.ArtworkSource, game.Id, game.IsSteamGame))
             .ToArray();
         _allPlayNext = games
             .Where(game => !game.IsInstalled || game.State == GameState.UpdateAvailable)
@@ -32,7 +33,10 @@ public partial class LibraryViewModel : ObservableObject
                 game.Title,
                 game.State == GameState.UpdateAvailable ? "An update is ready" : "A verified build is waiting",
                 game.Monogram,
-                game.State == GameState.UpdateAvailable ? "Update" : "Install"))
+                game.State == GameState.UpdateAvailable ? "Update" : "Install",
+                game.ArtworkSource,
+                game.Id,
+                game.IsSteamGame))
             .ToArray();
 
         ApplySearch(string.Empty);
@@ -63,4 +67,12 @@ internal static class ObservableCollectionExtensions
     }
 }
 
-public sealed record GameTile(string Title, string Status, string Version, string Monogram, GameState State, string? GameId = null);
+public sealed record GameTile(string Title, string Status, string Version, string Monogram, GameState State, string? GameId = null, string? ArtworkSource = null, bool IsSteamGame = false)
+{
+    public string OpenKey => GameId ?? Title;
+    public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
+    public Bitmap? ArtworkImage => ArtworkLoader.Load(ArtworkSource);
+    public bool HasArtworkImage => ArtworkImage is not null;
+    public bool ShowMonogram => !HasArtwork;
+    public bool ShowSteamBadge => IsSteamGame;
+}

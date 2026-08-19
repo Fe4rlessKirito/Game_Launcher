@@ -69,6 +69,7 @@
                       </StackPanel>
                       <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="0,3,0,2" />
                       <StackPanel Spacing="2">
+                        <Button Content="Sign in" IsVisible="{Binding $parent[Window].DataContext.IsGuest}" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Settings" />
                         <Button Content="Settings" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Settings" />
                         <Button Content="Downloads" Classes="ProfileMenuItem" Command="{Binding $parent[Window].DataContext.NavigateCommand}" CommandParameter="Downloads" />
                       </StackPanel>
@@ -156,18 +157,27 @@
                     <ItemsControl IsVisible="{Binding IsExpanded}" ItemsSource="{Binding VisibleGames}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                          <Button Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}" CommandParameter="{Binding Title}" Classes="SidebarGame">
+                          <Button Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}" CommandParameter="{Binding OpenKey}" Classes="SidebarGame">
                             <Button.ContextMenu>
                               <ContextMenu Opened="OnGameContextMenuOpened" />
                             </Button.ContextMenu>
-                            <Grid ColumnDefinitions="45,*" MinHeight="34">
-                              <Border Width="42" Height="28" CornerRadius="2" Background="{DynamicResource ArtworkSecondary}" VerticalAlignment="Center" ClipToBounds="True">
+                            <Grid ColumnDefinitions="40,*" MinHeight="38">
+                              <Border Width="34" Height="34" CornerRadius="3" Background="Transparent" VerticalAlignment="Center" ClipToBounds="True">
                                 <Grid>
-                                  <Border Width="30" Height="30" CornerRadius="15" Background="{DynamicResource ArtworkPrimary}" Opacity="0.55" HorizontalAlignment="Right" Margin="0,-8,-8,0" />
-                                  <TextBlock Text="{Binding Monogram}" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                  <Image Source="{Binding ArtworkSource}" IsVisible="{Binding HasArtwork}" Stretch="UniformToFill" />
+                                  <Image Source="{Binding ArtworkImage}" IsVisible="{Binding HasArtworkImage}" Stretch="UniformToFill" />
+                                  <Border Width="30" Height="30" CornerRadius="15" Background="{DynamicResource ArtworkPrimary}" Opacity="0.55" HorizontalAlignment="Right" Margin="0,-8,-8,0" IsVisible="{Binding ShowMonogram}" />
+                                  <TextBlock Text="{Binding Monogram}" IsVisible="{Binding ShowMonogram}" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                 </Grid>
                               </Border>
-                              <TextBlock Grid.Column="1" Text="{Binding Title}" Classes="BodyStrong" Foreground="{Binding StatusBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                              <Grid Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="5">
+                                <TextBlock Text="{Binding Title}" Classes="BodyStrong" Foreground="{Binding StatusBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                <Border Grid.Column="1" Width="15" Height="15" Background="{DynamicResource TextPrimary}" VerticalAlignment="Center" IsVisible="{Binding ShowSteamBadge}">
+                                  <Border.OpacityMask>
+                                    <ImageBrush Source="avares://Launcher.App/Assets/steam-logo.png" Stretch="Uniform" />
+                                  </Border.OpacityMask>
+                                </Border>
+                              </Grid>
                             </Grid>
                           </Button>
                         </DataTemplate>

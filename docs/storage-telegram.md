@@ -24,10 +24,10 @@ Bot API file links are never sent to a launcher.
 
 Set `LAUNCHER_COLD_STREAM_TOKEN` to the same operator-generated secret on the
 API and private restore worker. Set `LAUNCHER_COLD_STREAM_WORKER_URL` on the
-API to the worker's Railway private URL, and set
+API to the worker's private Compose URL, and set
 `LAUNCHER_COLD_STREAM_BIND` on the worker to its private listening address.
-These values are sealed Railway variables; they are not stored in PostgreSQL
-or returned by any launcher endpoint.
+These values belong in the deployment secret store; they are not stored in
+PostgreSQL or returned by any launcher endpoint.
 
 The public Bot API accepts bot uploads up to 50 MB and its `getFile` download
 path is limited to 20 MB. That makes the public endpoint unsuitable for a
@@ -38,10 +38,9 @@ mode, point `TELEGRAM_BOT_API_BASE_URL` at that private endpoint, and raise
 validated. Restore concurrency is bounded by the worker and rate-limit
 responses are retried with the provider's retry delay.
 
-For Railway deployment, use the separate private-service setup in
-[telegram-local-api-railway.md](runbooks/telegram-local-api-railway.md). The
-Local Bot API service owns its own persistent state volume; the restore worker
-only owns launcher state, Telegram message/index state, and bounded temporary
-restore space.
+The private Local Bot API service owns its own persistent state volume; the
+restore worker only owns launcher state, Telegram message/index state, and
+bounded temporary restore space. Mantle's Compose wiring is documented in
+[telegram-local-api-mantle.md](runbooks/telegram-local-api-mantle.md).
 
 Official reference: [Telegram Bot API](https://core.telegram.org/bots/api).

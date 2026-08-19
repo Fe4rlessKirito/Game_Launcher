@@ -93,6 +93,69 @@ public sealed class PhysicalPackDownloadTests
     }
 
     [Fact]
+    public async Task SparseUpdateRelaysOnlyUncachedChunkWhenPackCoverageIsSmall()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "launcher-pack-sparse-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var cachedRaw = Encoding.UTF8.GetBytes(new string('a', 16_384));
+            var missingRaw = Encoding.UTF8.GetBytes(new string('b', 16_384));
+            using var compressor = new ZstdSharp.Compressor(3);
+            var cachedEncoded = compressor.Wrap(cachedRaw).ToArray();
+            var missingEncoded = compressor.Wrap(missingRaw).ToArray();
+            var cachedHash = Hashing.ComputeHash(cachedEncoded);
+            var missingHash = Hashing.ComputeHash(missingEncoded);
+            var pack = BuildPack((cachedRaw, cachedEncoded), (missingRaw, missingEncoded));
+            var packHash = Hashing.ComputeHash(pack);
+            var handler = new SparsePackHandler(pack, packHash, cachedHash, missingHash);
+            using var client = new HttpClient(handler);
+            var chunkCache = new ChunkCache(Path.Combine(root, "chunks"), 1024 * 1024);
+            var packCache = new PackCache(Path.Combine(root, "packs"), 1024 * 1024);
+            await chunkCache.InitializeAsync();
+            await chunkCache.PutAsync(cachedHash, cachedEncoded);
+            using var manager = new DownloadManager(
+                client,
+                new LauncherApiClient(client, new Uri("http://launcher/")),
+                chunkCache,
+                2,
+                packCache: packCache,
+                packDownloadEnabled: true,
+                sparseRelayThreshold: 0.5);
+            var chunks = new[]
+            {
+                new ChunkReference(Hashing.ComputeHash(cachedRaw), cachedRaw.Length, cachedHash, cachedEncoded.Length, $"chunks/encoded/{cachedHash}.bin"),
+                new ChunkReference(Hashing.ComputeHash(missingRaw), missingRaw.Length, missingHash, missingEncoded.Length, $"chunks/encoded/{missingHash}.bin")
+            };
+            var manifest = new Manifest(
+                1,
+                "manifest",
+                "game",
+                "build",
+                "B",
+                DateTimeOffset.UnixEpoch,
+                ChunkingConfig.Default,
+                EncodingConfig.Default,
+                [new FileRecipe("game.exe", cachedRaw.Length + missingRaw.Length, Hashing.ComputeHash(cachedRaw.Concat(missingRaw).ToArray()), chunks)],
+                new LaunchProfile("game.exe", ".", [], new Dictionary<string, string>()));
+
+            var summary = await manager.DownloadAsync(manifest, "sparse-job");
+
+            Assert.Equal(missingEncoded.Length, summary.NetworkBytes);
+            Assert.Equal(0, summary.PhysicalPackNetworkBytes);
+            Assert.Equal(0, summary.PhysicalPackLogicalBytes);
+            Assert.Equal(0, handler.PackGets);
+            Assert.Equal(1, handler.SparseRelayGets);
+            Assert.Contains(missingHash, handler.PackResolutionRequest);
+            Assert.DoesNotContain(cachedHash, handler.PackResolutionRequest);
+            Assert.Equal(missingEncoded, await chunkCache.ReadAsync(missingHash));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task PackDownloadFailsOverRefreshesAndRejectsCorruption()
     {
         var raw = Encoding.UTF8.GetBytes("physical pack fault injection payload");
@@ -261,34 +324,127 @@ public sealed class PhysicalPackDownloadTests
         private static HttpResponseMessage Json<T>(T value) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json") };
     }
 
-    private static byte[] BuildPack(byte[] raw, byte[] encoded)
+    private sealed class SparsePackHandler(
+        byte[] pack,
+        string packHash,
+        string cachedHash,
+        string missingHash) : HttpMessageHandler
+    {
+        public int PackGets { get; private set; }
+        public int SparseRelayGets { get; private set; }
+        public string PackResolutionRequest { get; private set; } = string.Empty;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Post && path.Contains("/packs/resolve", StringComparison.Ordinal))
+            {
+                PackResolutionRequest = await request.Content!.ReadAsStringAsync(cancellationToken);
+                return Json(new[]
+                {
+                    new
+                    {
+                        pack_hash = packHash,
+                        encoded_size = pack.Length,
+                        chunk_hashes = new[] { cachedHash, missingHash },
+                        sources = new[]
+                        {
+                            new
+                            {
+                                provider = "filemirage",
+                                pool_id = "filemirage",
+                                provider_type = "filemirage",
+                                failure_domain = "filemirage",
+                                url = $"http://filemirage/packs/{packHash}",
+                                expires_at = (DateTimeOffset?)null,
+                                range_supported = true,
+                                stable_url = false,
+                                priority = 0
+                            }
+                        }
+                    }
+                });
+            }
+            if (request.Method == HttpMethod.Post && path.EndsWith("/resolve", StringComparison.Ordinal))
+            {
+                return Json(new[]
+                {
+                    new
+                    {
+                        encoded_hash = missingHash,
+                        urls = new[] { $"http://launcher/api/v1/builds/build/chunks/{missingHash}" },
+                        expires_at = (DateTimeOffset?)null
+                    }
+                });
+            }
+            if (path == $"/packs/{packHash}")
+            {
+                PackGets++;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(pack) };
+            }
+            if (path == $"/api/v1/builds/build/chunks/{missingHash}")
+            {
+                SparseRelayGets++;
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(ExtractEncodedChunk(pack, missingHash)) };
+            }
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static byte[] ExtractEncodedChunk(byte[] bytes, string encodedHash)
+        {
+            var reader = PhysicalPackReader.Parse(bytes);
+            return reader.ReadEncoded(encodedHash);
+        }
+
+        private static HttpResponseMessage Json<T>(T value) => new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json") };
+    }
+
+    private static byte[] BuildPack(byte[] raw, byte[] encoded) => BuildPack((raw, encoded));
+
+    private static byte[] BuildPack(params (byte[] Raw, byte[] Encoded)[] chunks)
     {
         const int headerSize = 64;
         const int entrySize = 96;
         const int footerSize = 72;
-        var indexOffset = headerSize + encoded.Length;
-        var bytes = new byte[indexOffset + entrySize + footerSize];
+        var entries = chunks
+            .Select(item => new
+            {
+                item.Raw,
+                item.Encoded,
+                EncodedHash = Hashing.ComputeHash(item.Encoded)
+            })
+            .OrderBy(item => item.EncodedHash, StringComparer.Ordinal)
+            .ToArray();
+        var indexOffset = headerSize + entries.Sum(item => item.Encoded.Length);
+        var bytes = new byte[indexOffset + entrySize * entries.Length + footerSize];
         Encoding.ASCII.GetBytes("LGRPACK1").CopyTo(bytes, 0);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(8, 2), 1);
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12, 4), headerSize);
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(16, 8), 1);
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(16, 8), (ulong)entries.Length);
         BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(24, 8), headerSize);
         BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(32, 8), (ulong)indexOffset);
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(40, 8), entrySize);
-        encoded.CopyTo(bytes, headerSize);
-        Convert.FromHexString(Hashing.ComputeHash(encoded)).CopyTo(bytes, indexOffset);
-        Convert.FromHexString(Hashing.ComputeHash(raw)).CopyTo(bytes, indexOffset + 32);
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(indexOffset + 64, 8), headerSize);
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(indexOffset + 72, 8), (ulong)encoded.Length);
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(indexOffset + 80, 8), (ulong)raw.Length);
-        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(indexOffset + 88, 4), 1);
-        var footerOffset = indexOffset + entrySize;
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(40, 8), (ulong)(entrySize * entries.Length));
+        var dataOffset = headerSize;
+        var entryOffset = indexOffset;
+        foreach (var entry in entries)
+        {
+            entry.Encoded.CopyTo(bytes, dataOffset);
+            Convert.FromHexString(entry.EncodedHash).CopyTo(bytes, entryOffset);
+            Convert.FromHexString(Hashing.ComputeHash(entry.Raw)).CopyTo(bytes, entryOffset + 32);
+            BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(entryOffset + 64, 8), (ulong)dataOffset);
+            BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(entryOffset + 72, 8), (ulong)entry.Encoded.Length);
+            BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(entryOffset + 80, 8), (ulong)entry.Raw.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(entryOffset + 88, 4), 1);
+            dataOffset += entry.Encoded.Length;
+            entryOffset += entrySize;
+        }
+        var footerOffset = indexOffset + entrySize * entries.Length;
         Encoding.ASCII.GetBytes("LGRPFTR1").CopyTo(bytes, footerOffset);
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(footerOffset + 8, 2), 1);
         BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(footerOffset + 12, 8), (ulong)indexOffset);
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(footerOffset + 20, 8), entrySize);
-        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(footerOffset + 28, 8), 1);
-        Convert.FromHexString(Hashing.ComputeHash(bytes.AsSpan(indexOffset, entrySize))).CopyTo(bytes, footerOffset + 40);
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(footerOffset + 20, 8), (ulong)(entrySize * entries.Length));
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(footerOffset + 28, 8), (ulong)entries.Length);
+        Convert.FromHexString(Hashing.ComputeHash(bytes.AsSpan(indexOffset, entrySize * entries.Length))).CopyTo(bytes, footerOffset + 40);
         return bytes;
     }
 

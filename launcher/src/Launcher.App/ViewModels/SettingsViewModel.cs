@@ -4,7 +4,9 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Launcher.App.Runtime;
 using Launcher.Core;
+using Launcher.Networking;
 
 namespace Launcher.App.ViewModels;
 
@@ -42,6 +44,26 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _accentColor = "#1A9FFF";
 
+    private Color _accentColorValue = Color.Parse("#1A9FFF");
+
+    [ObservableProperty]
+    private string _accountEmail = string.Empty;
+
+    [ObservableProperty]
+    private string _accountPassword = string.Empty;
+
+    [ObservableProperty]
+    private string _accountUsername = string.Empty;
+
+    [ObservableProperty]
+    private string _authStatus = "Not signed in.";
+
+    [ObservableProperty]
+    private bool _isSignedIn;
+
+    [ObservableProperty]
+    private bool _isSigningIn;
+
     [ObservableProperty]
     private bool _compactMode;
 
@@ -66,6 +88,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _selectedSection = "Profile";
 
+    private SteamLibrarySnapshot _steamSnapshot = SteamLibrarySnapshot.Empty;
+
     public bool HasProfileImage => ProfileImage is not null;
     public bool ShowDefaultProfile => !HasProfileImage;
     public bool IsProfileSelected => SelectedSection == "Profile";
@@ -73,8 +97,39 @@ public partial class SettingsViewModel : ObservableObject
     public bool IsDownloadsSelected => SelectedSection == "Downloads";
     public bool IsAppearanceSelected => SelectedSection == "Appearance";
     public bool IsAdvancedSelected => SelectedSection == "Advanced";
+    public bool IsSteamSelected => SelectedSection == "Steam";
+    public bool IsNotSignedIn => !IsSignedIn;
+    public bool CanSubmitAuth => !IsSigningIn;
+    public IReadOnlyList<SteamGameInstall> SteamGames => _steamSnapshot.Games;
+    public IReadOnlyList<string> SteamLibraryRoots => _steamSnapshot.LibraryRoots;
+    public bool HasSteamGames => SteamGames.Count > 0;
+    public string SteamStatus => _steamSnapshot.Error
+        ?? (!_steamSnapshot.IsDetected
+            ? "Steam was not found on this PC."
+            : SteamGames.Count == 0
+                ? "Steam detected · No installed games found."
+                : $"{SteamGames.Count} installed Steam game{(SteamGames.Count == 1 ? string.Empty : "s")} detected.");
+    public string SteamLibrarySummary => SteamLibraryRoots.Count == 0
+        ? "Steam library locations will appear here when Steam is installed."
+        : $"{SteamLibraryRoots.Count} Steam library location{(SteamLibraryRoots.Count == 1 ? string.Empty : "s")} detected.";
+    public Color AccentColorValue
+    {
+        get => _accentColorValue;
+        set
+        {
+            if (_accentColorValue == value)
+            {
+                return;
+            }
+
+            _accentColorValue = value;
+            AccentColor = ToHex(value);
+            OnPropertyChanged();
+        }
+    }
     public IReadOnlyList<string> ThemeOptions { get; } = ["Slate", "Midnight", "Graphite"];
 
+    private LauncherRuntime? _runtime;
     private IReadOnlyDictionary<string, string>? _trustedManifestKeysPem;
     private bool _requireTrustedManifestKeys;
 
@@ -82,6 +137,129 @@ public partial class SettingsViewModel : ObservableObject
     {
         _settingsPath = string.IsNullOrWhiteSpace(settingsPath) ? DefaultSettingsPath : settingsPath;
         Load();
+    }
+
+    public void AttachRuntime(LauncherRuntime runtime)
+    {
+        _runtime = runtime;
+        ApplySteamSnapshot(runtime.Snapshot.Steam ?? SteamLibrarySnapshot.Empty);
+    }
+
+    public void ApplySteamSnapshot(SteamLibrarySnapshot snapshot)
+    {
+        _steamSnapshot = snapshot;
+        OnPropertyChanged(nameof(SteamGames));
+        OnPropertyChanged(nameof(SteamLibraryRoots));
+        OnPropertyChanged(nameof(HasSteamGames));
+        OnPropertyChanged(nameof(SteamStatus));
+        OnPropertyChanged(nameof(SteamLibrarySummary));
+    }
+
+    public void ApplyUser(LauncherUserProfile? user)
+    {
+        IsSignedIn = user is not null;
+        AccountUsername = user?.Username ?? string.Empty;
+        AccountEmail = user?.Email ?? string.Empty;
+        if (user is null)
+        {
+            AuthStatus = "Not signed in.";
+        }
+    }
+
+    [RelayCommand]
+    private async Task SignIn()
+    {
+        if (_runtime is null)
+        {
+            AuthStatus = "The launcher is still connecting. Try again in a moment.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(AccountEmail) || !AccountEmail.Contains('@', StringComparison.Ordinal)
+            || string.IsNullOrWhiteSpace(AccountPassword) || AccountPassword.Length < 8)
+        {
+            AuthStatus = "Enter a valid email and an 8-character password.";
+            return;
+        }
+
+        IsSigningIn = true;
+        AuthStatus = "Signing in…";
+        try
+        {
+            var user = await _runtime.SignInAsync(AccountEmail.Trim(), AccountPassword);
+            AccountUsername = user.Username ?? string.Empty;
+            AccountEmail = user.Email ?? AccountEmail.Trim();
+            AccountPassword = string.Empty;
+            AuthStatus = "Signed in. Your library is connected.";
+        }
+        catch (Exception error) when (error is HttpRequestException or InvalidOperationException or TaskCanceledException)
+        {
+            AuthStatus = error.Message;
+        }
+        finally
+        {
+            IsSigningIn = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task SignOut()
+    {
+        if (_runtime is null)
+        {
+            ApplyUser(null);
+            return;
+        }
+
+        IsSigningIn = true;
+        AuthStatus = "Signing out…";
+        try
+        {
+            await _runtime.SignOutAsync();
+            ApplyUser(null);
+        }
+        catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
+        {
+            AuthStatus = error.Message;
+        }
+        finally
+        {
+            IsSigningIn = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task SaveUsername()
+    {
+        if (_runtime is null || !IsSignedIn)
+        {
+            AuthStatus = "Sign in before changing your username.";
+            return;
+        }
+
+        var username = AccountUsername.Trim();
+        if (!IsValidUsername(username))
+        {
+            AuthStatus = "Use 3–24 letters, numbers, or underscores.";
+            return;
+        }
+
+        IsSigningIn = true;
+        AuthStatus = "Saving username…";
+        try
+        {
+            var user = await _runtime.UpdateUsernameAsync(username);
+            ApplyUser(user);
+            AuthStatus = "Username saved.";
+        }
+        catch (Exception error) when (error is HttpRequestException or InvalidOperationException or TaskCanceledException)
+        {
+            AuthStatus = error.Message;
+        }
+        finally
+        {
+            IsSigningIn = false;
+        }
     }
 
     [RelayCommand]
@@ -156,8 +334,29 @@ public partial class SettingsViewModel : ObservableObject
             "Downloads" => "Downloads",
             "Appearance" => "Appearance",
             "Advanced" => "Advanced",
+            "Steam" => "Steam",
             _ => "Profile"
         };
+    }
+
+    [RelayCommand]
+    private async Task RefreshSteam()
+    {
+        if (_runtime is null)
+        {
+            ApplySteamSnapshot(SteamLibraryDiscovery.Discover());
+            return;
+        }
+
+        try
+        {
+            var snapshot = await _runtime.RefreshAsync().ConfigureAwait(true);
+            ApplySteamSnapshot(snapshot.Steam ?? SteamLibrarySnapshot.Empty);
+        }
+        catch (Exception error) when (error is IOException or HttpRequestException or InvalidDataException or TaskCanceledException)
+        {
+            ApplySteamSnapshot(new SteamLibrarySnapshot([], [], error.Message));
+        }
     }
 
     public void SetProfileImagePath(string? path)
@@ -264,13 +463,28 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(IsDownloadsSelected));
         OnPropertyChanged(nameof(IsAppearanceSelected));
         OnPropertyChanged(nameof(IsAdvancedSelected));
+        OnPropertyChanged(nameof(IsSteamSelected));
     }
 
     partial void OnThemePresetChanged(string value) => ApplyAppearance();
 
-    partial void OnAccentColorChanged(string value) => ApplyAppearance();
+    partial void OnAccentColorChanged(string value)
+    {
+        var parsed = ParseColorOrDefault(value, Color.Parse("#1A9FFF"));
+        if (_accentColorValue != parsed)
+        {
+            _accentColorValue = parsed;
+            OnPropertyChanged(nameof(AccentColorValue));
+        }
+
+        ApplyAppearance();
+    }
 
     partial void OnCompactModeChanged(bool value) => ApplyAppearance();
+
+    partial void OnIsSignedInChanged(bool value) => OnPropertyChanged(nameof(IsNotSignedIn));
+
+    partial void OnIsSigningInChanged(bool value) => OnPropertyChanged(nameof(CanSubmitAuth));
 
     partial void OnProfileImageChanged(Bitmap? value)
     {
@@ -318,6 +532,17 @@ public partial class SettingsViewModel : ObservableObject
         var accent = ParseColorOrDefault(AccentColor, Color.Parse(palette.Accent));
         resources["AccentPrimaryColor"] = accent;
         resources["AccentSoftColor"] = Color.FromArgb(64, accent.R, accent.G, accent.B);
+        // Fluent controls (including ToggleSwitch) use the theme's system
+        // accent resources rather than the launcher-specific accent brush.
+        // Keep both resource families synchronized so checked controls follow
+        // the color selected in Appearance immediately.
+        resources["SystemAccentColor"] = accent;
+        resources["SystemAccentColorLight1"] = ScaleColor(accent, 1.15);
+        resources["SystemAccentColorLight2"] = ScaleColor(accent, 1.30);
+        resources["SystemAccentColorLight3"] = ScaleColor(accent, 1.45);
+        resources["SystemAccentColorDark1"] = ScaleColor(accent, 0.70);
+        resources["SystemAccentColorDark2"] = ScaleColor(accent, 0.50);
+        resources["SystemAccentColorDark3"] = ScaleColor(accent, 0.30);
         resources["SidebarWidth"] = CompactMode ? 220d : 244d;
         resources["NavButtonPadding"] = CompactMode ? new Thickness(10, 8) : new Thickness(12, 11);
         resources["HomeButtonPadding"] = CompactMode ? new Thickness(8, 6) : new Thickness(10, 7);
@@ -333,6 +558,31 @@ public partial class SettingsViewModel : ObservableObject
         }
 
         return fallback;
+    }
+
+    private static Color ScaleColor(Color color, double factor)
+    {
+        return Color.FromArgb(
+            color.A,
+            ScaleChannel(color.R, factor),
+            ScaleChannel(color.G, factor),
+            ScaleChannel(color.B, factor));
+    }
+
+    private static byte ScaleChannel(byte channel, double factor)
+    {
+        return (byte)Math.Clamp((int)Math.Round(channel * factor), 0, byte.MaxValue);
+    }
+
+    private static string ToHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    private static bool IsValidUsername(string value)
+    {
+        return value.Length is >= 3 and <= 24
+            && value.All(character => character is >= 'A' and <= 'Z'
+                or >= 'a' and <= 'z'
+                or >= '0' and <= '9'
+                or '_');
     }
 
     private sealed record ThemePalette(

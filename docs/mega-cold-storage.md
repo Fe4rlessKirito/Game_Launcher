@@ -11,7 +11,7 @@ but is intentionally not pulled into the Rust server build.
 When MEGA is explicitly enabled, its worker image must pin the official Debian
 12 amd64 MEGAcmd package
 `2.5.2-1.1` by SHA-256. The package is installed in the image; only the
-authenticated MEGAcmd home is persisted on the Railway volume.
+authenticated MEGAcmd home is persisted on the private worker volume.
 
 ## Account configuration
 

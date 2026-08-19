@@ -3,6 +3,7 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <AvaloniaVersion>12.1.0</AvaloniaVersion>
+    <AvaloniaColorPickerVersion>12.1.0</AvaloniaColorPickerVersion>
     <Blake3Version>3.0.2</Blake3Version>
     <CommunityToolkitMvvmVersion>8.4.0</CommunityToolkitMvvmVersion>
     <SqliteVersion>10.0.10</SqliteVersion>
@@ -15,6 +16,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="Avalonia" Version="$(AvaloniaVersion)" />
+    <PackageVersion Include="Avalonia.Controls.ColorPicker" Version="$(AvaloniaColorPickerVersion)" />
     <PackageVersion Include="Avalonia.Desktop" Version="$(AvaloniaVersion)" />
     <PackageVersion Include="Avalonia.Themes.Fluent" Version="$(AvaloniaVersion)" />
     <PackageVersion Include="Avalonia.Fonts.Inter" Version="$(AvaloniaVersion)" />

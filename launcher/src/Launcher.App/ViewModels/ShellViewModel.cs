@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -45,6 +46,7 @@ public partial class ShellViewModel : ObservableObject
     public ObservableCollection<SidebarCategory> SidebarCategories { get; }
     public SettingsViewModel Settings => _settingsPage;
     public string AccountInitials => BuildMonogram(AccountDisplayName.TrimStart('@'));
+    public bool IsGuest => string.Equals(AccountDisplayName, "Guest", StringComparison.OrdinalIgnoreCase);
 
     public ObservableCollection<SidebarCategory> VisibleSidebarCategories { get; } = new();
     public SidebarCategory? SelectedCollection { get; private set; }
@@ -114,6 +116,7 @@ public partial class ShellViewModel : ObservableObject
         _runtime.SnapshotChanged += OnRuntimeSnapshotChanged;
         _runtime.ProgressChanged += OnRuntimeProgressChanged;
         _downloadsPage.AttachRuntime(runtime);
+        _settingsPage.AttachRuntime(runtime);
     }
 
     private void OnRuntimeSnapshotChanged(LauncherRuntimeSnapshot snapshot)
@@ -139,6 +142,8 @@ public partial class ShellViewModel : ObservableObject
         AccountDisplayName = snapshot.User?.Username is { Length: > 0 } username
             ? $"@{username}"
             : snapshot.User is not null ? "Account" : "Guest";
+        _settingsPage.ApplyUser(snapshot.User);
+        _settingsPage.ApplySteamSnapshot(snapshot.Steam ?? SteamLibrarySnapshot.Empty);
         _downloadsPage.ApplyRuntimeJobs(snapshot.DownloadJobs, snapshot.Games);
         _storePage.ApplyRuntimeGames(snapshot.Games);
         UpdateDownloadStatus(snapshot.DownloadJobs);
@@ -153,15 +158,15 @@ public partial class ShellViewModel : ObservableObject
             favorites.Games.Clear();
             foreach (var game in snapshot.Games)
             {
-                favorites.Games.Add(new SidebarGame(game.Title, game.Monogram, game.StatusText, RecentActivityOrder(game), game.Id, game.BuildId));
+                favorites.Games.Add(new SidebarGame(game.Title, game.Monogram, game.StatusText, RecentActivityOrder(game), game.Id, game.BuildId, game.IconArtworkSource ?? game.ArtworkSource, game.IsSteamGame));
             }
             favorites.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
         }
 
         OnPropertyChanged(nameof(SidebarGames));
-        if (CurrentPage is GameDetailsViewModel details && _currentTarget.Title is not null)
+        if (CurrentPage is GameDetailsViewModel details && (_currentTarget.GameId ?? _currentTarget.Title) is { } gameKey)
         {
-            details.ApplyRuntimeGame(_runtime?.FindGame(_currentTarget.Title));
+            details.ApplyRuntimeGame(_runtime?.FindGame(gameKey));
         }
     }
 
@@ -194,7 +199,11 @@ public partial class ShellViewModel : ObservableObject
 
     partial void OnShowOnlyReadyToPlayChanged(bool value) => OnPropertyChanged(nameof(ReadyToPlayFilterTip));
 
-    partial void OnAccountDisplayNameChanged(string value) => OnPropertyChanged(nameof(AccountInitials));
+    partial void OnAccountDisplayNameChanged(string value)
+    {
+        OnPropertyChanged(nameof(AccountInitials));
+        OnPropertyChanged(nameof(IsGuest));
+    }
 
     [RelayCommand]
     private void ClearSearch() => SearchQuery = string.Empty;
@@ -272,9 +281,10 @@ public partial class ShellViewModel : ObservableObject
             return;
         }
 
+        var runtimeGame = _runtime?.FindGame(title);
         _backStack.Push(_currentTarget);
         _forwardStack.Clear();
-        ApplyTarget(new NavigationTarget("Details", title, IsSidebarVisible));
+        ApplyTarget(new NavigationTarget("Details", runtimeGame?.Title ?? title, IsSidebarVisible, runtimeGame?.Id));
         NotifyNavigationState();
     }
 
@@ -492,7 +502,7 @@ public partial class ShellViewModel : ObservableObject
                 PageKicker = "HELP / SUPPORT";
                 break;
             case "Details":
-                var runtimeGame = _runtime?.FindGame(target.Title);
+                var runtimeGame = _runtime?.FindGame(target.GameId ?? target.Title);
                 CurrentPage = new GameDetailsViewModel(target.Title ?? runtimeGame?.Title ?? "Synthetic Game", _runtime, runtimeGame);
                 PageTitle = target.Title ?? "Game details";
                 PageKicker = "GAME DETAILS / BUILD INFORMATION";
@@ -540,7 +550,7 @@ public partial class ShellViewModel : ObservableObject
         return monogram.Length == 0 ? "G" : monogram;
     }
 
-    private sealed record NavigationTarget(string Key, string? Title, bool KeepSidebar = false);
+    private sealed record NavigationTarget(string Key, string? Title, bool KeepSidebar = false, string? GameId = null);
 }
 
 public sealed record SidebarGame(
@@ -549,8 +559,17 @@ public sealed record SidebarGame(
     string Status,
     int RecentActivityOrder = 0,
     string? GameId = null,
-    string? BuildId = null)
+    string? BuildId = null,
+    string? ArtworkSource = null,
+    bool IsSteamGame = false)
 {
+    public string OpenKey => GameId ?? Title;
+    public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
+    public Bitmap? ArtworkImage => ArtworkLoader.Load(ArtworkSource);
+    public bool HasArtworkImage => ArtworkImage is not null;
+    public bool ShowMonogram => !HasArtwork;
+    public bool ShowSteamBadge => IsSteamGame;
+
     private static readonly IBrush InstalledBrush = new SolidColorBrush(Color.Parse("#D6D7D8"));
     private static readonly IBrush UpdateBrush = new SolidColorBrush(Color.Parse("#1A9FFF"));
     private static readonly IBrush UnavailableBrush = new SolidColorBrush(Color.Parse("#6D7886"));

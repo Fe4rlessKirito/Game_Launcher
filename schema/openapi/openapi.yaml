@@ -102,9 +102,23 @@ paths:
               properties:
                 encoded_hashes: { type: array, maxItems: 512, items: { type: string, pattern: '^[0-9a-f]{64}$' } }
       responses:
-        '200': { description: Direct storage locations }
+        '200': { description: Direct HOT storage locations or build-scoped sparse relay locations }
         '503':
           description: A cold-only chunk is being restored or no hot location is available
+          headers:
+            Retry-After:
+              schema: { type: integer }
+  /api/v1/builds/{build_id}/chunks/{encoded_hash}:
+    get:
+      operationId: streamHotChunk
+      parameters:
+        - { name: build_id, in: path, required: true, schema: { type: string } }
+        - { name: encoded_hash, in: path, required: true, schema: { type: string, pattern: '^[0-9a-f]{64}$' } }
+      responses:
+        '200': { description: Verified encoded logical chunk selected from a HOT physical pack }
+        '400': { description: Chunk is not referenced by the build }
+        '503':
+          description: No ranged HOT pack source is currently available
           headers:
             Retry-After:
               schema: { type: integer }

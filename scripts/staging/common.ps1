@@ -97,17 +97,6 @@ function Assert-ArtifactPath {
     return $fullPath
 }
 
-function Invoke-RailwayAdmin {
-    param(
-        [Parameter(Mandatory = $true)][string]$Service,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
-    )
-
-    $commandLine = "export HOME=/var/lib/launcher/telegram; exec gosu launcher /usr/local/bin/launcher-admin " +
-        (($Arguments | ForEach-Object { "'" + ($_ -replace "'", "'\''") + "'" }) -join " ")
-    Invoke-Checked -File "railway" -Arguments @("ssh", "--service", $Service, "--", "sh", "-lc", $commandLine)
-}
-
 function Get-MantleIdentityFile {
     param([Parameter(Mandatory = $true)][string]$IdentityFile)
 

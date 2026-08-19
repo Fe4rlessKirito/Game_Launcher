@@ -2,12 +2,12 @@
 
 ## Boundaries
 
-Launcher has a control plane and a data plane. The API owns catalog state, build lifecycle, signed metadata, and mirror resolution. `StorageRegistry` owns ordered replication across local and S3-compatible providers. Storage providers own bytes. A client receives expiring or stable object URLs and downloads current-build chunks directly from a provider. Historical COLD packs use a bounded, authenticated server relay because Telegram is never a client source.
+Launcher has a control plane and a data plane. The API owns catalog state, build lifecycle, signed metadata, and mirror resolution. `StorageRegistry` owns ordered replication across FileMirage HOT, Telegram COLD, and compatible local/S3 providers. Storage providers own bytes. A client receives expiring or stable object URLs and downloads current-build chunks directly from HOT storage or a build-scoped sparse relay. Historical COLD packs use a bounded, authenticated server relay because Telegram is never a client source.
 
 ```text
 Avalonia client ── catalog/manifests ──> Axum API ──> PostgreSQL
       │                                      │
-      └──────── direct chunk bytes ──────────┴──> local/S3 storage
+      └──────── direct chunk bytes ──────────┴──> FileMirage HOT / sparse API relay
 
 authorized directory/archive ──> bounded normalizer ──> Python analyzer ──> Rust packager ──> storage + DB
 ```
@@ -41,7 +41,7 @@ The client owns UI, local SQLite state, download scheduling, cache eviction, rec
 3. Storage placement is tier-aware: hot locations are client-facing, cold locations are operator-facing, and publication is gated by `StoragePolicy`. Telegram cold accounts use PostgreSQL-backed metadata; historical Telegram packs can be streamed through the private worker/API relay without creating a permanent HOT copy.
 4. The manifest is JSON for inspectability and signed canonical bytes can be introduced without changing the file/chunk model.
 5. SQLite uses numbered SQL migrations and a small repository abstraction instead of an ORM.
-6. Deployment is provider-neutral. Mantle is the current staging host; Railway is historical staging only, not a storage or database type in the application. The API, worker, PostgreSQL schema, storage pools, and client contracts remain portable across that move.
+6. Deployment is provider-neutral. Mantle is the active deployment target, while the API, worker, PostgreSQL schema, storage pools, and client contracts remain portable across hosts.
 
 ## Known limitations
 

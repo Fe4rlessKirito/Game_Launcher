@@ -3,10 +3,18 @@
              x:Class="Launcher.App.Views.StoreView">
   <StackPanel Spacing="24">
     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="24">
-      <StackPanel Spacing="5">
+      <StackPanel Spacing="7" VerticalAlignment="Top">
         <TextBlock Text="VERIFIED CATALOG" Classes="Eyebrow" Foreground="{DynamicResource AccentPrimary}" />
         <TextBlock Text="Find your next game" Classes="Display" />
-        <TextBlock Text="Browse authorized builds and open a game for its complete install, update, and verification details." Classes="Body" TextWrapping="Wrap" MaxWidth="760" />
+        <TextBlock Text="Browse authorized builds and open a game for its complete install, update, and verification details."
+                   Classes="Body"
+                   TextWrapping="Wrap"
+                   MaxWidth="760"
+                   HorizontalAlignment="Left"
+                   TextAlignment="Left"
+                   MinHeight="24"
+                   LineHeight="24"
+                   Margin="0,0,0,2" />
       </StackPanel>
       <TextBox Grid.Column="1" Width="260" VerticalAlignment="Center" Classes="SearchBox" Text="{Binding SearchQuery, Mode=TwoWay}" PlaceholderText="Search the store" />
     </Grid>
@@ -35,14 +43,16 @@
         <DataTemplate>
           <Button Classes="StoreCard"
                   Command="{Binding $parent[Window].DataContext.OpenDetailsCommand}"
-                  CommandParameter="{Binding Title}"
+                  CommandParameter="{Binding Id}"
                   ToolTip.Tip="Open game details">
             <Grid RowDefinitions="150,*">
-              <Border Background="{DynamicResource ArtworkSecondary}" ClipToBounds="True">
+              <Border Background="Transparent" ClipToBounds="True">
                 <Grid>
-                  <Ellipse Width="190" Height="190" Fill="{DynamicResource ArtworkPrimary}" Opacity="0.75" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="54,-54,-54,0" />
-                  <Ellipse Width="86" Height="86" Fill="{DynamicResource ArtworkTertiary}" Opacity="0.5" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-22,0,0,-22" />
-                  <TextBlock Text="{Binding Monogram}" Classes="GameMonogram" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                  <Image Source="{Binding ArtworkSource}" IsVisible="{Binding HasArtwork}" Stretch="Uniform" />
+                  <Image Source="{Binding ArtworkImage}" IsVisible="{Binding HasArtworkImage}" Stretch="Uniform" />
+                  <Ellipse Width="190" Height="190" Fill="{DynamicResource ArtworkPrimary}" Opacity="0.75" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="54,-54,-54,0" IsVisible="{Binding ShowMonogram}" />
+                  <Ellipse Width="86" Height="86" Fill="{DynamicResource ArtworkTertiary}" Opacity="0.5" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-22,0,0,-22" IsVisible="{Binding ShowMonogram}" />
+                  <TextBlock Text="{Binding Monogram}" IsVisible="{Binding ShowMonogram}" Classes="GameMonogram" HorizontalAlignment="Center" VerticalAlignment="Center" />
                 </Grid>
               </Border>
               <Grid Grid.Row="1" RowDefinitions="Auto,*,Auto" Margin="15,12,15,14">

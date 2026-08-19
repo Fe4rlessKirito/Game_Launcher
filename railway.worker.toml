@@ -1,7 +1,0 @@
-[build]
-dockerfilePath = "deploy/worker.Dockerfile"
-
-[deploy]
-startCommand = "/usr/local/bin/worker-entrypoint storage worker --storage-root /var/lib/launcher/storage"
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 10

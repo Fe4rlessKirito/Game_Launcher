@@ -8,7 +8,9 @@
   <ItemGroup>
     <AvaloniaResource Include="Assets\vaultnode-mark.png" />
     <AvaloniaResource Include="Assets\vaultnode.ico" />
+    <AvaloniaResource Include="Assets\steam-logo.png" />
     <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Controls.ColorPicker" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Fonts.Inter" />
     <PackageReference Include="Avalonia.Themes.Fluent" />

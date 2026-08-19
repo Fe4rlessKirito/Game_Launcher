@@ -34,6 +34,86 @@ public sealed record LauncherUserProfile(
     [property: JsonPropertyName("email")] string? Email,
     [property: JsonPropertyName("username")] string? Username);
 
+public sealed record SupabaseAuthSession(string AccessToken);
+
+public sealed class SupabaseAuthClient(HttpClient httpClient, Uri baseUri, string publishableKey)
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task<SupabaseAuthSession> SignInWithPasswordAsync(
+        string email,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(publishableKey))
+        {
+            throw new InvalidOperationException("Supabase sign-in is not configured for this launcher build.");
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(baseUri, "auth/v1/token?grant_type=password"));
+        request.Headers.TryAddWithoutValidation("apikey", publishableKey);
+        request.Content = JsonContent.Create(new { email, password }, options: JsonOptions);
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(ReadAuthError(body, response.StatusCode));
+        }
+
+        var session = JsonSerializer.Deserialize<AuthTokenResponse>(body, JsonOptions);
+        if (session?.AccessToken is not { Length: > 0 } accessToken)
+        {
+            throw new InvalidOperationException("Supabase returned no access token.");
+        }
+
+        return new SupabaseAuthSession(accessToken);
+    }
+
+    public async Task UpdateUsernameAsync(
+        string accessToken,
+        string username,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(publishableKey))
+        {
+            throw new InvalidOperationException("Supabase account updates are not configured for this launcher build.");
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Put, new Uri(baseUri, "auth/v1/user"));
+        request.Headers.TryAddWithoutValidation("apikey", publishableKey);
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
+        request.Content = JsonContent.Create(new { data = new { username } }, options: JsonOptions);
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(ReadAuthError(body, response.StatusCode));
+        }
+    }
+
+    private static string ReadAuthError(string body, HttpStatusCode statusCode)
+    {
+        try
+        {
+            var error = JsonSerializer.Deserialize<AuthErrorResponse>(body, JsonOptions);
+            var message = error?.ErrorDescription ?? error?.Message ?? error?.Error;
+            if (!string.IsNullOrWhiteSpace(message)) return message;
+        }
+        catch (JsonException)
+        {
+            // Fall through to a safe status-based message.
+        }
+
+        return $"Sign-in failed ({(int)statusCode} {statusCode}).";
+    }
+
+    private sealed record AuthTokenResponse([property: JsonPropertyName("access_token")] string? AccessToken);
+    private sealed record AuthErrorResponse(
+        [property: JsonPropertyName("error_description")] string? ErrorDescription,
+        [property: JsonPropertyName("msg")] string? Message,
+        [property: JsonPropertyName("error")] string? Error);
+}
+
 public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 {
     private const int MaxRestorePolls = 20;

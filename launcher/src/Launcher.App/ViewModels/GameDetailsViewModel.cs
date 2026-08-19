@@ -1,3 +1,4 @@
+using Avalonia.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Launcher.App.Runtime;
@@ -31,18 +32,35 @@ public partial class GameDetailsViewModel : ObservableObject
         _runtime = runtime;
         _game = game;
         _status = game?.StatusText ?? "Installed and launchable";
-        _actionMessage = game is null ? "Ready to launch." : "Build metadata is loaded from the launcher service.";
+        _actionMessage = game?.IsSteamGame == true
+            ? "Steam manages this installation. Launching will open Steam."
+            : game is null ? "Ready to launch." : "Build metadata is loaded from the launcher service.";
         _isInstalled = game?.IsInstalled ?? true;
     }
 
     public string Title { get; }
+    public bool IsSteamGame => _game?.IsSteamGame == true;
+    public bool IsVaultnodeGame => !IsSteamGame;
+    public string? ArtworkSource => _game?.ArtworkSource;
+    public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
+    public Bitmap? ArtworkImage => ArtworkLoader.Load(ArtworkSource);
+    public bool HasArtworkImage => ArtworkImage is not null;
+    public bool ShowMonogram => !HasArtwork;
+    public bool ShowSteamBadge => IsSteamGame;
     public string Monogram => _game?.Monogram ?? BuildMonogram(Title);
-    public string Description => _game?.Description ?? "A verified local build with content-addressed updates, repairable files, and an offline-ready launch profile.";
-    public string Version => _game?.DisplayVersion ?? "1.0.0";
+    public string Description => IsSteamGame
+        ? "Installed through Steam. Vaultnode can launch it, while Steam remains responsible for ownership, updates, and file management."
+        : _game?.Description ?? "A verified local build with content-addressed updates, repairable files, and an offline-ready launch profile.";
+    public string Version => IsSteamGame ? "Steam installation" : _game?.DisplayVersion ?? "1.0.0";
     public string InstallSize => _game?.SizeDisplay ?? "90 B";
     public string InstallLocation => _game?.InstallRoot ?? @"C:\Games\Synthetic Game";
     public bool ShowPlay => IsInstalled && !IsBusy;
-    public bool ShowInstall => (!IsInstalled || _game?.State == Launcher.Core.GameState.UpdateAvailable) && !IsBusy;
+    public bool ShowInstall => !IsSteamGame
+        && (!IsInstalled || _game?.State == Launcher.Core.GameState.UpdateAvailable)
+        && !IsBusy;
+    public bool ShowRepair => !IsSteamGame && IsInstalled && !IsBusy;
+    public bool ShowUninstall => !IsSteamGame && ShowPlay;
+    public string IntegrityStatus => IsSteamGame ? "Managed by Steam" : "Verified";
 
     public void ApplyRuntimeGame(RuntimeGame? game)
     {
@@ -50,13 +68,28 @@ public partial class GameDetailsViewModel : ObservableObject
         _game = game;
         IsInstalled = game.IsInstalled;
         Status = game.StatusText;
+        if (game.IsSteamGame)
+        {
+            ActionMessage = "Steam manages this installation. Launching will open Steam.";
+        }
+        OnPropertyChanged(nameof(IsSteamGame));
+        OnPropertyChanged(nameof(IsVaultnodeGame));
+        OnPropertyChanged(nameof(ArtworkSource));
+        OnPropertyChanged(nameof(HasArtwork));
+        OnPropertyChanged(nameof(ArtworkImage));
+        OnPropertyChanged(nameof(HasArtworkImage));
+        OnPropertyChanged(nameof(ShowMonogram));
+        OnPropertyChanged(nameof(ShowSteamBadge));
         OnPropertyChanged(nameof(Monogram));
         OnPropertyChanged(nameof(Description));
         OnPropertyChanged(nameof(Version));
         OnPropertyChanged(nameof(InstallSize));
         OnPropertyChanged(nameof(InstallLocation));
+        OnPropertyChanged(nameof(IntegrityStatus));
         OnPropertyChanged(nameof(ShowPlay));
         OnPropertyChanged(nameof(ShowInstall));
+        OnPropertyChanged(nameof(ShowRepair));
+        OnPropertyChanged(nameof(ShowUninstall));
     }
 
     [RelayCommand]
@@ -74,7 +107,9 @@ public partial class GameDetailsViewModel : ObservableObject
             IsBusy = true;
             Status = "Launching";
             await _runtime.LaunchAsync(_game.Id).ConfigureAwait(true);
-            ActionMessage = $"{Title} is running locally.";
+            ActionMessage = IsSteamGame
+                ? $"{Title} was handed off to Steam."
+                : $"{Title} is running locally.";
         }
         catch (Exception error)
         {
@@ -86,12 +121,20 @@ public partial class GameDetailsViewModel : ObservableObject
             IsBusy = false;
             OnPropertyChanged(nameof(ShowPlay));
             OnPropertyChanged(nameof(ShowInstall));
+            OnPropertyChanged(nameof(ShowRepair));
+            OnPropertyChanged(nameof(ShowUninstall));
         }
     }
 
     [RelayCommand]
     private async Task Install()
     {
+        if (IsSteamGame)
+        {
+            ActionMessage = "Steam manages installation and updates for this game.";
+            return;
+        }
+
         if (_runtime is null || _game is null)
         {
             IsInstalled = true;
@@ -132,6 +175,12 @@ public partial class GameDetailsViewModel : ObservableObject
     [RelayCommand]
     private async Task Repair()
     {
+        if (IsSteamGame)
+        {
+            ActionMessage = "Use Steam to verify or repair this game.";
+            return;
+        }
+
         if (_runtime is null || _game is null)
         {
             ActionMessage = $"{Title} passed the local integrity check.";
@@ -163,6 +212,12 @@ public partial class GameDetailsViewModel : ObservableObject
     [RelayCommand]
     private async Task Uninstall()
     {
+        if (IsSteamGame)
+        {
+            ActionMessage = "Use Steam to uninstall this game.";
+            return;
+        }
+
         if (_runtime is null || _game is null)
         {
             IsInstalled = false;
@@ -196,6 +251,8 @@ public partial class GameDetailsViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(ShowPlay));
         OnPropertyChanged(nameof(ShowInstall));
+        OnPropertyChanged(nameof(ShowRepair));
+        OnPropertyChanged(nameof(ShowUninstall));
     }
 
     private static string BuildMonogram(string title)
