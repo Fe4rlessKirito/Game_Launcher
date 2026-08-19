@@ -16,3 +16,9 @@ launcher-admin ingest <handoff-artifact> --output <package-dir>
 The scraper never publishes a build and never makes the launcher client depend
 on a source website. See [scraper.md](scraper.md) for browser isolation,
 Gemini budgets, SSRF protection, archive validation, and restart-safe jobs.
+
+On Mantle, the scraper artifact and the Rust package are temporary staging
+data. When `LAUNCHER_CLEANUP_STAGING_AFTER_PUBLISH=true`, the publish command
+deletes the package, copied staging chunks, and the recorded source artifact
+only after the HOT/COLD storage policy has completed successfully. A provider
+or database failure leaves the staging data in place so the operator can retry.

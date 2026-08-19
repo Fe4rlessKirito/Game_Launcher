@@ -25,7 +25,9 @@ Bot API state volume at `/var/lib/telegram-bot-api` is only for Telegram's
 state and local file handling. Launcher staging, chunks, packs, and restore
 scratch use the shared RAM-backed `launcher-ephemeral-content` volume; the
 persistent `launcher-storage` volume holds only control-plane metadata and
-provider indexes.
+provider indexes. The scraper may use the transient volume while a release is
+being normalized; `launcher-admin publish` removes that staging data only
+after both HOT and COLD placement succeeds.
 
 Create these files on the VPS with mode `600`; never commit or paste them:
 

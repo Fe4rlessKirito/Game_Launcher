@@ -49,6 +49,8 @@ use std::{
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+mod staging_cleanup;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "launcher-admin",
@@ -530,6 +532,25 @@ async fn main() -> Result<()> {
                 database.as_ref(),
             )
             .await?;
+            if staging_cleanup::enabled() {
+                let staging_objects = manifest
+                    .files
+                    .iter()
+                    .flat_map(|file| file.chunks.iter())
+                    .map(|chunk| (chunk.object_key.clone(), chunk.encoded_hash.clone()))
+                    .collect::<Vec<_>>();
+                let cleanup = staging_cleanup::cleanup_after_publish(
+                    &package,
+                    &storage_root,
+                    &staging_objects,
+                )?;
+                println!(
+                    "staging_cleanup=COMPLETE package={} source_removed={} objects_removed={}",
+                    cleanup.package_removed,
+                    cleanup.source_removed,
+                    cleanup.staging_objects_removed
+                );
+            }
             atomic_copy(&manifest_path, &destination.join("manifest.json"))?;
             atomic_copy(&signature_path, &destination.join("manifest.sig.json"))?;
             println!(
@@ -627,6 +648,14 @@ async fn main() -> Result<()> {
                     progress.state,
                     serde_json::to_string_pretty(&report)?
                 );
+                if staging_cleanup::enabled() {
+                    let storage_root = env::var_os("LAUNCHER_STORAGE_ROOT")
+                        .map(PathBuf::from)
+                        .context(
+                            "LAUNCHER_STORAGE_ROOT is required when staging cleanup is enabled",
+                        )?;
+                    staging_cleanup::record_source(&output, &input, &storage_root)?;
+                }
                 println!("publication=EXPLICIT_OPERATOR_ACTION_REQUIRED");
                 Ok(())
             })();

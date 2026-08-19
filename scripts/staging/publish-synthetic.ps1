@@ -121,7 +121,7 @@ if ($Local) {
 }
 else {
     $remoteHostRoot = "$RemoteDirectory/.staging/staging-publish"
-    $remoteContainerRoot = "/var/lib/launcher/staging-publish"
+    $remoteContainerRoot = "/var/lib/launcher/ephemeral/staging-publish"
     $remoteA = "$remoteHostRoot/A"
     $remoteB = "$remoteHostRoot/B"
 
@@ -139,8 +139,8 @@ else {
         "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteA' '$WorkerService`:$remoteContainerRoot/A'",
         "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml cp '$remoteB' '$WorkerService`:$remoteContainerRoot/B'",
         "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' chown -R launcher:launcher '$remoteContainerRoot'",
-        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/A' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage",
-        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/B' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/storage"
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/A' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/ephemeral",
+        "docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T '$WorkerService' gosu launcher /usr/local/bin/launcher-admin publish '$remoteContainerRoot/B' --catalog-root /var/lib/launcher/staging-catalog --storage-root /var/lib/launcher/ephemeral"
     )
     if (-not $KeepRemotePackages) {
         $remoteCommands += "rm -rf '$remoteHostRoot'"

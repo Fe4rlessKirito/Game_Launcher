@@ -76,6 +76,7 @@ services:
       LAUNCHER_STORAGE_COLD_BACKUP_REQUIRED: "true"
       LAUNCHER_STORAGE_RESTORE_MODE: ON_DEMAND
       LAUNCHER_COLD_STREAM_TOKEN: ${LAUNCHER_COLD_STREAM_TOKEN:?set LAUNCHER_COLD_STREAM_TOKEN in .env}
+      LAUNCHER_CLEANUP_STAGING_AFTER_PUBLISH: "true"
     command: ["storage", "worker", "--poll-seconds", "15", "--storage-root", "/var/lib/launcher/ephemeral"]
     depends_on:
       postgres:
@@ -86,6 +87,29 @@ services:
       - launcher-storage:/var/lib/launcher/storage
       - launcher-ephemeral-content:/var/lib/launcher/ephemeral
       - ../secrets/mantle-2026-08-14.private.pem:/run/secrets/mantle-signing-key.pem:ro
+
+  scraper:
+    build:
+      context: ..
+      dockerfile: deploy/scraper.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../secrets/scraper.env
+    environment:
+      SCRAPER_ENABLED: "true"
+      SCRAPER_STATE_DB: /var/lib/launcher/storage/scraper/scraper-state.db
+      SCRAPER_OUTPUT_DIR: /var/lib/launcher/ephemeral/scraper/artifacts
+      SCRAPER_STATUS_DIR: /var/lib/launcher/storage/work-status
+      SCRAPER_BROWSER: http
+      SCRAPER_ALLOW_LOCALHOST: "false"
+      SCRAPER_MAX_ARTIFACT_BYTES: "6442450944"
+    command: ["--store", "/var/lib/launcher/storage/scraper/scraper-state.db", "--output-root", "/var/lib/launcher/ephemeral/scraper/artifacts", "worker", "--poll-seconds", "15"]
+    depends_on:
+      api:
+        condition: service_started
+    volumes:
+      - launcher-storage:/var/lib/launcher/storage
+      - launcher-ephemeral-content:/var/lib/launcher/ephemeral
 
   telegram-bot-api:
     build:

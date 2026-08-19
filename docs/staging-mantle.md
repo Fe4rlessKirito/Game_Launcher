@@ -1,8 +1,8 @@
 # Mantle staging topology and validation
 
 Mantle is the active staging host for Vaultnode. The VPS runs the API,
-PostgreSQL, Rust worker, private Telegram Local Bot API, private Telegram file
-proxy, and Caddy through the repository's Docker Compose files. Only Caddy is
+PostgreSQL, Rust worker, release scraper, private Telegram Local Bot API,
+private Telegram file proxy, and Caddy through the repository's Docker Compose files. Only Caddy is
 public; PostgreSQL, the worker, and both Telegram services remain private.
 The checked-in `deploy/VpsCaddyfile` remains the HTTP fallback for local or
 IP-only staging. The active Mantle deployment now uses
@@ -43,11 +43,11 @@ The active override keeps FileMirage as HOT and Telegram as physical-pack
 COLD. `LAUNCHER_PACK_COLD_ONLY=true` means Telegram receives physical packs,
 not an additional logical-chunk copy. The Bot API service has no public port;
 the worker uses `http://telegram-bot-api-proxy:8081` over the Compose network.
-The active override deliberately does not run the release scraper. Its current
-contract leaves a validated game artifact plus `handoff.json` on the output
-filesystem, so running it on Mantle would turn the middleman into a game-file
-store. Run scraping on a separate operator workstation or ingest host, then
-send the normalized package through the provider publication workflow.
+The release scraper is enabled on Mantle for explicitly authorized sources.
+Its SQLite state and redacted work-status records stay on the persistent
+control-plane volume, while downloaded artifacts use the shared transient
+volume. The scraper still stops at a validated `handoff.json`; the operator
+then runs the normalizer/packager and `launcher-admin publish` workflow.
 
 `LAUNCHER_STORAGE_ROOT` points at the shared `launcher-ephemeral-content`
 RAM-backed volume for API/worker staging, pack construction, and restore
@@ -55,8 +55,12 @@ scratch. The persistent `launcher-storage` volume is reserved for provider
 indexes, Telegram/FileMirage state, work-status metadata, and other small
 control-plane records. The transient volume is bounded to 8 GiB and is lost
 when its tmpfs mount or the VPS is restarted; it is not a durable game
-library. Mantle is never the canonical game-byte store; the published
-physical packs live on FileMirage HOT and Telegram COLD.
+library. With `LAUNCHER_CLEANUP_STAGING_AFTER_PUBLISH=true`, the publish
+command removes the package, copied staging chunks, and recorded scraper
+artifact only after HOT/COLD publication succeeds. Failed publication keeps
+the staging files available for retry. Mantle is never the canonical
+game-byte store; the published physical packs live on FileMirage HOT and
+Telegram COLD.
 
 ## Operator checks
 

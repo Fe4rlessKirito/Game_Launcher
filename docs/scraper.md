@@ -151,7 +151,7 @@ The most important deployment variables are documented in
 | Variable | Purpose |
 | --- | --- |
 | `SCRAPER_ENABLED` | deployment-level feature switch; keep false until sources and operator authorization are configured |
-| `SCRAPER_STATE_DB` / `SCRAPER_OUTPUT_DIR` | persistent job state and validated artifact roots |
+| `SCRAPER_STATE_DB` / `SCRAPER_OUTPUT_DIR` | durable job state and validated artifact root; use transient staging for artifacts on Mantle |
 | `SCRAPER_BROWSER` | `http` or optional `playwright` |
 | `SCRAPER_MAX_PAGES`, `SCRAPER_MAX_ACTIONS`, `SCRAPER_MAX_GEMINI_CALLS` | planner budgets |
 | `SCRAPER_JOB_TIMEOUT_SECONDS` | total unknown-site planning budget |
