@@ -85,8 +85,8 @@
 
     <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
       <Border Grid.Column="0" Width="{DynamicResource SidebarWidth}" IsVisible="{Binding IsSidebarVisible}" Background="{DynamicResource SidebarBackground}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,1,0">
-        <ScrollViewer Margin="12,16,12,8" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
-          <StackPanel Spacing="9">
+        <Grid RowDefinitions="Auto,*">
+          <StackPanel Grid.Row="0" Spacing="9" Margin="12,16,12,0">
             <Grid ColumnDefinitions="*,34" ColumnSpacing="3">
               <Button Command="{Binding NavigateCommand}" CommandParameter="Home" Classes="NavButton Active HomeButton">
                 <TextBlock Text="Home" />
@@ -141,6 +141,8 @@
                 <Path Width="15" Height="15" Stretch="Uniform" Fill="{DynamicResource TextMuted}" Data="M2,5 H22 V7 H2 Z M5,11 H19 V13 H5 Z M8,17 H16 V19 H8 Z" />
               </Button>
             </Grid>
+          </StackPanel>
+          <ScrollViewer Grid.Row="1" Margin="12,9,12,8" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
             <StackPanel Spacing="9">
             <ItemsControl ItemsSource="{Binding VisibleSidebarCategories}">
               <ItemsControl.ItemTemplate>
@@ -212,8 +214,8 @@
               </Grid>
             </Border>
             </StackPanel>
-          </StackPanel>
-        </ScrollViewer>
+          </ScrollViewer>
+        </Grid>
       </Border>
 
       <Grid Grid.Column="1" RowDefinitions="Auto,*">
