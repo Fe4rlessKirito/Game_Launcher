@@ -89,9 +89,17 @@ public partial class MainWindow : Window
 
     private void OnGameContextMenuOpened(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        if (sender is not ContextMenu menu ||
-            DataContext is not ViewModels.ShellViewModel viewModel ||
-            menu.PlacementTarget?.DataContext is not ViewModels.SidebarGame game)
+        if (sender is not ContextMenu menu || DataContext is not ViewModels.ShellViewModel viewModel)
+        {
+            return;
+        }
+
+        var sidebarGame = menu.PlacementTarget?.DataContext as ViewModels.SidebarGame;
+        var tileGame = menu.PlacementTarget?.DataContext as ViewModels.GameTile;
+        var game = sidebarGame ?? (tileGame is null
+            ? null
+            : new ViewModels.SidebarGame(tileGame.Title, tileGame.Monogram, tileGame.Status, 0, tileGame.GameId, ArtworkSource: tileGame.ArtworkSource, IsSteamGame: tileGame.IsSteamGame));
+        if (game is null)
         {
             return;
         }
@@ -108,6 +116,22 @@ public partial class MainWindow : Window
         {
             menu.Items.Add(new Separator());
         }
+
+        var removeFromLibrary = new MenuItem { Header = "Remove from library" };
+        removeFromLibrary.Click += async (_, _) =>
+        {
+            if (tileGame is not null)
+            {
+                await viewModel.RemoveGameFromLibraryAsync(tileGame);
+            }
+            else
+            {
+                await viewModel.RemoveGameFromLibraryAsync(game);
+            }
+        };
+        menu.Items.Add(removeFromLibrary);
+
+        menu.Items.Add(new Separator());
 
         var createCategory = new MenuItem { Header = "+ New category..." };
         createCategory.Click += (_, _) => viewModel.BeginAddCategoryCommand.Execute(null);

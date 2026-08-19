@@ -21,6 +21,10 @@ public sealed class LocalStateStore(string databasePath)
             CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
             INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, $applied_at);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS library_exclusions (
+                game_id TEXT PRIMARY KEY,
+                excluded_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS installed_games (
                 game_id TEXT PRIMARY KEY,
                 build_id TEXT NOT NULL,
@@ -42,6 +46,45 @@ public sealed class LocalStateStore(string databasePath)
         command.Parameters.AddWithValue("$applied_at", DateTimeOffset.UtcNow.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await EnsureColumnAsync(connection, "download_jobs", "last_error", "TEXT", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlySet<string>> GetExcludedGameIdsAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT game_id FROM library_exclusions";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var gameId = reader.GetString(0);
+            if (!string.IsNullOrWhiteSpace(gameId)) result.Add(gameId);
+        }
+
+        return result;
+    }
+
+    public async Task SetGameExcludedAsync(string gameId, bool excluded, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId)) throw new ArgumentException("A game id is required.", nameof(gameId));
+
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        if (excluded)
+        {
+            command.CommandText = "INSERT INTO library_exclusions(game_id, excluded_at) VALUES($game_id, $excluded_at) ON CONFLICT(game_id) DO UPDATE SET excluded_at=excluded.excluded_at";
+            command.Parameters.AddWithValue("$game_id", gameId);
+            command.Parameters.AddWithValue("$excluded_at", DateTimeOffset.UtcNow.ToString("O"));
+        }
+        else
+        {
+            command.CommandText = "DELETE FROM library_exclusions WHERE game_id = $game_id";
+            command.Parameters.AddWithValue("$game_id", gameId);
+        }
+
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<InstalledGame>> GetInstalledGamesAsync(CancellationToken cancellationToken = default)

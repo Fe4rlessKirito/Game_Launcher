@@ -1,6 +1,7 @@
 using Launcher.App.ViewModels;
 using Launcher.App.Runtime;
 using Launcher.Core;
+using Microsoft.Data.Sqlite;
 
 namespace Launcher.App.Tests;
 
@@ -119,5 +120,55 @@ public class ViewModelTests
 
         Assert.Equal(2, library.Games.Count);
         Assert.Equal(4, shell.SidebarCategories[0].VisibleGames.Count);
+    }
+
+    [Fact]
+    public async Task FavoritesFollowSteamStateAndGamesCanBeRemovedFromLibrary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vaultnode-shell-test", Guid.NewGuid().ToString("N"));
+        using var client = new HttpClient(new EmptyCatalogHandler());
+        var runtime = new LauncherRuntime(
+            new LauncherSettings(ApiBaseUrl: "http://launcher/"),
+            root,
+            client,
+            steamDiscovery: () => new SteamLibrarySnapshot(
+                [],
+                [
+                    new SteamGameInstall("10", "Favorite Game", "Favorite Game", "C:\\Games\\Favorite Game", "C:\\Games", 10, IsFavorite: true),
+                    new SteamGameInstall("20", "Other Game", "Other Game", "C:\\Games\\Other Game", "C:\\Games", 20)
+                ],
+                null));
+        var shell = new ShellViewModel(runtime, seedDemoData: false);
+
+        try
+        {
+            await shell.InitializeRuntimeAsync(runtime);
+
+            var favorites = shell.SidebarCategories[0];
+            var library = Assert.IsType<LibraryViewModel>(shell.CurrentPage);
+            Assert.Equal(["Favorite Game"], favorites.Games.Select(game => game.Title));
+            Assert.Equal(["Favorite Game", "Other Game"], library.Games.Select(game => game.Title));
+
+            await shell.RemoveGameFromLibraryAsync(favorites.Games[0]);
+
+            Assert.Empty(favorites.Games);
+            Assert.Equal(["Other Game"], library.Games.Select(game => game.Title));
+            Assert.Contains("steam:10", runtime.Snapshot.ExcludedGameIds!);
+        }
+        finally
+        {
+            await runtime.DisposeAsync();
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private sealed class EmptyCatalogHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"items\":[],\"next_cursor\":null}")
+            });
     }
 }

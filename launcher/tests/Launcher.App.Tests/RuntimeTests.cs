@@ -55,6 +55,12 @@ public sealed class RuntimeTests
             Assert.Equal("build-a", game.BuildId);
             Assert.Equal(GameState.NotInstalled, game.State);
             Assert.Equal("Ready to install", game.StatusText);
+
+            var removed = await runtime.RemoveFromLibraryAsync("game-a");
+            Assert.Contains("game-a", removed.ExcludedGameIds!);
+
+            var refreshed = await runtime.RefreshAsync();
+            Assert.Contains("game-a", refreshed.ExcludedGameIds!);
         }
         finally
         {

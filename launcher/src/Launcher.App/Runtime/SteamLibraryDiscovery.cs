@@ -14,7 +14,8 @@ public sealed record SteamGameInstall(
     string LibraryRoot,
     long SizeBytes,
     string? ArtworkPath = null,
-    string? IconArtworkPath = null)
+    string? IconArtworkPath = null,
+    bool IsFavorite = false)
 {
     public string SizeDisplay => FormatBytes(SizeBytes);
 
@@ -46,6 +47,7 @@ public sealed record SteamLibrarySnapshot(
 public static class SteamLibraryDiscovery
 {
     private const int MaxVdfBytes = 8 * 1024 * 1024;
+    private const ulong SteamId64Base = 76561197960265728;
 
     public static SteamLibrarySnapshot Discover(string? steamRoot = null)
     {
@@ -80,6 +82,7 @@ public static class SteamLibraryDiscovery
             }
         }
 
+        var favoriteAppIds = ReadFavoriteAppIds(roots);
         var games = new List<SteamGameInstall>();
         foreach (var libraryRoot in libraryRoots)
         {
@@ -114,7 +117,8 @@ public static class SteamLibraryDiscovery
             .Select(game => game with
             {
                 ArtworkPath = FindArtworkPath(roots, game.AppId),
-                IconArtworkPath = FindIconArtworkPath(roots, game.AppId)
+                IconArtworkPath = FindIconArtworkPath(roots, game.AppId),
+                IsFavorite = favoriteAppIds.Contains(game.AppId)
             })
             .ToArray();
         return new SteamLibrarySnapshot(libraryRoots, distinctGames, null);
@@ -185,6 +189,276 @@ public static class SteamLibraryDiscovery
         {
             return [];
         }
+    }
+
+    private static HashSet<string> ReadFavoriteAppIds(IEnumerable<string> steamRoots)
+    {
+        var favoriteAppIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var steamRoot in steamRoots)
+        {
+            var userdataRoot = Path.Combine(steamRoot, "userdata");
+            string[] accountRoots;
+            try
+            {
+                if (!Directory.Exists(userdataRoot)) continue;
+                var allAccountRoots = Directory.EnumerateDirectories(userdataRoot).ToArray();
+                var activeAccountIds = ReadActiveSteamAccountIds(Path.Combine(steamRoot, "config", "loginusers.vdf"));
+                accountRoots = activeAccountIds is { Count: > 0 }
+                    ? allAccountRoots
+                        .Where(path => activeAccountIds.Contains(Path.GetFileName(path)))
+                        .ToArray()
+                    : allAccountRoots;
+            }
+            catch (IOException)
+            {
+                continue;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                continue;
+            }
+
+            foreach (var accountRoot in accountRoots)
+            {
+                var configPaths = new[]
+                {
+                    Path.Combine(accountRoot, "config", "localconfig.vdf"),
+                    Path.Combine(accountRoot, "config", "sharedconfig.vdf"),
+                    Path.Combine(accountRoot, "7", "remote", "sharedconfig.vdf"),
+                    Path.Combine(accountRoot, "7", "remote", "localconfig.vdf")
+                };
+
+                foreach (var configPath in configPaths.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!File.Exists(configPath)) continue;
+                    try
+                    {
+                        favoriteAppIds.UnionWith(ReadFavoriteAppIdsFromFile(configPath));
+                    }
+                    catch (IOException)
+                    {
+                        // Steam may be rewriting a config while it is being read.
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // A locked account config must not hide the installed library.
+                    }
+                    catch (InvalidDataException)
+                    {
+                        // A malformed config is optional metadata, not a discovery failure.
+                    }
+                }
+            }
+        }
+
+        return favoriteAppIds;
+    }
+
+    private static HashSet<string>? ReadActiveSteamAccountIds(string path)
+    {
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            var document = ParseVdf(ReadBoundedText(path));
+            var users = FindObjects(document, "users").FirstOrDefault();
+            if (users is null) return null;
+
+            var candidates = users.Values
+                .Where(entry => ulong.TryParse(entry.Key, out _)
+                    && entry.Value.Object is not null)
+                .Select(entry =>
+                {
+                    var user = entry.Value.Object!;
+                    var accountId = ToSteamAccountId(entry.Key);
+                    var autoLogin = user.Values.TryGetValue("AutoLogin", out var autoLoginValue)
+                        && string.Equals(autoLoginValue.Scalar, "1", StringComparison.Ordinal);
+                    var timestamp = user.Values.TryGetValue("Timestamp", out var timestampValue)
+                        && long.TryParse(timestampValue.Scalar, out var parsedTimestamp)
+                            ? parsedTimestamp
+                            : 0;
+                    return (accountId, autoLogin, timestamp);
+                })
+                .Where(candidate => candidate.accountId is not null)
+                .ToArray();
+            if (candidates.Length == 0) return null;
+
+            var active = candidates
+                .Where(candidate => candidate.autoLogin)
+                .Select(candidate => candidate.accountId!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (active.Count > 0) return active;
+
+            var mostRecent = candidates
+                .OrderByDescending(candidate => candidate.timestamp)
+                .First()
+                .accountId;
+            return mostRecent is null
+                ? null
+                : new HashSet<string>([mostRecent], StringComparer.OrdinalIgnoreCase);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+        catch (InvalidDataException)
+        {
+            return null;
+        }
+    }
+
+    private static string? ToSteamAccountId(string steamId64)
+    {
+        if (!ulong.TryParse(steamId64, out var parsed)) return null;
+        if (parsed >= SteamId64Base) return (parsed - SteamId64Base).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return parsed <= uint.MaxValue ? parsed.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+    }
+
+    private static HashSet<string> ReadFavoriteAppIdsFromFile(string path)
+    {
+        var document = ParseVdf(ReadBoundedText(path));
+        var favoriteAppIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var apps in FindObjects(document, "apps"))
+        {
+            foreach (var entry in apps.Values)
+            {
+                if (!long.TryParse(entry.Key, out _) || entry.Value.Object is not { } app) continue;
+                if (!app.Values.TryGetValue("tags", out var tagValue) || tagValue.Object is not { } tags) continue;
+                if (tags.Values.Values.Any(value => string.Equals(value.Scalar, "favorite", StringComparison.OrdinalIgnoreCase)))
+                {
+                    favoriteAppIds.Add(entry.Key);
+                }
+            }
+        }
+
+        return favoriteAppIds;
+    }
+
+    private static IEnumerable<VdfObject> FindObjects(VdfObject parent, string name)
+    {
+        foreach (var entry in parent.Values)
+        {
+            if (entry.Value.Object is not { } child) continue;
+            if (string.Equals(entry.Key, name, StringComparison.OrdinalIgnoreCase))
+            {
+                yield return child;
+            }
+
+            foreach (var nested in FindObjects(child, name))
+            {
+                yield return nested;
+            }
+        }
+    }
+
+    private static VdfObject ParseVdf(string text)
+    {
+        var tokens = TokenizeVdf(text);
+        var index = 0;
+        var root = new VdfObject();
+        ParseVdfObject(tokens, ref index, root, depth: 0);
+        return root;
+    }
+
+    private static void ParseVdfObject(IReadOnlyList<VdfToken> tokens, ref int index, VdfObject target, int depth)
+    {
+        if (depth > 64) throw new InvalidDataException("Steam metadata nesting is too deep.");
+
+        while (index < tokens.Count)
+        {
+            var key = tokens[index++];
+            if (key.IsCloseBrace) return;
+            if (key.IsOpenBrace) continue;
+            if (index >= tokens.Count) return;
+
+            var value = tokens[index++];
+            if (value.IsCloseBrace) return;
+            if (value.IsOpenBrace)
+            {
+                var child = new VdfObject();
+                ParseVdfObject(tokens, ref index, child, depth + 1);
+                target.Values[key.Value] = new VdfValue(null, child);
+            }
+            else
+            {
+                target.Values[key.Value] = new VdfValue(value.Value, null);
+            }
+        }
+    }
+
+    private static List<VdfToken> TokenizeVdf(string text)
+    {
+        var tokens = new List<VdfToken>();
+        var index = 0;
+        while (index < text.Length)
+        {
+            while (index < text.Length && char.IsWhiteSpace(text[index])) index++;
+            if (index >= text.Length) break;
+
+            if (text[index] == '/' && index + 1 < text.Length && text[index + 1] == '/')
+            {
+                index += 2;
+                while (index < text.Length && text[index] != '\n') index++;
+                continue;
+            }
+
+            if (text[index] == '{')
+            {
+                tokens.Add(new VdfToken("{", IsOpenBrace: true));
+                index++;
+                continue;
+            }
+
+            if (text[index] == '}')
+            {
+                tokens.Add(new VdfToken("}", IsCloseBrace: true));
+                index++;
+                continue;
+            }
+
+            if (text[index] == '"')
+            {
+                index++;
+                var value = new StringBuilder();
+                var closed = false;
+                while (index < text.Length)
+                {
+                    var character = text[index++];
+                    if (character == '"')
+                    {
+                        closed = true;
+                        break;
+                    }
+
+                    if (character == '\\' && index < text.Length)
+                    {
+                        value.Append(character);
+                        value.Append(text[index++]);
+                    }
+                    else
+                    {
+                        value.Append(character);
+                    }
+                }
+
+                if (!closed) throw new InvalidDataException("Steam metadata contains an unterminated string.");
+                tokens.Add(new VdfToken(UnescapeVdf(value.ToString())));
+                continue;
+            }
+
+            var start = index;
+            while (index < text.Length && !char.IsWhiteSpace(text[index]) && text[index] is not ('{' or '}')) index++;
+            if (index > start)
+            {
+                tokens.Add(new VdfToken(text[start..index]));
+            }
+        }
+
+        return tokens;
     }
 
     private static string? ReadVdfValue(string text, string key)
@@ -395,6 +669,15 @@ public static class SteamLibraryDiscovery
                 Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate)),
                 StringComparison.OrdinalIgnoreCase);
     }
+
+    private sealed class VdfObject
+    {
+        public Dictionary<string, VdfValue> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed record VdfValue(string? Scalar, VdfObject? Object);
+
+    private readonly record struct VdfToken(string Value, bool IsOpenBrace = false, bool IsCloseBrace = false);
 }
 
 public static class SteamLauncher

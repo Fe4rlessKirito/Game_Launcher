@@ -106,7 +106,7 @@
                     <Flyout Placement="BottomEdgeAlignedLeft">
                       <Border Width="210" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="3" Padding="4">
                         <StackPanel Spacing="1">
-                          <CheckBox Content="Games (4)" Classes="LibraryMenuItem" IsChecked="True" />
+                          <CheckBox Content="{Binding GamesFilterLabel}" Classes="LibraryMenuItem" IsChecked="True" />
                           <CheckBox Content="Software (0)" Classes="LibraryMenuItem" />
                           <CheckBox Content="Tools (0)" Classes="LibraryMenuItem" />
                           <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="4,4" />

@@ -14,7 +14,7 @@ namespace Launcher.App.ViewModels;
 public partial class ShellViewModel : ObservableObject
 {
     private LauncherRuntime? _runtime;
-    private IReadOnlyList<RuntimeGame> _runtimeGames = [];
+    private RuntimeGame[] _runtimeGames = [];
     private readonly HomeViewModel _homePage = new();
     private readonly LibraryViewModel _libraryPage = new();
     private readonly StoreViewModel _storePage = new();
@@ -23,6 +23,7 @@ public partial class ShellViewModel : ObservableObject
     private readonly SettingsViewModel _settingsPage = new();
     private readonly Stack<NavigationTarget> _backStack = new();
     private readonly Stack<NavigationTarget> _forwardStack = new();
+    private readonly HashSet<string> _excludedGameIds = new(StringComparer.OrdinalIgnoreCase);
     private NavigationTarget _currentTarget = new("Library", null, true);
 
     [ObservableProperty] private object _currentPage;
@@ -52,6 +53,7 @@ public partial class ShellViewModel : ObservableObject
     public SidebarCategory? SelectedCollection { get; private set; }
 
     public IReadOnlyList<SidebarGame> SidebarGames => SidebarCategories.SelectMany(category => category.Games).ToArray();
+    public string GamesFilterLabel => $"Games ({_runtimeGames.Length})";
     public string DownloadStatus { get; private set; } = "Downloads · All games up to date";
     public bool CanGoBack => _backStack.Count > 0;
     public bool CanGoForward => _forwardStack.Count > 0;
@@ -147,16 +149,35 @@ public partial class ShellViewModel : ObservableObject
         _downloadsPage.ApplyRuntimeJobs(snapshot.DownloadJobs, snapshot.Games);
         _storePage.ApplyRuntimeGames(snapshot.Games);
         UpdateDownloadStatus(snapshot.DownloadJobs);
-        if (snapshot.Games.Count == 0) return;
 
-        _runtimeGames = snapshot.Games;
-        _libraryPage.ApplyRuntimeGames(snapshot.Games);
+        _excludedGameIds.Clear();
+        if (snapshot.ExcludedGameIds is not null)
+        {
+            _excludedGameIds.UnionWith(snapshot.ExcludedGameIds);
+        }
+
+        var visibleGames = snapshot.Games
+            .Where(game => !_excludedGameIds.Contains(game.Id))
+            .ToArray();
+        _runtimeGames = visibleGames;
+        _libraryPage.ApplyRuntimeGames(visibleGames);
+        OnPropertyChanged(nameof(GamesFilterLabel));
+
+        foreach (var category in SidebarCategories.Where(category => category.IsUserCreated))
+        {
+            foreach (var game in category.Games.Where(game => _excludedGameIds.Contains(game.OpenKey)).ToArray())
+            {
+                category.Games.Remove(game);
+            }
+
+            category.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+        }
 
         var favorites = SidebarCategories.FirstOrDefault(category => !category.IsUserCreated);
         if (favorites is not null)
         {
             favorites.Games.Clear();
-            foreach (var game in snapshot.Games)
+            foreach (var game in visibleGames.Where(game => game.IsSteamGame && game.SteamInstall?.IsFavorite == true))
             {
                 favorites.Games.Add(new SidebarGame(game.Title, game.Monogram, game.StatusText, RecentActivityOrder(game), game.Id, game.BuildId, game.IconArtworkSource ?? game.ArtworkSource, game.IsSteamGame));
             }
@@ -433,17 +454,106 @@ public partial class ShellViewModel : ObservableObject
         favorites.Games.Add(new SidebarGame(name, BuildMonogram(name), "Not installed"));
         favorites.ApplyFilter(SearchQuery);
         OnPropertyChanged(nameof(SidebarGames));
+        OnPropertyChanged(nameof(GamesFilterLabel));
         CancelAddGame();
     }
 
     public void AddGameToCategory(SidebarGame game, SidebarCategory category)
     {
-        if (category.IsUserCreated && !category.Games.Contains(game))
+        if (category.IsUserCreated
+            && !category.Games.Any(existing => string.Equals(existing.OpenKey, game.OpenKey, StringComparison.OrdinalIgnoreCase)))
         {
             category.Games.Add(game);
             category.ApplyFilter(SearchQuery);
             category.IsExpanded = true;
         }
+    }
+
+    public Task RemoveGameFromLibraryAsync(SidebarGame game) =>
+        RemoveGameFromLibraryAsync(game?.OpenKey, game?.Title);
+
+    public Task RemoveGameFromLibraryAsync(GameTile game) =>
+        RemoveGameFromLibraryAsync(game?.OpenKey, game?.Title);
+
+    private async Task RemoveGameFromLibraryAsync(string? gameId, string? gameTitle)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            return;
+        }
+
+        var wasExcluded = _excludedGameIds.Contains(gameId);
+        var removedSidebarGames = SidebarCategories
+            .Select(category => new
+            {
+                Category = category,
+                Games = category.Games
+                    .Where(candidate => string.Equals(candidate.OpenKey, gameId, StringComparison.OrdinalIgnoreCase))
+                    .ToArray()
+            })
+            .Where(entry => entry.Games.Length > 0)
+            .ToArray();
+        _excludedGameIds.Add(gameId);
+        RemoveGameFromLocalProjection(gameId);
+
+        if (_runtime is null || wasExcluded)
+        {
+            return;
+        }
+
+        try
+        {
+            await _runtime.RemoveFromLibraryAsync(gameId).ConfigureAwait(true);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            _excludedGameIds.Remove(gameId);
+            foreach (var entry in removedSidebarGames)
+            {
+                foreach (var removedGame in entry.Games)
+                {
+                    if (!entry.Category.Games.Any(existing => string.Equals(existing.OpenKey, removedGame.OpenKey, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        entry.Category.Games.Add(removedGame);
+                    }
+                }
+
+                entry.Category.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+            }
+
+            if (_runtime is not null)
+            {
+                _runtimeGames = _runtime.Snapshot.Games
+                    .Where(runtimeGame => !_excludedGameIds.Contains(runtimeGame.Id))
+                    .ToArray();
+            }
+            _libraryPage.ApplyRuntimeGames(_runtimeGames);
+            _libraryPage.ApplySearch(SearchQuery);
+            OnPropertyChanged(nameof(SidebarGames));
+            OnPropertyChanged(nameof(GamesFilterLabel));
+            RuntimeError = $"Could not remove {gameTitle ?? gameId} from the library: {error.Message}";
+        }
+    }
+
+    private void RemoveGameFromLocalProjection(string gameId)
+    {
+        foreach (var category in SidebarCategories)
+        {
+            foreach (var game in category.Games.Where(candidate => string.Equals(candidate.OpenKey, gameId, StringComparison.OrdinalIgnoreCase)).ToArray())
+            {
+                category.Games.Remove(game);
+            }
+
+            category.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+        }
+
+        _runtimeGames = _runtimeGames
+            .Where(runtimeGame => !string.Equals(runtimeGame.Id, gameId, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        _libraryPage.ApplyRuntimeGames(_runtimeGames);
+        _libraryPage.ApplySearch(SearchQuery);
+        OnPropertyChanged(nameof(SidebarGames));
+        OnPropertyChanged(nameof(GamesFilterLabel));
     }
 
     private void ApplyTarget(NavigationTarget target)

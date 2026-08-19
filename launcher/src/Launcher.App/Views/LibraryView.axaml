@@ -49,6 +49,9 @@
       <ItemsControl.ItemTemplate>
         <DataTemplate>
           <Border Margin="0,0,18,10" Background="{DynamicResource SurfacePrimary}" CornerRadius="12" Padding="18" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+            <Border.ContextMenu>
+              <ContextMenu Opened="OnGameContextMenuOpened" />
+            </Border.ContextMenu>
             <Grid RowDefinitions="Auto,*,Auto">
               <Border Width="54" Height="54" CornerRadius="12" Background="Transparent" ClipToBounds="True">
                 <Grid>

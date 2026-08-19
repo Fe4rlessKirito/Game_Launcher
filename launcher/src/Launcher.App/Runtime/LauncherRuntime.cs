@@ -68,7 +68,8 @@ public sealed record LauncherRuntimeSnapshot(
     string ConnectionStatus,
     string? Error,
     LauncherUserProfile? User,
-    SteamLibrarySnapshot? Steam = null);
+    SteamLibrarySnapshot? Steam = null,
+    IReadOnlySet<string>? ExcludedGameIds = null);
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
@@ -265,6 +266,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
         var installed = await _stateStore.GetInstalledGamesAsync(cancellationToken).ConfigureAwait(false);
         var jobs = await _stateStore.GetDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
+        var excludedGameIds = await _stateStore.GetExcludedGameIdsAsync(cancellationToken).ConfigureAwait(false);
         var online = false;
         string? error = null;
         try
@@ -298,7 +300,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
             }
         }
 
-        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam);
+        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds);
         SnapshotChanged?.Invoke(_snapshot);
         return _snapshot;
     }
@@ -309,6 +311,27 @@ public sealed class LauncherRuntime : IAsyncDisposable
         return _snapshot.Games.FirstOrDefault(game =>
             string.Equals(game.Id, idOrTitle, StringComparison.OrdinalIgnoreCase)
             || string.Equals(game.Title, idOrTitle, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public async Task<LauncherRuntimeSnapshot> RemoveFromLibraryAsync(
+        string gameId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(gameId))
+        {
+            throw new ArgumentException("A game id is required.", nameof(gameId));
+        }
+
+        if (!_initialized)
+        {
+            await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await _stateStore.SetGameExcludedAsync(gameId, excluded: true, cancellationToken).ConfigureAwait(false);
+        var excludedGameIds = await _stateStore.GetExcludedGameIdsAsync(cancellationToken).ConfigureAwait(false);
+        _snapshot = _snapshot with { ExcludedGameIds = excludedGameIds };
+        SnapshotChanged?.Invoke(_snapshot);
+        return _snapshot;
     }
 
     public void PauseActiveDownload()
