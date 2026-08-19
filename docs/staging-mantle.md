@@ -1,9 +1,8 @@
 # Mantle staging topology and validation
 
 Mantle is the active staging host for Vaultnode. The VPS runs the API,
-PostgreSQL, Rust worker, optional release scraper, private Telegram Local Bot
-API, private Telegram file proxy, and Caddy through the repository's Docker
-Compose files. Only Caddy is
+PostgreSQL, Rust worker, private Telegram Local Bot API, private Telegram file
+proxy, and Caddy through the repository's Docker Compose files. Only Caddy is
 public; PostgreSQL, the worker, and both Telegram services remain private.
 The checked-in `deploy/VpsCaddyfile` remains the HTTP fallback for local or
 IP-only staging. The active Mantle deployment now uses
@@ -44,22 +43,20 @@ The active override keeps FileMirage as HOT and Telegram as physical-pack
 COLD. `LAUNCHER_PACK_COLD_ONLY=true` means Telegram receives physical packs,
 not an additional logical-chunk copy. The Bot API service has no public port;
 the worker uses `http://telegram-bot-api-proxy:8081` over the Compose network.
-The optional scraper uses the same `launcher-storage` volume for its durable
-SQLite state, validated artifacts, and advisory work-status records. Its
-`SCRAPER_STATUS_DIR` must match the API/worker
-`LAUNCHER_WORK_STATUS_DIR`; only the public, redacted work record is exposed
-through `/api/v1/public/status`.
+The active override deliberately does not run the release scraper. Its current
+contract leaves a validated game artifact plus `handoff.json` on the output
+filesystem, so running it on Mantle would turn the middleman into a game-file
+store. Run scraping on a separate operator workstation or ingest host, then
+send the normalized package through the provider publication workflow.
 
-After the scraper service is running, register only operator-authorized
-sources. For example, this adds the official OpenTTD release page without
-enabling localhost access:
-
-```text
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/vps.compose.override.yaml exec -T scraper \
-  launcher-scraper --store /var/lib/launcher/storage/scraper/scraper-state.db \
-  source-add openttd-official https://www.openttd.org/downloads/openttd-releases/latest \
-  --platform windows --no-gemini
-```
+`LAUNCHER_STORAGE_ROOT` points at the shared `launcher-ephemeral-content`
+RAM-backed volume for API/worker staging, pack construction, and restore
+scratch. The persistent `launcher-storage` volume is reserved for provider
+indexes, Telegram/FileMirage state, work-status metadata, and other small
+control-plane records. The transient volume is bounded to 8 GiB and is lost
+when its tmpfs mount or the VPS is restarted; it is not a durable game
+library. Mantle is never the canonical game-byte store; the published
+physical packs live on FileMirage HOT and Telegram COLD.
 
 ## Operator checks
 

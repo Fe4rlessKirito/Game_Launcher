@@ -22,8 +22,10 @@ The override starts:
 
 The source build belongs on the VPS because it is a substantial C++ build. The
 Bot API state volume at `/var/lib/telegram-bot-api` is only for Telegram's
-state and local file handling; launcher chunks and packs use the separate
-`launcher-storage` volume and bounded `/tmp/launcher-cold` space.
+state and local file handling. Launcher staging, chunks, packs, and restore
+scratch use the shared RAM-backed `launcher-ephemeral-content` volume; the
+persistent `launcher-storage` volume holds only control-plane metadata and
+provider indexes.
 
 Create these files on the VPS with mode `600`; never commit or paste them:
 

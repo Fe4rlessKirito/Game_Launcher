@@ -3,6 +3,10 @@ services:
     env_file:
       - ../secrets/telegram.env
     environment:
+      # Mantle keeps provider indexes and work-status metadata on disk, but
+      # all launcher content/staging bytes live in the shared RAM-backed
+      # volume below and are never written to the VPS disk.
+      LAUNCHER_STORAGE_ROOT: /var/lib/launcher/ephemeral
       LAUNCHER_STORAGE_PROVIDERS: filemirage,telegram
       LAUNCHER_WORK_STATUS_DIR: /var/lib/launcher/storage/work-status
       LAUNCHER_WORK_STATUS_STALE_SECONDS: "900"
@@ -32,6 +36,9 @@ services:
     depends_on:
       telegram-bot-api-proxy:
         condition: service_started
+    volumes:
+      - launcher-storage:/var/lib/launcher/storage
+      - launcher-ephemeral-content:/var/lib/launcher/ephemeral
 
   worker:
     env_file:
@@ -42,7 +49,7 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      LAUNCHER_STORAGE_ROOT: /var/lib/launcher/storage
+      LAUNCHER_STORAGE_ROOT: /var/lib/launcher/ephemeral
       LAUNCHER_WORK_STATUS_DIR: /var/lib/launcher/storage/work-status
       LAUNCHER_WORK_STATUS_STALE_SECONDS: "900"
       LAUNCHER_STORAGE_PROVIDERS: filemirage,telegram
@@ -69,7 +76,7 @@ services:
       LAUNCHER_STORAGE_COLD_BACKUP_REQUIRED: "true"
       LAUNCHER_STORAGE_RESTORE_MODE: ON_DEMAND
       LAUNCHER_COLD_STREAM_TOKEN: ${LAUNCHER_COLD_STREAM_TOKEN:?set LAUNCHER_COLD_STREAM_TOKEN in .env}
-    command: ["storage", "worker", "--poll-seconds", "15", "--storage-root", "/var/lib/launcher/storage"]
+    command: ["storage", "worker", "--poll-seconds", "15", "--storage-root", "/var/lib/launcher/ephemeral"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -77,28 +84,8 @@ services:
         condition: service_started
     volumes:
       - launcher-storage:/var/lib/launcher/storage
+      - launcher-ephemeral-content:/var/lib/launcher/ephemeral
       - ../secrets/mantle-2026-08-14.private.pem:/run/secrets/mantle-signing-key.pem:ro
-
-  scraper:
-    build:
-      context: ..
-      dockerfile: deploy/scraper.Dockerfile
-    restart: unless-stopped
-    env_file:
-      - ../secrets/scraper.env
-    environment:
-      SCRAPER_ENABLED: "true"
-      SCRAPER_STATE_DB: /var/lib/launcher/storage/scraper/scraper-state.db
-      SCRAPER_OUTPUT_DIR: /var/lib/launcher/storage/scraper/artifacts
-      SCRAPER_STATUS_DIR: /var/lib/launcher/storage/work-status
-      SCRAPER_BROWSER: http
-      SCRAPER_ALLOW_LOCALHOST: "false"
-    command: ["--store", "/var/lib/launcher/storage/scraper/scraper-state.db", "--output-root", "/var/lib/launcher/storage/scraper/artifacts", "worker", "--poll-seconds", "15"]
-    depends_on:
-      api:
-        condition: service_started
-    volumes:
-      - launcher-storage:/var/lib/launcher/storage
 
   telegram-bot-api:
     build:
@@ -137,4 +124,13 @@ services:
       - ../website/dist:/srv/vaultnode-website:ro
 
 volumes:
+  # Shared only between API/worker; this is a RAM-backed staging area, not a
+  # durable game library. Provider data lives outside Mantle on FileMirage
+  # and Telegram.
+  launcher-ephemeral-content:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=8g,mode=1777
   telegram-bot-api-data:
