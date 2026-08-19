@@ -32,7 +32,7 @@ public partial class MainWindow : Window
 
     private void OnTitleBarPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (e.Source is Button || e.Handled)
+        if (IsInsideButton(e.Source) || e.Handled)
         {
             return;
         }
@@ -54,6 +54,19 @@ public partial class MainWindow : Window
             BeginMoveDrag(e);
             TryMaximizeAtTopEdge();
         }
+    }
+
+    private static bool IsInsideButton(object? source)
+    {
+        for (var control = source as Control; control is not null; control = control.Parent as Control)
+        {
+            if (control is Button)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void OnMinimizeClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => WindowState = WindowState.Minimized;
