@@ -134,6 +134,7 @@ pub struct StoragePackMetric {
     pub provider: String,
     pub storage_class: StorageClass,
     pub verified_locations: i64,
+    pub used_bytes: i64,
     pub renewal_due: i64,
 }
 
@@ -1741,13 +1742,15 @@ impl Database {
         let rows = sqlx::query(
             "SELECT provider, storage_class,
                     COUNT(*)::BIGINT AS verified_locations,
+                    COALESCE(SUM(pp.encoded_size), 0)::BIGINT AS used_bytes,
                     COUNT(*) FILTER (
                         WHERE storage_class='HOT'
                           AND last_uploaded_at <= $1
                           AND renewal_attempt_after <= now()
                     )::BIGINT AS renewal_due
              FROM pack_locations
-             WHERE verified_at IS NOT NULL
+             JOIN physical_packs pp ON pp.pack_hash=pack_locations.pack_hash
+             WHERE pack_locations.verified_at IS NOT NULL
              GROUP BY provider, storage_class
              ORDER BY provider, storage_class",
         )
@@ -1762,6 +1765,7 @@ impl Database {
                         |error: StorageError| DatabaseError::Manifest(error.to_string()),
                     )?,
                     verified_locations: row.try_get("verified_locations")?,
+                    used_bytes: row.try_get("used_bytes")?,
                     renewal_due: row.try_get("renewal_due")?,
                 })
             })

@@ -28,7 +28,7 @@ use launcher_storage::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     env, fs,
     net::SocketAddr,
     path::PathBuf,
@@ -1185,10 +1185,10 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
             }
         };
         if database_ready {
+            let mut usage_probe_ok = true;
+            let mut usage_by_provider = HashMap::<String, PublicProviderUsageResponse>::new();
             match database.list_storage_accounts(None).await {
                 Ok(accounts) => {
-                    let mut usage_by_provider =
-                        HashMap::<String, PublicProviderUsageResponse>::new();
                     for account in accounts {
                         let snapshot = account.snapshot;
                         let entry = usage_by_provider
@@ -1204,14 +1204,59 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
                             entry.last_capacity_check = snapshot.last_capacity_check;
                         }
                     }
-                    usage = usage_by_provider.into_values().collect();
-                    usage.sort_by(|left, right| left.provider.cmp(&right.provider));
-                    total_used_bytes = usage.iter().map(|provider| provider.used_bytes).sum();
                 }
                 Err(error) => {
                     stale = true;
+                    usage_probe_ok = false;
                     warn!(%error, "public telemetry storage usage probe failed");
                 }
+            }
+            let renewal_days = env::var("LAUNCHER_HOT_RENEWAL_DAYS")
+                .ok()
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(18)
+                .clamp(1, 30);
+            let mut pack_usage_providers = HashSet::new();
+            match database
+                .storage_pack_metrics(Utc::now() - chrono::Duration::days(renewal_days))
+                .await
+            {
+                Ok(metrics) => {
+                    for metric in metrics {
+                        let used_bytes = u64::try_from(metric.used_bytes).unwrap_or_default();
+                        let provider_id = metric.provider.clone();
+                        let entry =
+                            usage_by_provider
+                                .entry(provider_id.clone())
+                                .or_insert_with(|| PublicProviderUsageResponse {
+                                    provider: provider_id.clone(),
+                                    tier: metric.storage_class,
+                                    used_bytes: 0,
+                                    last_capacity_check: None,
+                                });
+                        // Physical-pack locations are the authoritative byte
+                        // count for the providers used by Mantle. If a
+                        // provider also has a capacity-account row, replace
+                        // that broader account total with Vaultnode's tracked
+                        // pack total instead of double-counting it.
+                        if pack_usage_providers.insert(provider_id) {
+                            entry.tier = metric.storage_class;
+                            entry.used_bytes = used_bytes;
+                        } else {
+                            entry.used_bytes = entry.used_bytes.saturating_add(used_bytes);
+                        }
+                    }
+                }
+                Err(error) => {
+                    stale = true;
+                    usage_probe_ok = false;
+                    warn!(%error, "public telemetry physical-pack usage probe failed");
+                }
+            }
+            if usage_probe_ok {
+                usage = usage_by_provider.into_values().collect();
+                usage.sort_by(|left, right| left.provider.cmp(&right.provider));
+                total_used_bytes = usage.iter().map(|provider| provider.used_bytes).sum();
             }
             match database
                 .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
@@ -1376,6 +1421,10 @@ async fn storage_metrics(
         body.push_str(&format!(
             "launcher_storage_pack_locations{{provider=\"{provider}\",storage_class=\"{storage_class}\"}} {}\n",
             metric.verified_locations
+        ));
+        body.push_str(&format!(
+            "launcher_storage_pack_bytes{{provider=\"{provider}\",storage_class=\"{storage_class}\"}} {}\n",
+            metric.used_bytes
         ));
         if metric.storage_class == StorageTier::Hot {
             body.push_str(&format!(
