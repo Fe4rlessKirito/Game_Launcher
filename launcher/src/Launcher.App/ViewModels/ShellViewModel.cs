@@ -565,9 +565,9 @@ public sealed record SidebarGame(
 {
     public string OpenKey => GameId ?? Title;
     public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
-    public Bitmap? ArtworkImage => ArtworkLoader.Load(ArtworkSource);
+    public Bitmap? ArtworkImage => ArtworkLoader.LoadSidebarIcon(ArtworkSource);
     public bool HasArtworkImage => ArtworkImage is not null;
-    public bool ShowMonogram => !HasArtwork;
+    public bool ShowMonogram => !HasArtworkImage;
     public bool ShowSteamBadge => IsSteamGame;
 
     private static readonly IBrush InstalledBrush = new SolidColorBrush(Color.Parse("#D6D7D8"));

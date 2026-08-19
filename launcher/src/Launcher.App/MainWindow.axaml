@@ -164,8 +164,7 @@
                             <Grid ColumnDefinitions="40,*" MinHeight="38">
                               <Border Width="34" Height="34" CornerRadius="3" Background="Transparent" VerticalAlignment="Center" ClipToBounds="True">
                                 <Grid>
-                                  <Image Source="{Binding ArtworkSource}" IsVisible="{Binding HasArtwork}" Stretch="UniformToFill" />
-                                  <Image Source="{Binding ArtworkImage}" IsVisible="{Binding HasArtworkImage}" Stretch="UniformToFill" />
+                                  <Image Source="{Binding ArtworkImage}" IsVisible="{Binding HasArtworkImage}" Stretch="Uniform" />
                                   <Border Width="30" Height="30" CornerRadius="15" Background="{DynamicResource ArtworkPrimary}" Opacity="0.55" HorizontalAlignment="Right" Margin="0,-8,-8,0" IsVisible="{Binding ShowMonogram}" />
                                   <TextBlock Text="{Binding Monogram}" IsVisible="{Binding ShowMonogram}" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource TextPrimary}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                 </Grid>
