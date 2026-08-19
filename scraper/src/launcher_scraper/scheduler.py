@@ -103,9 +103,55 @@ class IngestionScheduler:
                     game=release.product_name if release else None,
                     version=release.version if release else None,
                     detail="Downloading and validating the release",
+                    bytes_completed=0,
+                    bytes_total=release.reported_size if release else None,
                 )
+                last_progress_at = 0.0
+                last_progress_bytes = -1
+
+                def publish_download_progress(bytes_completed: int, bytes_total: int | None) -> None:
+                    nonlocal last_progress_at, last_progress_bytes
+                    now = time.monotonic()
+                    is_final = bytes_total is not None and bytes_completed >= bytes_total
+                    if (
+                        not is_final
+                        and now - last_progress_at < 0.75
+                        and bytes_completed - last_progress_bytes < 4 * 1024 * 1024
+                    ):
+                        return
+                    progress_percent = (
+                        None
+                        if bytes_total is None or bytes_total <= 0
+                        else (bytes_completed / bytes_total) * 100
+                    )
+                    elapsed = now - last_progress_at
+                    rate = (
+                        None
+                        if last_progress_bytes < 0 or elapsed <= 0
+                        else int(max(0, (bytes_completed - last_progress_bytes) / elapsed))
+                    )
+                    self._publish(
+                        job,
+                        kind="SCRAPER",
+                        state="DOWNLOADING",
+                        source=source,
+                        game=release.product_name if release else None,
+                        version=release.version if release else None,
+                        detail="Downloading and validating the release",
+                        progress_percent=progress_percent,
+                        bytes_completed=bytes_completed,
+                        bytes_total=bytes_total,
+                        rate_bytes_per_second=rate,
+                    )
+                    last_progress_at = now
+                    last_progress_bytes = bytes_completed
+
                 outcome = self.service.acquire(
-                    source, self._output_root(), discovery, target_release_id=job.target_release_id
+                    source,
+                    self._output_root(),
+                    discovery,
+                    target_release_id=job.target_release_id,
+                    progress=publish_download_progress,
                 )
             else:
                 outcome = discovery
@@ -170,6 +216,10 @@ class IngestionScheduler:
         version: str | None = None,
         provider: str | None = None,
         detail: str,
+        progress_percent: float | None = None,
+        bytes_completed: int | None = None,
+        bytes_total: int | None = None,
+        rate_bytes_per_second: int | None = None,
     ) -> None:
         if self.status is None:
             return
@@ -184,7 +234,12 @@ class IngestionScheduler:
                 game=game,
                 version=version,
                 provider=provider,
+                source=source.name if source is not None else None,
                 detail=detail,
+                progress_percent=progress_percent,
+                bytes_completed=bytes_completed,
+                bytes_total=bytes_total,
+                rate_bytes_per_second=rate_bytes_per_second,
             )
         except (OSError, ValueError):
             logger.exception("could not publish scraper work status", extra={"job_id": job.id})

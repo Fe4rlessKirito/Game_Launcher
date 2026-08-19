@@ -30,8 +30,12 @@ class WorkStatusPublisher:
         game: str | None = None,
         version: str | None = None,
         provider: str | None = None,
+        source: str | None = None,
         detail: str = "",
         progress_percent: float | None = None,
+        bytes_completed: int | None = None,
+        bytes_total: int | None = None,
+        rate_bytes_per_second: int | None = None,
     ) -> None:
         self._validate_id(status_id)
         now = iso_now()
@@ -45,9 +49,15 @@ class WorkStatusPublisher:
                 "game": game,
                 "version": version,
                 "provider": provider,
+                "source": source,
                 "detail": detail[:300],
                 "progress_percent": (
                     None if progress_percent is None else max(0.0, min(100.0, float(progress_percent)))
+                ),
+                "bytes_completed": None if bytes_completed is None else max(0, int(bytes_completed)),
+                "bytes_total": None if bytes_total is None else max(0, int(bytes_total)),
+                "rate_bytes_per_second": (
+                    None if rate_bytes_per_second is None else max(0, int(rate_bytes_per_second))
                 ),
                 "created_at": created_at,
                 "updated_at": now,

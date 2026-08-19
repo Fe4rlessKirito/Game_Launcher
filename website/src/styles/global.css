@@ -134,7 +134,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .active-operation-progress { margin-top: 17px; }
 .progress-track { height: 5px; overflow: hidden; border-radius: 999px; background: #1c2a39; }
 .progress-track span { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--ops-blue); transition: width .25s ease; }
+.progress-track span.progress-indeterminate { width: 32%; background: linear-gradient(90deg, transparent, var(--ops-blue), transparent); animation: progress-scan 1.4s ease-in-out infinite; }
 .active-operation-progress small { display: block; margin-top: 6px; color: #7890a7; font-size: 9px; }
+@keyframes progress-scan { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
 .job-scraper { background: #25334b; color: #8fb8ff; }
 .job-reupload { background: #382746; color: #d7a1ff; }
 @media (max-width: 1050px) { .provider-detail-grid, .visibility-grid, .resource-grid { grid-template-columns: 1fr; }.provider-detail-card { grid-template-columns: 1fr 1fr; align-items: start; }.provider-detail-card .provider-capability { grid-column: span 2; } }

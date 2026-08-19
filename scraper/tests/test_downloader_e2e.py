@@ -34,11 +34,20 @@ def test_downloader_follows_checked_redirect_and_resumes(fixture_server, tmp_pat
     part = tmp_path / "out" / ".artifact.zip.part"
     part.parent.mkdir()
     part.write_bytes(body[:8])
+    progress: list[tuple[int, int | None]] = []
 
-    result = downloader.download(candidate, part.parent, retry_policy=None, minimum_request_interval_seconds=0)
+    result = downloader.download(
+        candidate,
+        part.parent,
+        retry_policy=None,
+        minimum_request_interval_seconds=0,
+        progress=lambda completed, total: progress.append((completed, total)),
+    )
     assert result.final_url == fixture_server.url("/artifact.zip")
     assert result.redirect_chain == (fixture_server.url("/artifact.zip"),)
     assert open(result.path, "rb").read() == body
+    assert progress
+    assert progress[-1] == (len(body), len(body))
 
 
 def test_local_fixture_end_to_end_writes_handoff_without_gemini(fixture_server, tmp_path) -> None:

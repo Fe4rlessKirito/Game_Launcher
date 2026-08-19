@@ -17,12 +17,20 @@ def test_status_publisher_writes_and_clears_active_record(tmp_path) -> None:
         state="DOWNLOADING",
         game="OpenTTD",
         version="15.3",
+        source="openttd-official",
         detail="Downloading release",
         progress_percent=42,
+        bytes_completed=100 * 1024 * 1024,
+        bytes_total=1024 * 1024 * 1024,
+        rate_bytes_per_second=8 * 1024 * 1024,
     )
     record = json.loads((tmp_path / "job-1.json").read_text(encoding="utf-8"))
     assert record["game"] == "OpenTTD"
+    assert record["source"] == "openttd-official"
     assert record["progress_percent"] == 42.0
+    assert record["bytes_completed"] == 100 * 1024 * 1024
+    assert record["bytes_total"] == 1024 * 1024 * 1024
+    assert record["rate_bytes_per_second"] == 8 * 1024 * 1024
     datetime.fromisoformat(record["created_at"])
     created_at = record["created_at"]
 

@@ -18,8 +18,16 @@ pub struct WorkStatus {
     pub game: Option<String>,
     pub version: Option<String>,
     pub provider: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
     pub detail: String,
     pub progress_percent: Option<f32>,
+    #[serde(default)]
+    pub bytes_completed: Option<u64>,
+    #[serde(default)]
+    pub bytes_total: Option<u64>,
+    #[serde(default)]
+    pub rate_bytes_per_second: Option<u64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -45,8 +53,12 @@ impl WorkStatus {
             game,
             version,
             provider,
+            source: None,
             detail: detail.into(),
             progress_percent,
+            bytes_completed: None,
+            bytes_total: None,
+            rate_bytes_per_second: None,
             created_at: now,
             updated_at: now,
         }

@@ -9,7 +9,15 @@ from typing import Any
 
 from .adapters import AdapterError, AdapterRegistry, LayoutChanged, SourceAdapter
 from .browser import BrowserError, BrowserExecutor, HttpBrowserExecutor, HttpPageFetcher
-from .downloader import DownloadError, DownloadResult, HttpDownloader, ScratchBudget, _checksum_matches, _hash_file
+from .downloader import (
+    DownloadError,
+    DownloadProgressCallback,
+    DownloadResult,
+    HttpDownloader,
+    ScratchBudget,
+    _checksum_matches,
+    _hash_file,
+)
 from .interpreter import GeminiPageInterpreter, PageInterpreter, PageInterpreterError
 from .models import (
     DownloadCandidate,
@@ -177,6 +185,7 @@ class ScraperService:
         *,
         target_release_id: str | None = None,
         browser_session: Any | None = None,
+        progress: DownloadProgressCallback | None = None,
     ) -> ScrapeOutcome:
         """Download and validate a discovery result.
 
@@ -231,6 +240,7 @@ class ScraperService:
                         minimum_request_interval_seconds=source.minimum_request_interval_seconds,
                         max_concurrent_requests=source.max_concurrent_requests,
                         extra_headers=extra_headers,
+                        progress=progress,
                     )
                 validation = self.validator.validate(result.path, candidate, download=result)
             except BrowserError as error:

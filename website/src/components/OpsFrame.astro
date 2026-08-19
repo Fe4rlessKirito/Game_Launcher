@@ -41,7 +41,7 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
     type ProviderHealth = { provider: string; healthy: boolean; tier: string };
     type ProviderUsage = { provider: string; tier: string; used_bytes: number; last_capacity_check?: string };
     type SystemMetrics = { cpu_usage_percent?: number; cpu_core_usage_percent?: number[]; memory_used_bytes?: number; memory_total_bytes?: number; disk_used_bytes?: number; disk_total_bytes?: number; measured_at?: string };
-    type PublicWorkStatus = { id: string; kind: string; state: string; game?: string | null; version?: string | null; provider?: string | null; detail?: string; progress_percent?: number | null; updated_at?: string };
+    type PublicWorkStatus = { id: string; kind: string; state: string; game?: string | null; version?: string | null; provider?: string | null; source?: string | null; detail?: string; progress_percent?: number | null; bytes_completed?: number | null; bytes_total?: number | null; rate_bytes_per_second?: number | null; updated_at?: string };
     type PublicStatus = { status: string; database_ready: boolean; storage_configured: boolean; providers: ProviderHealth[]; usage: ProviderUsage[]; total_used_bytes: number; pending_restores: number; active_work?: PublicWorkStatus[]; system?: SystemMetrics; last_probe_at?: string; last_successful_probe_at?: string; probe_duration_ms?: number; probe_interval_seconds: number; stale: boolean };
 
     const root = document.querySelector<HTMLElement>('.ops-shell');
@@ -53,7 +53,7 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
     const renderActiveWork = (items: PublicWorkStatus[]) => {
       const current = items[0];
       if (!current) {
-        text('#live-work-kind', 'Standing by'); text('#live-work-game', 'Queue clear'); text('#live-work-version', ''); text('#live-work-state', 'No active scraper or reupload'); text('#live-work-detail', 'Waiting for the next authorized operation.'); text('#live-work-provider', ''); text('#live-work-count', 'clear'); text('#public-work-signal', 'Clear');
+        text('#live-work-kind', 'Standing by'); text('#live-work-game', 'Queue clear'); text('#live-work-version', ''); text('#live-work-state', 'No active scraper or reupload'); text('#live-work-detail', 'Waiting for the next authorized operation.'); text('#live-work-provider', ''); text('#live-work-source', ''); text('#live-work-count', 'clear'); text('#public-work-signal', 'Clear');
         const icon = document.querySelector<HTMLElement>('#live-work-icon'); if (icon) { icon.className = 'job-icon job-scraper'; icon.textContent = '↓'; }
         const progress = document.querySelector<HTMLElement>('#live-work-progress-wrap'); if (progress) progress.hidden = true;
         return;
@@ -61,10 +61,21 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
       const game = current.game || (current.kind === 'REUPLOAD' ? 'HOT pack renewal' : 'Active operation');
       const version = current.version ? 'Version ' + current.version : '';
       const count = items.length > 1 ? String(items.length) + ' active' : '1 active';
-      text('#live-work-kind', workKind(current.kind)); text('#live-work-game', game); text('#live-work-version', version); text('#live-work-state', workState(current.state)); text('#live-work-detail', current.detail || 'Working'); text('#live-work-provider', current.provider || 'Pending provider'); text('#live-work-count', count); text('#public-work-signal', count);
+      text('#live-work-kind', workKind(current.kind)); text('#live-work-game', game); text('#live-work-version', version); text('#live-work-state', workState(current.state)); text('#live-work-detail', current.detail || 'Working'); text('#live-work-provider', current.provider || 'Pending provider'); text('#live-work-source', current.source || '—'); text('#live-work-count', count); text('#public-work-signal', count);
       const icon = document.querySelector<HTMLElement>('#live-work-icon'); if (icon) { icon.className = 'job-icon job-' + current.kind.toLowerCase(); icon.textContent = current.kind === 'REUPLOAD' ? '⟳' : current.kind === 'RESTORE' ? '↗' : '↓'; }
       const progressWrap = document.querySelector<HTMLElement>('#live-work-progress-wrap'); const progressBar = document.querySelector<HTMLElement>('#live-work-progress'); const progressLabel = document.querySelector<HTMLElement>('#live-work-progress-label');
-      if (progressWrap && progressBar && progressLabel && current.progress_percent != null) { progressWrap.hidden = false; progressBar.style.width = String(Math.max(0, Math.min(100, current.progress_percent))) + '%'; progressLabel.textContent = current.progress_percent.toFixed(0) + '%'; } else if (progressWrap) progressWrap.hidden = true;
+      const bytesCompleted = current.bytes_completed;
+      const bytesTotal = current.bytes_total;
+      const calculatedPercent = current.progress_percent ?? (bytesCompleted != null && bytesTotal ? (bytesCompleted / bytesTotal) * 100 : null);
+      if (progressWrap && progressBar && progressLabel && (bytesCompleted != null || calculatedPercent != null)) {
+        progressWrap.hidden = false;
+        progressBar.classList.toggle('progress-indeterminate', calculatedPercent == null);
+        progressBar.style.width = calculatedPercent == null ? '32%' : String(Math.max(0, Math.min(100, calculatedPercent))) + '%';
+        const byteLabel = bytesCompleted == null ? 'Progress available' : formatBytes(bytesCompleted) + (bytesTotal != null ? ` / ${formatBytes(bytesTotal)}` : ' downloaded');
+        const percentLabel = calculatedPercent == null ? '' : ` · ${calculatedPercent.toFixed(0)}%`;
+        const rateLabel = current.rate_bytes_per_second == null ? '' : ` · ${formatBytes(current.rate_bytes_per_second)}/s`;
+        progressLabel.textContent = byteLabel + percentLabel + rateLabel;
+      } else if (progressWrap) progressWrap.hidden = true;
     };
     const formatBytes = (value: number) => { if (!Number.isFinite(value) || value <= 0) return '0 B'; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(2)} GB`; return `${(value / 1024 ** 4).toFixed(2)} TB`; };
 

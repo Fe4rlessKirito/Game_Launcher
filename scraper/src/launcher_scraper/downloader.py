@@ -7,6 +7,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from email.message import Message
 from email.utils import parsedate_to_datetime
@@ -42,6 +43,9 @@ class DownloadResult:
     actual_size: int
     blake3: str
     sha256: str
+
+
+DownloadProgressCallback = Callable[[int, int | None], None]
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,7 @@ class HttpDownloader:
         max_concurrent_requests: int = 2,
         retry_policy: RetryPolicy | None = None,
         extra_headers: dict[str, str] | None = None,
+        progress: DownloadProgressCallback | None = None,
     ) -> DownloadResult:
         policy = retry_policy or RetryPolicy()
         if policy.max_attempts < 1:
@@ -188,6 +193,7 @@ class HttpDownloader:
                         minimum_request_interval_seconds=minimum_request_interval_seconds,
                         max_concurrent_requests=max_concurrent_requests,
                         extra_headers=extra_headers,
+                        progress=progress,
                     )
                 except DownloadError as error:
                     last_error = error
@@ -213,6 +219,7 @@ class HttpDownloader:
         minimum_request_interval_seconds: float,
         max_concurrent_requests: int,
         extra_headers: dict[str, str] | None,
+        progress: DownloadProgressCallback | None,
     ) -> DownloadResult:
         url = self.policy.validate(candidate.url)
         domain = urlparse(url).hostname or ""
@@ -235,6 +242,7 @@ class HttpDownloader:
                 expected_size=expected_size,
                 expected_checksum=expected_checksum,
                 offset=offset,
+                progress=progress,
             )
         finally:
             permit.release()
@@ -249,6 +257,7 @@ class HttpDownloader:
         expected_size: int | None,
         expected_checksum: str | None,
         offset: int,
+        progress: DownloadProgressCallback | None,
     ) -> DownloadResult:
         response, final_url, redirects = self._open_with_redirects(url, headers)
         status = int(getattr(response, "status", 200))
@@ -272,6 +281,14 @@ class HttpDownloader:
         written = offset
         max_bytes = self.max_artifact_bytes
         content_length = response_headers.get("content-length")
+        total_size = expected_size
+        if content_range and content_range[1] is not None:
+            total_size = content_range[1]
+        elif content_length:
+            try:
+                total_size = int(content_length) + (offset if append else 0)
+            except ValueError:
+                pass
         if content_length:
             try:
                 advertised = int(content_length) + offset
@@ -280,6 +297,8 @@ class HttpDownloader:
                     raise DownloadError("download exceeds the configured artifact size", status=status)
             except ValueError:
                 pass
+        if progress is not None:
+            progress(written, total_size)
         try:
             with response, part_path.open(mode) as output:
                 while True:
@@ -290,6 +309,8 @@ class HttpDownloader:
                     if written > max_bytes or (expected_size is not None and written > expected_size):
                         raise DownloadError("download exceeded the configured artifact size", status=status)
                     output.write(chunk)
+                    if progress is not None:
+                        progress(written, total_size)
                 output.flush()
                 os.fsync(output.fileno())
         except DownloadError:
