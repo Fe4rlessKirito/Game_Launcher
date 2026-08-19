@@ -8,10 +8,10 @@ const jobs = [
 ];
 
 const pipeline = [
-  { step: '01', label: 'Detect', detail: 'Find the next authorized operation' },
-  { step: '02', label: 'Prepare', detail: 'Validate source and package bytes' },
-  { step: '03', label: 'Deliver', detail: 'Place packs on the delivery path' },
-  { step: '04', label: 'Verify', detail: 'Read back and record the result' },
+  { step: '01', key: 'DISCOVERY', label: 'Discover', detail: 'Find the authorized release and metadata' },
+  { step: '02', key: 'DOWNLOAD', label: 'Download', detail: 'Acquire and validate the source artifact' },
+  { step: '03', key: 'PACKAGE', label: 'Package', detail: 'Normalize, analyze, chunk, and build packs' },
+  { step: '04', key: 'PUBLISH', label: 'Publish', detail: 'Upload to HOT and COLD, verify, then clean up' },
 ];
 ---
 
@@ -32,7 +32,7 @@ const pipeline = [
       <div class="activity-card-head"><div><span class="card-label">ACTIVE OPERATION</span><h3 id="live-work-kind">Standing by</h3></div><span class="live-state-chip"><i class="live-chip-dot"></i><span id="live-work-count">—</span></span></div>
       <div class="active-operation-body">
         <div class="operation-visual"><span class="job-icon job-scraper" id="live-work-icon">↓</span><span class="operation-visual-ring"></span></div>
-        <div class="active-operation-copy"><strong id="live-work-game">Queue clear</strong><small id="live-work-version"></small><p id="live-work-state">No active scraper or reupload</p><span id="live-work-detail">Waiting for the next authorized operation.</span></div>
+        <div class="active-operation-copy"><strong id="live-work-game">Queue clear</strong><small id="live-work-version"></small><p id="live-work-state">No active operation</p><span id="live-work-detail">Waiting for the next authorized operation.</span></div>
         <div class="operation-side-facts"><div><span>Source</span><strong id="live-work-source">—</strong></div><div><span>Provider</span><strong id="live-work-provider">—</strong></div><div><span>Visibility</span><strong>Public status</strong></div></div>
       </div>
       <div class="active-operation-progress" id="live-work-progress-wrap" hidden><div class="progress-track"><span id="live-work-progress"></span></div><small id="live-work-progress-label"></small></div>
@@ -43,6 +43,6 @@ const pipeline = [
 
   <section class="activity-pipeline card-surface">
     <div class="section-heading"><div><span class="eyebrow">DELIVERY PIPELINE</span><h2>From request to verified bytes</h2></div><span class="section-note">Operational sequence</span></div>
-    <div class="pipeline-track">{pipeline.map((stage, index) => <div class="pipeline-stage"><span class="pipeline-step">{stage.step}</span><div><strong>{stage.label}</strong><small>{stage.detail}</small></div>{index < pipeline.length - 1 && <span class="pipeline-arrow" aria-hidden="true">→</span>}</div>)}</div>
+    <div class="pipeline-track">{pipeline.map((stage, index) => <div class="pipeline-stage" data-pipeline-stage={stage.key}><span class="pipeline-step">{stage.step}</span><div><strong>{stage.label}</strong><small>{stage.detail}</small></div>{index < pipeline.length - 1 && <span class="pipeline-arrow" aria-hidden="true">→</span>}</div>)}</div>
   </section>
 </OpsFrame>

@@ -9,7 +9,7 @@ use axum::{
     routing::get,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use futures_util::StreamExt;
 use launcher_common::{
@@ -498,6 +498,29 @@ async fn main() -> Result<()> {
             let public_key = signature.public_key_base64.as_deref().ok_or_else(|| anyhow::anyhow!("local publish requires an embedded public key; production uses a trusted key ring"))?;
             let public_key = STANDARD.decode(public_key)?;
             verify_bytes(&manifest_bytes, &signature, &public_key)?;
+            let status_id = work_status_id("ingest", &manifest.build_id);
+            let telemetry =
+                configured_work_status_store(Some(&storage_root)).map(|store| WorkTelemetry {
+                    store,
+                    id: status_id.clone(),
+                    kind: "PUBLISH".to_owned(),
+                    game: Some(manifest.game_id.clone()),
+                    version: Some(manifest.display_version.clone()),
+                    source: Some("launcher-admin publish".to_owned()),
+                    created_at: Utc::now(),
+                });
+            let _status_guard = WorkStatusGuard::new(telemetry.as_ref(), &status_id);
+            if let Some(telemetry) = &telemetry {
+                telemetry.update(
+                    "PREPARING",
+                    None,
+                    "Preparing verified package for provider publication",
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
             let destination = catalog_root.join(&manifest.build_id);
             std::fs::create_dir_all(&destination)?;
             std::fs::create_dir_all(storage_root.join("chunks/encoded"))?;
@@ -523,6 +546,18 @@ async fn main() -> Result<()> {
             let (storage, _) =
                 storage_from_env_with_reservation_store(&storage_root, base_url, reservation_store)
                     .await?;
+            if let Some(telemetry) = &telemetry {
+                let provider_summary = storage_provider_summary(&storage);
+                telemetry.update(
+                    "UPLOADING",
+                    Some(provider_summary),
+                    "Uploading physical packs to HOT and COLD providers",
+                    Some(0.0),
+                    None,
+                    None,
+                    None,
+                );
+            }
             publish_verified_build(
                 &manifest,
                 &manifest_bytes,
@@ -530,9 +565,22 @@ async fn main() -> Result<()> {
                 &package,
                 &storage,
                 database.as_ref(),
+                telemetry.as_ref(),
             )
             .await?;
             if staging_cleanup::enabled() {
+                if let Some(telemetry) = &telemetry {
+                    let provider_summary = storage_provider_summary(&storage);
+                    telemetry.update(
+                        "CLEANUP",
+                        Some(provider_summary),
+                        "Removing temporary staging after HOT/COLD success",
+                        Some(100.0),
+                        None,
+                        None,
+                        None,
+                    );
+                }
                 let staging_objects = manifest
                     .files
                     .iter()
@@ -590,10 +638,47 @@ async fn main() -> Result<()> {
             average_bytes,
             maximum_bytes,
         } => {
+            let status_id = work_status_id("ingest", &build_id);
+            let status_storage_root = env::var_os("LAUNCHER_STORAGE_ROOT").map(PathBuf::from);
+            let telemetry =
+                configured_work_status_store(status_storage_root.as_deref()).map(|store| {
+                    WorkTelemetry {
+                        store,
+                        id: status_id.clone(),
+                        kind: "PACKAGER".to_owned(),
+                        game: Some(game_id.clone()),
+                        version: Some(display_version.clone()),
+                        source: Some(path_label(&input)),
+                        created_at: Utc::now(),
+                    }
+                });
+            let mut status_guard = WorkStatusGuard::new(telemetry.as_ref(), &status_id);
+            if let Some(telemetry) = &telemetry {
+                telemetry.update(
+                    "NORMALIZING",
+                    None,
+                    "Normalizing the authorized source archive",
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
             let mut progress = IngestionProgress::new();
             println!("stage={:?}", progress.state);
             std::fs::create_dir_all(&output)?;
             let normalized = normalize_input(&input, &NormalizationLimits::from_env()?)?;
+            if let Some(telemetry) = &telemetry {
+                telemetry.update(
+                    "ANALYZING",
+                    None,
+                    "Analyzing normalized game files",
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
             println!(
                 "stage=NORMALIZED format={} root={}",
                 normalized.format.as_str(),
@@ -617,6 +702,17 @@ async fn main() -> Result<()> {
                     progress.state,
                     analysis_path.display()
                 );
+                if let Some(telemetry) = &telemetry {
+                    telemetry.update(
+                        "PACKAGING",
+                        None,
+                        "Building verified chunks and physical packs",
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                }
                 let report = package_directory(
                     &normalized.root,
                     &output,
@@ -656,11 +752,24 @@ async fn main() -> Result<()> {
                         )?;
                     staging_cleanup::record_source(&output, &input, &storage_root)?;
                 }
+                if let Some(telemetry) = &telemetry {
+                    telemetry.update(
+                        "READY_FOR_PUBLISH",
+                        None,
+                        "Package ready; waiting for provider publication",
+                        Some(100.0),
+                        None,
+                        None,
+                        None,
+                    );
+                }
                 println!("publication=EXPLICIT_OPERATOR_ACTION_REQUIRED");
                 Ok(())
             })();
-            normalized.cleanup()?;
+            let cleanup_result = normalized.cleanup();
+            cleanup_result?;
             result?;
+            status_guard.preserve();
         }
     }
     Ok(())
@@ -2854,6 +2963,128 @@ fn remove_work_status(store: &WorkStatusStore, id: &str) {
     }
 }
 
+#[derive(Clone)]
+struct WorkTelemetry {
+    store: WorkStatusStore,
+    id: String,
+    kind: String,
+    game: Option<String>,
+    version: Option<String>,
+    source: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+impl WorkTelemetry {
+    fn update(
+        &self,
+        state: &str,
+        provider: Option<String>,
+        detail: impl Into<String>,
+        progress_percent: Option<f32>,
+        bytes_completed: Option<u64>,
+        bytes_total: Option<u64>,
+        rate_bytes_per_second: Option<u64>,
+    ) {
+        let mut status = WorkStatus::new(
+            &self.id,
+            &self.kind,
+            state,
+            self.game.clone(),
+            self.version.clone(),
+            provider,
+            detail,
+            progress_percent,
+        );
+        status.created_at = self.created_at;
+        status.source = self.source.clone();
+        status.bytes_completed = bytes_completed;
+        status.bytes_total = bytes_total;
+        status.rate_bytes_per_second = rate_bytes_per_second;
+        write_work_status(&self.store, status);
+    }
+}
+
+struct WorkStatusGuard {
+    store: Option<WorkStatusStore>,
+    id: String,
+    preserve: bool,
+}
+
+impl WorkStatusGuard {
+    fn new(telemetry: Option<&WorkTelemetry>, id: impl Into<String>) -> Self {
+        Self {
+            store: telemetry.map(|telemetry| telemetry.store.clone()),
+            id: id.into(),
+            preserve: false,
+        }
+    }
+
+    fn preserve(&mut self) {
+        self.preserve = true;
+    }
+}
+
+impl Drop for WorkStatusGuard {
+    fn drop(&mut self) {
+        if !self.preserve {
+            if let Some(store) = &self.store {
+                remove_work_status(store, &self.id);
+            }
+        }
+    }
+}
+
+fn configured_work_status_store(storage_root: Option<&Path>) -> Option<WorkStatusStore> {
+    let directory = env::var_os("LAUNCHER_WORK_STATUS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| storage_root.map(|root| root.join("work-status")));
+    directory.map(WorkStatusStore::new)
+}
+
+fn work_status_id(prefix: &str, value: &str) -> String {
+    let mut normalized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if normalized.is_empty() {
+        normalized.push_str("operation");
+    }
+    normalized.truncate(80);
+    format!("{prefix}-{normalized}")
+}
+
+fn path_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| "authorized source".to_owned())
+}
+
+fn storage_provider_summary(storage: &StorageRegistry) -> String {
+    let providers = storage
+        .providers()
+        .iter()
+        .map(|provider| {
+            let tier = storage
+                .pool_for_provider(provider.provider_id())
+                .map(|pool| pool.storage_class.as_str())
+                .unwrap_or("CONFIGURED");
+            format!("{} {}", provider.provider_id(), tier)
+        })
+        .collect::<Vec<_>>();
+    if providers.is_empty() {
+        "No providers configured".to_owned()
+    } else {
+        providers.join(" + ")
+    }
+}
+
 async fn renew_hot_pack_location(
     database: &Database,
     storage: &StorageRegistry,
@@ -3122,6 +3353,7 @@ async fn publish_verified_build(
     package: &Path,
     storage: &StorageRegistry,
     database: Option<&Database>,
+    telemetry: Option<&WorkTelemetry>,
 ) -> Result<()> {
     let policy = StoragePolicy::from_env().map_err(|error| anyhow::anyhow!(error))?;
     let packs_enabled = env_bool("PACK_STORAGE_ENABLED", false);
@@ -3198,6 +3430,17 @@ async fn publish_verified_build(
     }
 
     if !pack_canonical {
+        if let Some(telemetry) = telemetry {
+            telemetry.update(
+                "UPLOADING",
+                Some(storage_provider_summary(storage)),
+                "Uploading logical chunks to configured providers",
+                None,
+                None,
+                None,
+                None,
+            );
+        }
         let logical_policy = if pack_cold_only {
             let logical_hot_replicas = env::var("LAUNCHER_LOGICAL_HOT_REPLICAS")
                 .ok()
@@ -3260,8 +3503,26 @@ async fn publish_verified_build(
         }
     }
     if packs_enabled && let Some(database) = database {
-        publish_physical_packs(&manifest.build_id, package, storage, database, &pack_policy)
-            .await?;
+        publish_physical_packs(
+            &manifest.build_id,
+            package,
+            storage,
+            database,
+            &pack_policy,
+            telemetry,
+        )
+        .await?;
+    }
+    if let Some(telemetry) = telemetry {
+        telemetry.update(
+            "VERIFYING",
+            Some(storage_provider_summary(storage)),
+            "Provider locations recorded; checking coverage before commit",
+            Some(95.0),
+            None,
+            None,
+            None,
+        );
     }
     if let Some(database) = database {
         if pack_canonical {
@@ -3293,6 +3554,17 @@ async fn publish_verified_build(
             !pack_canonical,
         )
         .await?;
+    }
+    if let Some(telemetry) = telemetry {
+        telemetry.update(
+            "VERIFYING",
+            Some(storage_provider_summary(storage)),
+            "Publication committed; provider records are ready",
+            Some(100.0),
+            None,
+            None,
+            None,
+        );
     }
     Ok(())
 }
@@ -3546,6 +3818,7 @@ async fn publish_physical_packs(
     storage: &StorageRegistry,
     database: &Database,
     policy: &StoragePolicy,
+    telemetry: Option<&WorkTelemetry>,
 ) -> Result<()> {
     let packs_dir = package.join("packs");
     if !packs_dir.is_dir() {
@@ -3572,7 +3845,8 @@ async fn publish_physical_packs(
         .map(|entry| entry.path().to_owned())
         .collect::<Vec<_>>();
     paths.sort();
-    for path in paths {
+    let total_packs = paths.len();
+    for (pack_index, path) in paths.into_iter().enumerate() {
         let pack_hash = path
             .file_stem()
             .and_then(|value| value.to_str())
@@ -3630,10 +3904,37 @@ async fn publish_physical_packs(
             );
         }
         let object_key = format!("packs/{pack_hash}.pack");
-        for action in plan.actions {
+        let total_actions = plan.actions.len().max(1);
+        for (action_index, action) in plan.actions.into_iter().enumerate() {
             let provider = storage.provider(&action.provider_id).ok_or_else(|| {
                 anyhow::anyhow!("storage provider {} is not configured", action.provider_id)
             })?;
+            let provider_label = format!("{} · {}", provider.provider_id(), action.tier);
+            let progress_percent = if total_packs == 0 {
+                Some(100.0)
+            } else {
+                Some(
+                    ((pack_index as f32 + action_index as f32 / total_actions as f32)
+                        / total_packs as f32)
+                        * 90.0,
+                )
+            };
+            if let Some(telemetry) = telemetry {
+                telemetry.update(
+                    "UPLOADING",
+                    Some(provider_label.clone()),
+                    format!(
+                        "Uploading physical pack {}/{} to {}",
+                        pack_index + 1,
+                        total_packs,
+                        provider_label
+                    ),
+                    progress_percent,
+                    None,
+                    None,
+                    None,
+                );
+            }
             provider
                 .put_pack_file(pack_hash, &path)
                 .await
@@ -3662,6 +3963,21 @@ async fn publish_physical_packs(
                     expires_at,
                 )
                 .await?;
+            if let Some(telemetry) = telemetry {
+                telemetry.update(
+                    "VERIFYING",
+                    Some(provider_label),
+                    format!(
+                        "Recorded provider location for physical pack {}/{}",
+                        pack_index + 1,
+                        total_packs
+                    ),
+                    progress_percent,
+                    None,
+                    None,
+                    None,
+                );
+            }
         }
         database
             .upsert_physical_pack(
@@ -3673,6 +3989,26 @@ async fn publish_physical_packs(
                 "VERIFIED",
             )
             .await?;
+        if let Some(telemetry) = telemetry {
+            let progress_percent = if total_packs == 0 {
+                100.0
+            } else {
+                ((pack_index + 1) as f32 / total_packs as f32) * 90.0
+            };
+            telemetry.update(
+                "VERIFYING",
+                Some(storage_provider_summary(storage)),
+                format!(
+                    "Verified physical pack {}/{} across configured providers",
+                    pack_index + 1,
+                    total_packs
+                ),
+                Some(progress_percent),
+                None,
+                None,
+                None,
+            );
+        }
     }
     Ok(())
 }

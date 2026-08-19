@@ -138,6 +138,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .active-operation-progress small { display: block; margin-top: 6px; color: #7890a7; font-size: 9px; }
 @keyframes progress-scan { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
 .job-scraper { background: #25334b; color: #8fb8ff; }
+.job-packager { background: #273a35; color: #83d7b1; }
+.job-publish { background: #3a3022; color: #f0c477; }
 .job-reupload { background: #382746; color: #d7a1ff; }
 @media (max-width: 1050px) { .provider-detail-grid, .visibility-grid, .resource-grid { grid-template-columns: 1fr; }.provider-detail-card { grid-template-columns: 1fr 1fr; align-items: start; }.provider-detail-card .provider-capability { grid-column: span 2; } }
 @media (max-width: 760px) { .page-intro { align-items: start; flex-direction: column; }.page-chip { align-self: start; }.provider-detail-card { display: grid; grid-template-columns: 1fr; }.provider-detail-card .provider-capability { grid-column: auto; }.visibility-grid { grid-template-columns: 1fr; } }
@@ -246,6 +248,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .pipeline-stage strong { color: #cfe0ed; font-size: 10px; font-weight: 600; }
 .pipeline-stage small { color: #70859a; font-size: 9px; line-height: 1.45; }
 .pipeline-arrow { position: absolute; top: 7px; right: 13px; color: #48667e; font-size: 13px; }
+.pipeline-stage.is-active .pipeline-step { border-color: var(--ops-blue); background: #18364d; color: #d7ecff; box-shadow: 0 0 0 3px rgba(75, 181, 255, .08); }
+.pipeline-stage.is-active strong { color: #e5f3ff; }
+.pipeline-stage.is-complete .pipeline-step { border-color: #3c8b78; background: #1b3c36; color: #a6ead1; }
+.pipeline-stage.is-complete strong { color: #9ed6c5; }
 
 .storage-overview-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(250px, .6fr); gap: 12px; }
 .storage-coverage-card { min-height: 216px; padding: 22px; }
