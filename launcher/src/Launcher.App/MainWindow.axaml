@@ -85,7 +85,7 @@
 
     <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
       <Border Grid.Column="0" Width="{DynamicResource SidebarWidth}" IsVisible="{Binding IsSidebarVisible}" Background="{DynamicResource SidebarBackground}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,1,0">
-        <ScrollViewer Margin="12,16,12,8" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <ScrollViewer Margin="12,16,12,8" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
           <StackPanel Spacing="9">
             <Grid ColumnDefinitions="*,34" ColumnSpacing="3">
               <Button Command="{Binding NavigateCommand}" CommandParameter="Home" Classes="NavButton Active HomeButton">
