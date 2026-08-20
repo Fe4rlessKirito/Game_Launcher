@@ -153,6 +153,7 @@ public partial class ShellViewModel : ObservableObject
             : snapshot.User is not null ? "Account" : "Guest";
         _settingsPage.ApplyUser(snapshot.User);
         _settingsPage.ApplySteamSnapshot(snapshot.Steam ?? SteamLibrarySnapshot.Empty);
+        _settingsPage.ApplyEpicSnapshot(snapshot.Epic ?? EpicLibrarySnapshot.Empty);
         _downloadsPage.ApplyRuntimeJobs(snapshot.DownloadJobs, snapshot.Games);
         _storePage.ApplyRuntimeGames(snapshot.Games);
         UpdateDownloadStatus(snapshot.DownloadJobs);

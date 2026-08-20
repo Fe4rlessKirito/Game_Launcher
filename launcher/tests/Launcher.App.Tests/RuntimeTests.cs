@@ -43,7 +43,8 @@ public sealed class RuntimeTests
             new LauncherSettings(ApiBaseUrl: "http://launcher/"),
             root,
             client,
-            steamDiscovery: () => SteamLibrarySnapshot.Empty);
+            steamDiscovery: () => SteamLibrarySnapshot.Empty,
+            epicDiscovery: () => EpicLibrarySnapshot.Empty);
 
         try
         {
@@ -93,7 +94,8 @@ public sealed class RuntimeTests
                 SteamOwnedGames: [new SteamOwnedGame("730", "Counter-Strike 2", 120, HeaderUrl: "https://cdn.example/header.jpg")]),
             root,
             client,
-            steamDiscovery: () => SteamLibrarySnapshot.Empty);
+            steamDiscovery: () => SteamLibrarySnapshot.Empty,
+            epicDiscovery: () => EpicLibrarySnapshot.Empty);
 
         try
         {
@@ -106,6 +108,49 @@ public sealed class RuntimeTests
             Assert.Equal("Available in Steam", game.StatusText);
             Assert.NotNull(game.SteamOwned);
             Assert.Equal("76561197960265729", snapshot.Steam?.ConnectedAccount?.SteamId64);
+        }
+        finally
+        {
+            await runtime.DisposeAsync();
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task EpicInstalledGamesAreAvailableLocallyAndStayOutsideVaultnodeStore()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vaultnode-epic-runtime-test", Guid.NewGuid().ToString("N"));
+        var installRoot = Path.Combine(root, "EpicGame");
+        Directory.CreateDirectory(installRoot);
+        using var client = new HttpClient(new EmptyCatalogHandler());
+        var epicGame = new EpicGameInstall(
+            "EpicDemo",
+            "Epic Demo",
+            installRoot,
+            "EpicDemo.exe",
+            2048,
+            Path.Combine(root, "EpicDemo.item"));
+        var runtime = new LauncherRuntime(
+            new LauncherSettings(ApiBaseUrl: "http://launcher/"),
+            root,
+            client,
+            steamDiscovery: () => SteamLibrarySnapshot.Empty,
+            epicDiscovery: () => new EpicLibrarySnapshot([Path.Combine(root, "manifests")], [epicGame], null));
+
+        try
+        {
+            var snapshot = await runtime.InitializeAsync();
+
+            var game = Assert.Single(snapshot.Games);
+            Assert.Equal("epic:EpicDemo", game.Id);
+            Assert.True(game.IsEpicGame);
+            Assert.True(game.IsExternalStoreGame);
+            Assert.True(game.IsInstalled);
+            Assert.Equal("Installed", game.StatusText);
+            Assert.Equal("Epic Games", game.DisplayVersion);
+            Assert.Same(epicGame, game.EpicInstall);
+            Assert.NotNull(snapshot.Epic);
         }
         finally
         {

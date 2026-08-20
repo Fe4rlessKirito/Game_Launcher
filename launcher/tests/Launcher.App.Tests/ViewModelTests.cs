@@ -152,7 +152,8 @@ public class ViewModelTests
                     new SteamGameInstall("10", "Favorite Game", "Favorite Game", "C:\\Games\\Favorite Game", "C:\\Games", 10, IsFavorite: true),
                     new SteamGameInstall("20", "Other Game", "Other Game", "C:\\Games\\Other Game", "C:\\Games", 20)
                 ],
-                null));
+                null),
+            epicDiscovery: () => EpicLibrarySnapshot.Empty);
         var shell = new ShellViewModel(runtime, seedDemoData: false);
 
         try

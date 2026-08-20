@@ -12,6 +12,7 @@
         <Button Content="General" Classes="SettingsNavItem" Classes.active="{Binding IsGeneralSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="General" />
         <Button Content="Downloads" Classes="SettingsNavItem" Classes.active="{Binding IsDownloadsSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Downloads" />
         <Button Content="Steam" Classes="SettingsNavItem" Classes.active="{Binding IsSteamSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Steam" />
+        <Button Content="Epic Games" Classes="SettingsNavItem" Classes.active="{Binding IsEpicSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Epic" />
         <Button Content="Appearance" Classes="SettingsNavItem" Classes.active="{Binding IsAppearanceSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Appearance" />
         <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="8,8" />
         <Button Content="Advanced" Classes="SettingsNavItem" Classes.active="{Binding IsAdvancedSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Advanced" />
@@ -164,6 +165,50 @@
               </Grid>
             </Border>
             <TextBlock Text="Local detection, favorites, launching, and Steam-client install handoff work without connecting. Full owned-library sync depends on the server Steam Web API key and your Steam game-details visibility." Classes="Caption" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+
+      <StackPanel IsVisible="{Binding IsEpicSelected}" Spacing="18">
+        <StackPanel Spacing="4">
+          <TextBlock Text="Epic Games" Classes="HeadingLarge" />
+          <TextBlock Text="Detect installed Epic titles locally and hand launching back to Epic Games Launcher." Classes="Caption" TextWrapping="Wrap" />
+        </StackPanel>
+        <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+          <StackPanel Spacing="16">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+              <StackPanel Spacing="4">
+                <TextBlock Text="{Binding EpicStatus}" Classes="HeadingMedium" />
+                <TextBlock Text="{Binding EpicLibrarySummary}" Classes="Caption" TextWrapping="Wrap" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <Button Content="Refresh installed games" Classes="SmallSecondary" Command="{Binding RefreshEpicCommand}" />
+                <Button Content="Open Epic Launcher" Classes="Primary" Command="{Binding OpenEpicLauncherCommand}" />
+              </StackPanel>
+            </Grid>
+            <Border Background="{DynamicResource SurfaceSecondary}" CornerRadius="8" Padding="16">
+              <StackPanel Spacing="5">
+                <TextBlock Text="Epic account library" Classes="BodyStrong" />
+                <TextBlock Text="{Binding EpicAccountStatus}" Classes="Caption" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+            <Border IsVisible="{Binding HasEpicGames}" Background="{DynamicResource SurfaceSecondary}" CornerRadius="8" Padding="16">
+              <StackPanel Spacing="10">
+                <TextBlock Text="Installed games" Classes="BodyStrong" />
+                <ItemsControl ItemsSource="{Binding EpicGames}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" Margin="0,2">
+                        <TextBlock Text="{Binding Name}" Classes="BodyStrong" />
+                        <TextBlock Grid.Row="1" Text="{Binding InstallRoot}" Classes="Caption" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="1" Text="{Binding SizeDisplay}" Classes="Caption" VerticalAlignment="Center" Margin="16,0,0,0" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Border>
+            <TextBlock Text="Vaultnode does not copy, update, verify, or uninstall Epic files. Epic Games Launcher remains responsible for account ownership, downloads, updates, and file management." Classes="Caption" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
       </StackPanel>

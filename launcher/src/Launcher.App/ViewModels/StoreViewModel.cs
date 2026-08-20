@@ -20,7 +20,7 @@ public partial class StoreViewModel : ObservableObject
     public void ApplyRuntimeGames(IReadOnlyList<RuntimeGame> games)
     {
         _allGames = games
-            .Where(game => !game.IsSteamGame)
+            .Where(game => !game.IsExternalStoreGame)
             .Select(game => new StoreGame(
                 game.Id,
                 game.Title,

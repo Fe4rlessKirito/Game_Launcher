@@ -27,13 +27,16 @@ public sealed record RuntimeGame(
     SteamGameInstall? SteamInstall = null,
     SteamOwnedGame? SteamOwned = null,
     string? ArtworkSource = null,
-    string? IconArtworkSource = null)
+    string? IconArtworkSource = null,
+    EpicGameInstall? EpicInstall = null)
 {
     public bool IsSteamGame => SteamInstall is not null || SteamOwned is not null;
-    public bool IsInstalled => Installed is not null || SteamInstall is not null;
+    public bool IsEpicGame => EpicInstall is not null;
+    public bool IsExternalStoreGame => IsSteamGame || IsEpicGame;
+    public bool IsInstalled => Installed is not null || SteamInstall is not null || EpicInstall is not null;
     public bool HasBuild => !string.IsNullOrWhiteSpace(BuildId);
 
-    public string StatusText => SteamInstall is not null
+    public string StatusText => SteamInstall is not null || EpicInstall is not null
         ? "Installed"
         : SteamOwned is not null
             ? "Available in Steam"
@@ -73,7 +76,8 @@ public sealed record LauncherRuntimeSnapshot(
     LauncherUserProfile? User,
     SteamLibrarySnapshot? Steam = null,
     IReadOnlySet<string>? ExcludedGameIds = null,
-    IReadOnlyList<LibraryCategoryState>? LibraryCategories = null);
+    IReadOnlyList<LibraryCategoryState>? LibraryCategories = null,
+    EpicLibrarySnapshot? Epic = null);
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
@@ -104,6 +108,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly ChunkCache _chunkCache;
     private readonly PackCache _packCache;
     private readonly Func<SteamLibrarySnapshot> _steamDiscovery;
+    private readonly Func<EpicLibrarySnapshot> _epicDiscovery;
     private SteamAccountLink? _steamAccount;
     private IReadOnlyList<SteamOwnedGame> _steamOwnedGames;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
@@ -124,7 +129,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
         string stateRoot,
         HttpClient? httpClient = null,
         string? accessToken = null,
-        Func<SteamLibrarySnapshot>? steamDiscovery = null)
+        Func<SteamLibrarySnapshot>? steamDiscovery = null,
+        Func<EpicLibrarySnapshot>? epicDiscovery = null)
     {
         _settings = settings;
         _paths = LauncherPaths.FromRoot(stateRoot);
@@ -151,6 +157,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         var packCacheBytes = Math.Clamp(settings.CacheSizeBytes / 2, 512L * 1024 * 1024, 2L * 1024 * 1024 * 1024);
         _packCache = new PackCache(packCacheRoot, packCacheBytes);
         _steamDiscovery = steamDiscovery ?? (() => SteamLibraryDiscovery.Discover());
+        _epicDiscovery = epicDiscovery ?? (() => EpicLibraryDiscovery.Discover());
         _steamAccount = SteamLibraryDiscovery.IsValidSteamId64(settings.SteamId64)
             ? new SteamAccountLink(settings.SteamId64, string.IsNullOrWhiteSpace(settings.SteamPersonaName) ? null : settings.SteamPersonaName)
             : null;
@@ -238,6 +245,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
         return SteamLauncher.InstallAsync(appId);
     }
+
+    public static Task OpenEpicLauncherAsync() => EpicLauncher.OpenAsync();
 
     public static async Task<LauncherRuntime> CreateDefaultAsync(CancellationToken cancellationToken = default)
     {
@@ -372,7 +381,20 @@ public sealed class LauncherRuntime : IAsyncDisposable
                         ? "No cached owned games. Sync the connected Steam account to refresh it."
                         : null
             };
-            var games = BuildGames(_catalog, installed, steam.Games, steam.OwnedGames ?? []);
+
+            EpicLibrarySnapshot epic;
+            try
+            {
+                // Epic scans are local JSON metadata reads. Keep them off the
+                // UI thread so a large manifest directory cannot stall the app.
+                epic = await Task.Run(_epicDiscovery, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+            {
+                epic = new EpicLibrarySnapshot([], [], $"Epic discovery failed: {exception.Message}");
+            }
+
+            var games = BuildGames(_catalog, installed, steam.Games, steam.OwnedGames ?? [], epic.Games);
             var connectionStatus = online ? "Online" : "Offline-ready";
             LauncherUserProfile? user = null;
             if (IsAuthenticated)
@@ -390,7 +412,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 }
             }
 
-            _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds, libraryCategories);
+            _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds, libraryCategories, epic);
             SnapshotChanged?.Invoke(_snapshot);
             return _snapshot;
         }
@@ -542,6 +564,11 @@ public sealed class LauncherRuntime : IAsyncDisposable
             return SteamLauncher.LaunchAsync(game.SteamInstall);
         }
 
+        if (game.EpicInstall is not null)
+        {
+            return EpicLauncher.LaunchAsync(game.EpicInstall);
+        }
+
         if (game.Installed is null) throw new LauncherOperationException($"{game.Title} is not installed.");
 
         var manifest = ManifestJson.Deserialize(game.Installed.ManifestJson);
@@ -604,9 +631,10 @@ public sealed class LauncherRuntime : IAsyncDisposable
         IReadOnlyList<GameCatalogItem> catalog,
         IReadOnlyList<InstalledGame> installed,
         IReadOnlyList<SteamGameInstall> steamGames,
-        IReadOnlyList<SteamOwnedGame> steamOwnedGames)
+        IReadOnlyList<SteamOwnedGame> steamOwnedGames,
+        IReadOnlyList<EpicGameInstall> epicGames)
     {
-        var games = new List<RuntimeGame>(catalog.Count + installed.Count + steamOwnedGames.Count);
+        var games = new List<RuntimeGame>(catalog.Count + installed.Count + steamGames.Count + steamOwnedGames.Count + epicGames.Count);
         var matchedInstalled = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in catalog)
         {
@@ -704,6 +732,34 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 ownedGame,
                 ownedGame.HeaderUrl,
                 ownedGame.IconUrl));
+        }
+
+        foreach (var epicGame in epicGames)
+        {
+            var id = $"epic:{epicGame.AppName}";
+            if (games.Any(game => string.Equals(game.Id, id, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            games.Add(new RuntimeGame(
+                id,
+                id,
+                epicGame.Name,
+                "Installed through Epic Games. Epic manages this installation and its updates.",
+                BuildMonogram(epicGame.Name),
+                null,
+                "Epic Games",
+                epicGame.SizeBytes,
+                GameState.Launchable,
+                epicGame.InstallRoot,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                epicGame));
         }
 
         return games;

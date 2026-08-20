@@ -36,6 +36,8 @@ public partial class GameDetailsViewModel : ObservableObject
             ? "This game is owned through Steam. The install button will hand the request to Steam."
             : game?.IsSteamGame == true
                 ? "Steam manages this installation. Launching will open Steam."
+            : game?.IsEpicGame == true
+                ? "Epic Games manages this installation. Launching will open Epic Games Launcher."
             : game is null ? "Ready to launch." : "Build metadata is loaded from the launcher service.";
         _isInstalled = game?.IsInstalled ?? true;
     }
@@ -44,7 +46,11 @@ public partial class GameDetailsViewModel : ObservableObject
     public bool IsSteamGame => _game?.IsSteamGame == true;
     public bool IsSteamInstalled => _game?.SteamInstall is not null;
     public bool IsSteamOwned => _game?.SteamOwned is not null;
-    public bool IsVaultnodeGame => !IsSteamGame;
+    public bool IsEpicGame => _game?.IsEpicGame == true;
+    public bool IsExternalStoreGame => _game?.IsExternalStoreGame == true;
+    public bool IsVaultnodeGame => !IsExternalStoreGame;
+    public string ExternalPlatformName => IsEpicGame ? "Epic Games" : "Steam";
+    public string ExternalPlatformMessage => $"{ExternalPlatformName} manages this game's files and updates.";
     public string? ArtworkSource => _game?.ArtworkSource;
     public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
     public Bitmap? ArtworkImage => ArtworkLoader.Load(ArtworkSource);
@@ -56,21 +62,23 @@ public partial class GameDetailsViewModel : ObservableObject
         ? "Owned through Steam. Vaultnode can show it in your library and hand installation to Steam, while Steam remains responsible for ownership, downloads, updates, and files."
         : IsSteamGame
             ? "Installed through Steam. Vaultnode can launch it, while Steam remains responsible for ownership, updates, and file management."
+        : IsEpicGame
+            ? "Installed through Epic Games. Vaultnode can launch it, while Epic remains responsible for ownership, downloads, updates, and file management."
         : _game?.Description ?? "A verified local build with content-addressed updates, repairable files, and an offline-ready launch profile.";
-    public string Version => IsSteamGame ? "Steam installation" : _game?.DisplayVersion ?? "1.0.0";
+    public string Version => IsExternalStoreGame ? $"{ExternalPlatformName} installation" : _game?.DisplayVersion ?? "1.0.0";
     public string InstallSize => IsSteamOwned && !IsSteamInstalled ? "Calculated by Steam" : _game?.SizeDisplay ?? "90 B";
     public string InstallLocation => IsSteamOwned && !IsSteamInstalled
         ? "Not installed · Steam chooses the library location"
         : _game?.InstallRoot ?? @"C:\Games\Synthetic Game";
-    public string PlayButtonLabel => IsSteamGame ? "Play in Steam" : "Play";
+    public string PlayButtonLabel => IsSteamGame ? "Play in Steam" : IsEpicGame ? "Play in Epic Games" : "Play";
     public bool ShowPlay => IsInstalled && !IsBusy;
-    public bool ShowInstall => !IsSteamGame
+    public bool ShowInstall => !IsExternalStoreGame
         && (!IsInstalled || _game?.State == Launcher.Core.GameState.UpdateAvailable)
         && !IsBusy;
     public bool ShowSteamInstall => IsSteamOwned && !IsSteamInstalled && !IsBusy;
-    public bool ShowRepair => !IsSteamGame && IsInstalled && !IsBusy;
-    public bool ShowUninstall => !IsSteamGame && ShowPlay;
-    public string IntegrityStatus => IsSteamGame ? "Managed by Steam" : "Verified";
+    public bool ShowRepair => !IsExternalStoreGame && IsInstalled && !IsBusy;
+    public bool ShowUninstall => !IsExternalStoreGame && ShowPlay;
+    public string IntegrityStatus => IsExternalStoreGame ? $"Managed by {ExternalPlatformName}" : "Verified";
 
     public void ApplyRuntimeGame(RuntimeGame? game)
     {
@@ -86,10 +94,18 @@ public partial class GameDetailsViewModel : ObservableObject
         {
             ActionMessage = "Steam manages this installation. Launching will open Steam.";
         }
+        else if (game.IsEpicGame)
+        {
+            ActionMessage = "Epic Games manages this installation. Launching will open Epic Games Launcher.";
+        }
         OnPropertyChanged(nameof(IsSteamGame));
         OnPropertyChanged(nameof(IsSteamInstalled));
         OnPropertyChanged(nameof(IsSteamOwned));
+        OnPropertyChanged(nameof(IsEpicGame));
+        OnPropertyChanged(nameof(IsExternalStoreGame));
         OnPropertyChanged(nameof(IsVaultnodeGame));
+        OnPropertyChanged(nameof(ExternalPlatformName));
+        OnPropertyChanged(nameof(ExternalPlatformMessage));
         OnPropertyChanged(nameof(ArtworkSource));
         OnPropertyChanged(nameof(HasArtwork));
         OnPropertyChanged(nameof(ArtworkImage));
@@ -127,6 +143,8 @@ public partial class GameDetailsViewModel : ObservableObject
             await _runtime.LaunchAsync(_game.Id).ConfigureAwait(true);
             ActionMessage = IsSteamGame
                 ? $"{Title} was handed off to Steam."
+                : IsEpicGame
+                    ? $"{Title} was handed off to Epic Games Launcher."
                 : $"{Title} is running locally.";
         }
         catch (Exception error)
@@ -148,9 +166,9 @@ public partial class GameDetailsViewModel : ObservableObject
     [RelayCommand]
     private async Task Install()
     {
-        if (IsSteamGame)
+        if (IsExternalStoreGame)
         {
-            ActionMessage = "Steam manages installation and updates for this game.";
+            ActionMessage = $"{ExternalPlatformName} manages installation and updates for this game.";
             return;
         }
 
@@ -223,9 +241,9 @@ public partial class GameDetailsViewModel : ObservableObject
     [RelayCommand]
     private async Task Repair()
     {
-        if (IsSteamGame)
+        if (IsExternalStoreGame)
         {
-            ActionMessage = "Use Steam to verify or repair this game.";
+            ActionMessage = $"Use {ExternalPlatformName} to verify or repair this game.";
             return;
         }
 
@@ -260,9 +278,9 @@ public partial class GameDetailsViewModel : ObservableObject
     [RelayCommand]
     private async Task Uninstall()
     {
-        if (IsSteamGame)
+        if (IsExternalStoreGame)
         {
-            ActionMessage = "Use Steam to uninstall this game.";
+            ActionMessage = $"Use {ExternalPlatformName} to uninstall this game.";
             return;
         }
 

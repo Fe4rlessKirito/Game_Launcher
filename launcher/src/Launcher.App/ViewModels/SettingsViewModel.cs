@@ -103,6 +103,7 @@ public partial class SettingsViewModel : ObservableObject
 
     private SteamLibrarySnapshot _steamSnapshot = SteamLibrarySnapshot.Empty;
     private IReadOnlyList<SteamOwnedGame> _cachedSteamOwnedGames = [];
+    private EpicLibrarySnapshot _epicSnapshot = EpicLibrarySnapshot.Empty;
 
     public bool HasProfileImage => ProfileImage is not null;
     public bool ShowDefaultProfile => !HasProfileImage;
@@ -112,6 +113,7 @@ public partial class SettingsViewModel : ObservableObject
     public bool IsAppearanceSelected => SelectedSection == "Appearance";
     public bool IsAdvancedSelected => SelectedSection == "Advanced";
     public bool IsSteamSelected => SelectedSection == "Steam";
+    public bool IsEpicSelected => SelectedSection == "Epic";
     public bool IsNotSignedIn => !IsSignedIn;
     public bool CanSubmitAuth => !IsSigningIn;
     public bool HasSteamAccount => !string.IsNullOrWhiteSpace(SteamId64);
@@ -138,6 +140,21 @@ public partial class SettingsViewModel : ObservableObject
         : SteamLibraryRoots.Count == 0
             ? "Steam library locations will appear here when Steam is installed."
             : $"{SteamLibraryRoots.Count} Steam library location{(SteamLibraryRoots.Count == 1 ? string.Empty : "s")} detected.";
+    public IReadOnlyList<EpicGameInstall> EpicGames => _epicSnapshot.Games;
+    public IReadOnlyList<string> EpicManifestRoots => _epicSnapshot.ManifestRoots;
+    public bool HasEpicGames => EpicGames.Count > 0;
+    public string EpicStatus => _epicSnapshot.Error
+        ?? (!_epicSnapshot.IsDetected
+            ? "Epic Games Launcher was not found on this PC."
+            : EpicGames.Count == 0
+                ? "Epic Games Launcher detected · No installed games found."
+                : $"{EpicGames.Count} installed Epic game{(EpicGames.Count == 1 ? string.Empty : "s")} detected.");
+    public string EpicLibrarySummary => EpicManifestRoots.Count == 0
+        ? "Epic manifest locations will appear here when Epic Games Launcher is installed."
+        : $"{EpicManifestRoots.Count} Epic manifest location{(EpicManifestRoots.Count == 1 ? string.Empty : "s")} detected.";
+    public string EpicAccountStatus => EpicManifestRoots.Count == 0
+        ? "Epic does not provide a supported public consumer-library connection for third-party launchers. Install detection will begin when Epic Games Launcher manifests are available."
+        : "Epic does not provide a supported public consumer-library connection for third-party launchers. Vaultnode detects these installed titles locally and hands launching back to Epic Games Launcher.";
     public Color AccentColorValue
     {
         get => _accentColorValue;
@@ -169,6 +186,7 @@ public partial class SettingsViewModel : ObservableObject
     {
         _runtime = runtime;
         ApplySteamSnapshot(runtime.Snapshot.Steam ?? SteamLibrarySnapshot.Empty);
+        ApplyEpicSnapshot(runtime.Snapshot.Epic ?? EpicLibrarySnapshot.Empty);
     }
 
     public void ApplySteamSnapshot(SteamLibrarySnapshot snapshot)
@@ -197,6 +215,16 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(SteamConnectButtonLabel));
         OnPropertyChanged(nameof(SteamStatus));
         OnPropertyChanged(nameof(SteamLibrarySummary));
+    }
+
+    public void ApplyEpicSnapshot(EpicLibrarySnapshot snapshot)
+    {
+        _epicSnapshot = snapshot;
+        OnPropertyChanged(nameof(EpicGames));
+        OnPropertyChanged(nameof(EpicManifestRoots));
+        OnPropertyChanged(nameof(HasEpicGames));
+        OnPropertyChanged(nameof(EpicStatus));
+        OnPropertyChanged(nameof(EpicLibrarySummary));
     }
 
     public void ApplyUser(LauncherUserProfile? user)
@@ -341,6 +369,25 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task OpenEpicLauncher()
+    {
+        if (_runtime is null)
+        {
+            ApplyEpicSnapshot(new EpicLibrarySnapshot([], [], "The launcher is still connecting. Try again in a moment."));
+            return;
+        }
+
+        try
+        {
+            await LauncherRuntime.OpenEpicLauncherAsync().ConfigureAwait(true);
+        }
+        catch (Exception error) when (error is LauncherOperationException or IOException or InvalidOperationException)
+        {
+            ApplyEpicSnapshot(new EpicLibrarySnapshot(_epicSnapshot.ManifestRoots, _epicSnapshot.Games, error.Message));
+        }
+    }
+
+    [RelayCommand]
     private async Task SaveUsername()
     {
         if (_runtime is null || !IsSignedIn)
@@ -463,6 +510,7 @@ public partial class SettingsViewModel : ObservableObject
             "Appearance" => "Appearance",
             "Advanced" => "Advanced",
             "Steam" => "Steam",
+            "Epic" => "Epic",
             _ => "Profile"
         };
     }
@@ -484,6 +532,26 @@ public partial class SettingsViewModel : ObservableObject
         catch (Exception error) when (error is IOException or HttpRequestException or InvalidDataException or TaskCanceledException)
         {
             ApplySteamSnapshot(new SteamLibrarySnapshot([], [], error.Message));
+        }
+    }
+
+    [RelayCommand]
+    private async Task RefreshEpic()
+    {
+        if (_runtime is null)
+        {
+            ApplyEpicSnapshot(EpicLibraryDiscovery.Discover());
+            return;
+        }
+
+        try
+        {
+            var snapshot = await _runtime.RefreshAsync().ConfigureAwait(true);
+            ApplyEpicSnapshot(snapshot.Epic ?? EpicLibrarySnapshot.Empty);
+        }
+        catch (Exception error) when (error is IOException or HttpRequestException or InvalidDataException or TaskCanceledException)
+        {
+            ApplyEpicSnapshot(new EpicLibrarySnapshot([], [], error.Message));
         }
     }
 
@@ -608,6 +676,7 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(IsAppearanceSelected));
         OnPropertyChanged(nameof(IsAdvancedSelected));
         OnPropertyChanged(nameof(IsSteamSelected));
+        OnPropertyChanged(nameof(IsEpicSelected));
     }
 
     partial void OnThemePresetChanged(string value) => ApplyAppearance();
