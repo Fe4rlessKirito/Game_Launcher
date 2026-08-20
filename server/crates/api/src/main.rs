@@ -43,6 +43,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 const MIN_OPERATOR_TOKEN_BYTES: usize = 32;
+const MIN_INTERNAL_TOKEN_BYTES: usize = 32;
 const DEFAULT_RATE_LIMIT_REQUESTS: u32 = 600;
 const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
 const DEFAULT_RESTORE_RATE_LIMIT_REQUESTS: u32 = 30;
@@ -658,23 +659,19 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .map(|value| value.trim_end_matches('/').to_owned())
         .filter(|value| !value.is_empty());
-    let cold_stream_token = env::var("LAUNCHER_COLD_STREAM_TOKEN")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(Arc::new);
+    let cold_stream_token =
+        read_minimum_secret("LAUNCHER_COLD_STREAM_TOKEN", MIN_INTERNAL_TOKEN_BYTES)?.map(Arc::new);
+    if cold_stream_worker_url.is_some() && cold_stream_token.is_none() {
+        anyhow::bail!(
+            "LAUNCHER_COLD_STREAM_TOKEN is required when LAUNCHER_COLD_STREAM_WORKER_URL is configured"
+        );
+    }
     let cold_stream_client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .build()
         .context("could not create cold stream client")?;
-    let operator_token = env::var("LAUNCHER_OPERATOR_TOKEN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| Arc::new(value.trim().to_owned()));
-    if let Some(token) = operator_token.as_ref()
-        && token.len() < MIN_OPERATOR_TOKEN_BYTES
-    {
-        anyhow::bail!("LAUNCHER_OPERATOR_TOKEN must be at least {MIN_OPERATOR_TOKEN_BYTES} bytes");
-    }
+    let operator_token =
+        read_minimum_secret("LAUNCHER_OPERATOR_TOKEN", MIN_OPERATOR_TOKEN_BYTES)?.map(Arc::new);
     let operator_auth_required = env_bool(
         "LAUNCHER_OPERATOR_AUTH_REQUIRED",
         !address.ip().is_loopback(),
@@ -898,6 +895,28 @@ fn env_bool(name: &str, default: bool) -> bool {
             )
         })
         .unwrap_or(default)
+}
+
+fn read_minimum_secret(name: &str, minimum_bytes: usize) -> anyhow::Result<Option<String>> {
+    let Some(value) = env::var(name).ok() else {
+        return Ok(None);
+    };
+    validate_minimum_secret(name, &value, minimum_bytes)
+}
+
+fn validate_minimum_secret(
+    name: &str,
+    value: &str,
+    minimum_bytes: usize,
+) -> anyhow::Result<Option<String>> {
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() < minimum_bytes {
+        anyhow::bail!("{name} must be at least {minimum_bytes} bytes");
+    }
+    Ok(Some(value))
 }
 
 async fn email_events(
@@ -3307,6 +3326,19 @@ mod tests {
             "operator-token-extra"
         ));
         assert!(!constant_time_token_eq("", "operator-token"));
+    }
+
+    #[test]
+    fn internal_secret_validation_rejects_empty_and_short_values() {
+        assert_eq!(
+            validate_minimum_secret("TEST_TOKEN", "  ", 32).unwrap(),
+            None
+        );
+        assert!(validate_minimum_secret("TEST_TOKEN", &"x".repeat(31), 32).is_err());
+        assert_eq!(
+            validate_minimum_secret("TEST_TOKEN", &format!("  {}  ", "x".repeat(32)), 32).unwrap(),
+            Some("x".repeat(32))
+        );
     }
 
     #[test]

@@ -51,6 +51,8 @@ use uuid::Uuid;
 
 mod staging_cleanup;
 
+const MIN_INTERNAL_TOKEN_BYTES: usize = 32;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "launcher-admin",
@@ -76,7 +78,7 @@ async fn cold_pack_stream(
     let authorized = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value == expected);
+        .is_some_and(|value| constant_time_token_eq(value, &expected));
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
@@ -111,6 +113,35 @@ async fn run_cold_stream_server(bind: String, state: ColdStreamState) -> Result<
     println!("cold_stream=LISTENING bind={bind}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn constant_time_token_eq(supplied: &str, expected: &str) -> bool {
+    let supplied = supplied.as_bytes();
+    let expected = expected.as_bytes();
+    let max_len = supplied.len().max(expected.len());
+    let mut difference = supplied.len() ^ expected.len();
+
+    for index in 0..max_len {
+        let supplied_byte = supplied.get(index).copied().unwrap_or_default();
+        let expected_byte = expected.get(index).copied().unwrap_or_default();
+        difference |= usize::from(supplied_byte ^ expected_byte);
+    }
+
+    difference == 0
+}
+
+fn read_minimum_secret(name: &str, minimum_bytes: usize) -> Result<Option<String>> {
+    let Some(value) = env::var(name).ok() else {
+        return Ok(None);
+    };
+    let value = value.trim().to_owned();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() < minimum_bytes {
+        anyhow::bail!("{name} must be at least {minimum_bytes} bytes");
+    }
+    Ok(Some(value))
 }
 
 #[derive(Debug, Subcommand)]
@@ -1518,23 +1549,22 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                     .unwrap_or_else(|| storage_root.join("work-status")),
             );
             let poll = Duration::from_secs(poll_seconds.clamp(1, 300));
-            let mut cold_stream_server = env::var("LAUNCHER_COLD_STREAM_TOKEN")
-                .ok()
-                .filter(|token| !token.is_empty())
-                .map(|token| {
-                    let bind = env::var("LAUNCHER_COLD_STREAM_BIND").unwrap_or_else(|_| {
-                        env::var("PORT")
-                            .map(|port| format!("0.0.0.0:{port}"))
-                            .unwrap_or_else(|_| "0.0.0.0:8081".to_owned())
-                    });
-                    tokio::spawn(run_cold_stream_server(
-                        bind,
-                        ColdStreamState {
-                            storage: storage.clone(),
-                            token: Arc::new(token),
-                        },
-                    ))
+            let cold_stream_token =
+                read_minimum_secret("LAUNCHER_COLD_STREAM_TOKEN", MIN_INTERNAL_TOKEN_BYTES)?;
+            let mut cold_stream_server = cold_stream_token.map(|token| {
+                let bind = env::var("LAUNCHER_COLD_STREAM_BIND").unwrap_or_else(|_| {
+                    env::var("PORT")
+                        .map(|port| format!("0.0.0.0:{port}"))
+                        .unwrap_or_else(|_| "0.0.0.0:8081".to_owned())
                 });
+                tokio::spawn(run_cold_stream_server(
+                    bind,
+                    ColdStreamState {
+                        storage: storage.clone(),
+                        token: Arc::new(token),
+                    },
+                ))
+            });
             println!(
                 "restore_worker=STARTED worker_id={worker_id} poll_seconds={} cold_stream={}",
                 poll.as_secs(),

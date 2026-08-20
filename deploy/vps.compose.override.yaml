@@ -1,5 +1,13 @@
 services:
+  postgres:
+    mem_limit: ${LAUNCHER_POSTGRES_MEMORY_LIMIT:-1g}
+    cpus: ${LAUNCHER_POSTGRES_CPUS:-2.0}
+    pids_limit: ${LAUNCHER_POSTGRES_PIDS_LIMIT:-256}
+
   api:
+    mem_limit: ${LAUNCHER_API_MEMORY_LIMIT:-768m}
+    cpus: ${LAUNCHER_API_CPUS:-2.0}
+    pids_limit: ${LAUNCHER_API_PIDS_LIMIT:-256}
     env_file:
       - ../secrets/telegram.env
     environment:
@@ -48,6 +56,9 @@ services:
       context: ..
       dockerfile: deploy/worker.Dockerfile
     restart: unless-stopped
+    mem_limit: ${LAUNCHER_WORKER_MEMORY_LIMIT:-2g}
+    cpus: ${LAUNCHER_WORKER_CPUS:-4.0}
+    pids_limit: ${LAUNCHER_WORKER_PIDS_LIMIT:-512}
     security_opt:
       - no-new-privileges:true
     environment:
@@ -58,8 +69,6 @@ services:
       LAUNCHER_STORAGE_PROVIDERS: filemirage,telegram
       LAUNCHER_FILEMIRAGE_STATE_FILE: /var/lib/launcher/storage/filemirage-state.json
       LAUNCHER_RESTORE_TARGET_PROVIDER: filemirage
-      LAUNCHER_OPERATOR_AUTH_REQUIRED: "true"
-      LAUNCHER_OPERATOR_TOKEN: ${LAUNCHER_OPERATOR_TOKEN:?set LAUNCHER_OPERATOR_TOKEN in .env}
       LAUNCHER_SIGNING_PRIVATE_KEY_PATH: /run/secrets/mantle-signing-key.pem
       LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY: "true"
       LAUNCHER_AUTO_MIGRATE: "0"
@@ -96,6 +105,9 @@ services:
       context: ..
       dockerfile: deploy/scraper.Dockerfile
     restart: unless-stopped
+    mem_limit: ${LAUNCHER_SCRAPER_MEMORY_LIMIT:-1g}
+    cpus: ${LAUNCHER_SCRAPER_CPUS:-2.0}
+    pids_limit: ${LAUNCHER_SCRAPER_PIDS_LIMIT:-256}
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -109,7 +121,14 @@ services:
       SCRAPER_STATUS_DIR: /var/lib/launcher/storage/work-status
       SCRAPER_BROWSER: http
       SCRAPER_ALLOW_LOCALHOST: "false"
-      SCRAPER_MAX_ARTIFACT_BYTES: "6442450944"
+      # Keep the combined extraction and artifact ceilings below the 8 GiB
+      # RAM-backed staging volume. Raise these only with the volume and
+      # container memory ceilings together.
+      SCRAPER_MAX_ARTIFACT_BYTES: ${SCRAPER_MAX_ARTIFACT_BYTES:-4294967296}
+      SCRAPER_MAX_ARCHIVE_ENTRIES: ${SCRAPER_MAX_ARCHIVE_ENTRIES:-200000}
+      SCRAPER_MAX_ARCHIVE_BYTES: ${SCRAPER_MAX_ARCHIVE_BYTES:-4294967296}
+      SCRAPER_MAX_ARCHIVE_FILE_BYTES: ${SCRAPER_MAX_ARCHIVE_FILE_BYTES:-2147483648}
+      SCRAPER_TEMP_MAX_BYTES: ${SCRAPER_TEMP_MAX_BYTES:-3221225472}
     command: ["--store", "/var/lib/launcher/storage/scraper/scraper-state.db", "--output-root", "/var/lib/launcher/ephemeral/scraper/artifacts", "worker", "--poll-seconds", "15"]
     volumes:
       - launcher-storage:/var/lib/launcher/storage
@@ -124,6 +143,9 @@ services:
       args:
         TELEGRAM_BOT_API_BUILD_PARALLELISM: "2"
     restart: unless-stopped
+    mem_limit: ${LAUNCHER_TELEGRAM_API_MEMORY_LIMIT:-1g}
+    cpus: ${LAUNCHER_TELEGRAM_API_CPUS:-2.0}
+    pids_limit: ${LAUNCHER_TELEGRAM_API_PIDS_LIMIT:-256}
     env_file:
       - ../secrets/telegram-api.env
     environment:
@@ -138,6 +160,9 @@ services:
       context: ..
       dockerfile: deploy/telegram-bot-api-file-proxy-local.Dockerfile
     restart: unless-stopped
+    mem_limit: ${LAUNCHER_TELEGRAM_PROXY_MEMORY_LIMIT:-256m}
+    cpus: ${LAUNCHER_TELEGRAM_PROXY_CPUS:-1.0}
+    pids_limit: ${LAUNCHER_TELEGRAM_PROXY_PIDS_LIMIT:-128}
     environment:
       PORT: "8081"
       TELEGRAM_BOT_API_UPSTREAM_HOST: telegram-bot-api
@@ -149,6 +174,9 @@ services:
       - telegram-bot-api-data:/var/lib/telegram-bot-api:ro
 
   caddy:
+    mem_limit: ${LAUNCHER_CADDY_MEMORY_LIMIT:-256m}
+    cpus: ${LAUNCHER_CADDY_CPUS:-1.0}
+    pids_limit: ${LAUNCHER_CADDY_PIDS_LIMIT:-128}
     volumes:
       - ./VpsCaddyfile:/etc/caddy/Caddyfile:ro
       - ../website/dist:/srv/vaultnode-website:ro

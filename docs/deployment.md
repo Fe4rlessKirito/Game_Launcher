@@ -54,6 +54,7 @@ LAUNCHER_PUBLIC_BASE_URL=https://<public-api-host>
 SITE_HOST=<public-api-host>
 ACME_EMAIL=<certificate-contact>
 LAUNCHER_OPERATOR_TOKEN=<random-secret-at-least-32-bytes>
+LAUNCHER_COLD_STREAM_TOKEN=<different-random-secret-at-least-32-bytes>
 LAUNCHER_OPERATOR_AUTH_REQUIRED=true
 LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true
 ```
@@ -68,6 +69,11 @@ When an operator token is configured, the API requires at least 32 bytes and
 compares bearer values without an early-exit equality check. Keep the token in
 the deployment secret store; never put it in launcher settings, logs, or a
 client build.
+
+The private cold-stream relay has its own independent bearer secret. The API
+fails closed when its worker URL is configured without a token, and both API
+and worker reject tokens shorter than 32 bytes. Do not reuse the operator
+token for this relay.
 
 With `LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true`, an admin publish/signing
 job fails closed when the secret-managed signing key is absent; it will not
@@ -101,6 +107,14 @@ has a separate 30-request window, a 16-job per-request cap, and a combined
 logical/physical queue cap controlled by `LAUNCHER_MAX_PENDING_RESTORE_JOBS`.
 Keep these limits appropriate for the number of launcher clients and retain the
 concurrency and body-size limits as separate protections.
+
+The Mantle override also applies explicit memory, CPU, and PID ceilings to
+PostgreSQL, API, worker, scraper, Telegram API, its proxy, and Caddy. Scraper
+archive, temporary-space, and artifact limits are set below the 8 GiB
+RAM-backed staging volume by default. Raise those values only as a matched
+change to the container limits and staging volume after measuring peak usage.
+The long-lived worker no longer receives the API operator bearer token; the
+operator token is reserved for API/operator verification paths.
 
 Before calling the VPS production-shaped, run the fail-closed public cutover
 check from a host that can resolve the final DNS record:

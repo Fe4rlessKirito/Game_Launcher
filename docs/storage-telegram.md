@@ -22,12 +22,13 @@ historical downloads, the worker streams the verified response through the API
 with bounded backpressure; it does not create a permanent HOT copy. Telegram
 Bot API file links are never sent to a launcher.
 
-Set `LAUNCHER_COLD_STREAM_TOKEN` to the same operator-generated secret on the
+Set `LAUNCHER_COLD_STREAM_TOKEN` to the same internally generated secret on the
 API and private restore worker. Set `LAUNCHER_COLD_STREAM_WORKER_URL` on the
 API to the worker's private Compose URL, and set
 `LAUNCHER_COLD_STREAM_BIND` on the worker to its private listening address.
-These values belong in the deployment secret store; they are not stored in
-PostgreSQL or returned by any launcher endpoint.
+The token must be a separate random secret of at least 32 bytes. These values
+belong in the deployment secret store; they are not stored in PostgreSQL or
+returned by any launcher endpoint.
 
 The public Bot API accepts bot uploads up to 50 MB and its `getFile` download
 path is limited to 20 MB. That makes the public endpoint unsuitable for a
