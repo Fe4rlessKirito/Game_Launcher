@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Launcher.Core;
 using Launcher.Installation;
 using Launcher.Manifests;
@@ -123,6 +124,41 @@ public sealed class InstallerRecoveryTests
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => fixture.Installer.InstallAsync(fixture.BuildA, fixture.InstallRoot, cancellationToken: cancellation.Token));
         Assert.Empty(await fixture.State.GetInstalledGamesAsync());
+    }
+
+    [Fact]
+    public async Task MalformedOrOutOfScopeJournalsArePreserved()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var malformedId = Guid.NewGuid().ToString("N");
+        var malformed = Path.Combine(fixture.InstallRoot, $".launcher-install-{malformedId}.json");
+        await File.WriteAllTextAsync(malformed, "{not-json");
+
+        var outOfScopeId = Guid.NewGuid().ToString("N");
+        var outsideBackup = Path.Combine(fixture.Root, "attacker-backup");
+        Directory.CreateDirectory(outsideBackup);
+        await File.WriteAllTextAsync(Path.Combine(outsideBackup, "outside.txt"), "must remain outside");
+        var outOfScope = Path.Combine(fixture.InstallRoot, $".launcher-install-{outOfScopeId}.json");
+        await File.WriteAllTextAsync(outOfScope, JsonSerializer.Serialize(new
+        {
+            TransactionId = outOfScopeId,
+            Operation = "install",
+            GameId = "game",
+            OldBuildId = "",
+            NewBuildId = "build",
+            State = "recoverable-failure",
+            BackupRoot = outsideBackup,
+            CommittedPaths = Array.Empty<string>(),
+            RemovedPaths = Array.Empty<string>(),
+            StartedAt = DateTimeOffset.UtcNow,
+        }));
+
+        await Installer.RecoverAsync(fixture.InstallRoot);
+
+        Assert.True(File.Exists(malformed));
+        Assert.True(File.Exists(outOfScope));
+        Assert.True(File.Exists(Path.Combine(outsideBackup, "outside.txt")));
+        Assert.False(File.Exists(Path.Combine(fixture.InstallRoot, "outside.txt")));
     }
 
     [Fact]

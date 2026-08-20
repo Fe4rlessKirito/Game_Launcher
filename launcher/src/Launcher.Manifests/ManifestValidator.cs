@@ -18,7 +18,10 @@ public static partial class ManifestValidator
         if (arguments.Any(argument => argument is null)) throw new InvalidDataException("Launch arguments cannot be null.");
         var environment = manifest.Launch.Environment ?? new Dictionary<string, string>();
         if (environment.Any(pair => pair.Key is null || pair.Value is null)) throw new InvalidDataException("Launch environment cannot contain null entries.");
-        var paths = new HashSet<string>(StringComparer.Ordinal);
+        // Manifest paths are Windows-compatible and are ultimately materialized
+        // on a case-insensitive filesystem. Treat case-only aliases as the same
+        // path here so validation cannot approve two recipes for one file.
+        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var chunksByEncodedHash = new Dictionary<string, ChunkReference>(StringComparer.Ordinal);
         foreach (var file in manifest.Files)
         {
@@ -46,7 +49,7 @@ public static partial class ManifestValidator
         }
         ValidatePortablePath(manifest.Launch.Executable);
         if (manifest.Launch.WorkingDirectory != ".") ValidatePortablePath(manifest.Launch.WorkingDirectory);
-        if (!manifest.Files.Any(file => file.Path == manifest.Launch.Executable)) throw new InvalidDataException("Launch executable is not owned by manifest.");
+        if (!manifest.Files.Any(file => string.Equals(file.Path, manifest.Launch.Executable, StringComparison.OrdinalIgnoreCase))) throw new InvalidDataException("Launch executable is not owned by manifest.");
     }
 
     public static void ValidatePortablePath(string portablePath)

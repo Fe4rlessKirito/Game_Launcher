@@ -88,6 +88,7 @@ services:
       LAUNCHER_STORAGE_COLD_BACKUP_REQUIRED: "true"
       LAUNCHER_STORAGE_RESTORE_MODE: ON_DEMAND
       LAUNCHER_COLD_STREAM_TOKEN: ${LAUNCHER_COLD_STREAM_TOKEN:?set LAUNCHER_COLD_STREAM_TOKEN in .env}
+      LAUNCHER_COLD_STREAM_MAX_CONCURRENT: ${LAUNCHER_COLD_STREAM_MAX_CONCURRENT:-8}
       LAUNCHER_CLEANUP_STAGING_AFTER_PUBLISH: "true"
     command: ["storage", "worker", "--poll-seconds", "15", "--storage-root", "/var/lib/launcher/ephemeral"]
     depends_on:

@@ -46,7 +46,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{Semaphore, TryAcquireError},
+};
 use uuid::Uuid;
 
 mod staging_cleanup;
@@ -67,6 +70,7 @@ struct Cli {
 struct ColdStreamState {
     storage: StorageRegistry,
     token: Arc<String>,
+    stream_limit: Arc<Semaphore>,
 }
 
 async fn cold_pack_stream(
@@ -82,12 +86,32 @@ async fn cold_pack_stream(
     if !authorized {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    if !is_lowercase_content_hash(&pack_hash) {
+        return (StatusCode::BAD_REQUEST, "invalid pack hash").into_response();
+    }
+    let permit = match state.stream_limit.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(TryAcquireError::NoPermits) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                "cold stream capacity exhausted",
+            )
+                .into_response();
+        }
+        Err(TryAcquireError::Closed) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
 
     let mut attempted = false;
     for provider in state.storage.restore_sources(StorageClass::Cold) {
         attempted = true;
         match provider.read_pack_stream(&pack_hash).await {
             Ok(stream) => {
+                // Keep the permit alive until the response body finishes, not
+                // merely until the provider lookup returns.
+                let stream = stream.map(move |chunk| {
+                    let _ = &permit;
+                    chunk
+                });
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -128,6 +152,13 @@ fn constant_time_token_eq(supplied: &str, expected: &str) -> bool {
     }
 
     difference == 0
+}
+
+fn is_lowercase_content_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn read_minimum_secret(name: &str, minimum_bytes: usize) -> Result<Option<String>> {
@@ -1552,6 +1583,11 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
             let cold_stream_token =
                 read_minimum_secret("LAUNCHER_COLD_STREAM_TOKEN", MIN_INTERNAL_TOKEN_BYTES)?;
             let mut cold_stream_server = cold_stream_token.map(|token| {
+                let max_streams = env::var("LAUNCHER_COLD_STREAM_MAX_CONCURRENT")
+                    .ok()
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(8)
+                    .clamp(1, 64);
                 let bind = env::var("LAUNCHER_COLD_STREAM_BIND").unwrap_or_else(|_| {
                     env::var("PORT")
                         .map(|port| format!("0.0.0.0:{port}"))
@@ -1562,6 +1598,7 @@ async fn handle_storage_command(command: StorageCommands) -> Result<()> {
                     ColdStreamState {
                         storage: storage.clone(),
                         token: Arc::new(token),
+                        stream_limit: Arc::new(Semaphore::new(max_streams)),
                     },
                 ))
             });

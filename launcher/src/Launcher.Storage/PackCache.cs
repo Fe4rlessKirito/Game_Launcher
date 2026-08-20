@@ -96,7 +96,10 @@ public sealed class PackCache(string root, long maxBytes)
 
     private Task DeleteAsync(string packHash)
     {
-        try { if (File.Exists(GetPath(packHash))) File.Delete(GetPath(packHash)); } finally { lock (_gate) { if (_entries.Remove(packHash, out var entry)) _currentBytes -= entry.Size; } }
+        // Keep the index entry when deletion fails; otherwise a locked pack
+        // would disappear from accounting while continuing to consume disk.
+        File.Delete(GetPath(packHash));
+        lock (_gate) { if (_entries.Remove(packHash, out var entry)) _currentBytes -= entry.Size; }
         return Task.CompletedTask;
     }
 

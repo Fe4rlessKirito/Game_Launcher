@@ -491,7 +491,6 @@ public partial class SettingsViewModel : ObservableObject
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!);
             var snapshot = new LauncherSettings(
                 LaunchOnStartup,
                 MinimizeOnClose,
@@ -516,7 +515,7 @@ public partial class SettingsViewModel : ObservableObject
                 BattleNetIntegrationEnabled: BattleNetIntegrationEnabled,
                 XboxIntegrationEnabled: XboxIntegrationEnabled,
                 ItchIntegrationEnabled: ItchIntegrationEnabled);
-            File.WriteAllText(_settingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
+            WriteSettingsAtomically(_settingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
             ApplyOptionalStoreSettingsToRuntime();
             SaveStatus = "Changes saved locally.";
         }
@@ -527,6 +526,34 @@ public partial class SettingsViewModel : ObservableObject
         catch (UnauthorizedAccessException)
         {
             SaveStatus = "Could not save settings locally.";
+        }
+    }
+
+    private static void WriteSettingsAtomically(string path, string contents)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var directory = Path.GetDirectoryName(fullPath)
+            ?? throw new InvalidOperationException("Settings path has no parent directory.");
+        Directory.CreateDirectory(directory);
+        var temporaryPath = Path.Combine(
+            directory,
+            $".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.part");
+        try
+        {
+            File.WriteAllText(temporaryPath, contents);
+            File.Move(temporaryPath, fullPath, true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+            catch (IOException)
+            {
+                // The committed settings file is already safe if cleanup is
+                // interrupted; the next save will use another unique temp.
+            }
         }
     }
 

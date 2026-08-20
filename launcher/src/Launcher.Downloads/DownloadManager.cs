@@ -268,6 +268,11 @@ public sealed class DownloadManager(
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         if (offset > 0) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(offset, null);
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            TryDeletePartial(chunk.EncodedHash);
+            throw new HttpRequestException($"Chunk URL returned {(int)response.StatusCode} for a stale partial file.");
+        }
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound || response.StatusCode == System.Net.HttpStatusCode.Gone) throw new HttpRequestException($"Chunk URL returned {(int)response.StatusCode}.");
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
         {
@@ -472,6 +477,11 @@ public sealed class DownloadManager(
         using var request = new HttpRequestMessage(HttpMethod.Get, source.Url);
         if (offset > 0 && source.RangeSupported) request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(offset, null);
         using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable)
+        {
+            cache.DeletePartial(pack.PackHash);
+            throw new HttpRequestException($"Pack URL returned {(int)response.StatusCode} for a stale partial file.");
+        }
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound || response.StatusCode == System.Net.HttpStatusCode.Gone) throw new HttpRequestException($"Pack URL returned {(int)response.StatusCode}.");
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
         {

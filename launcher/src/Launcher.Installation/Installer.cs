@@ -266,7 +266,17 @@ public sealed class Installer(
         {
             cancellationToken.ThrowIfCancellationRequested();
             TransactionJournal? journal = null;
-            try { journal = JsonSerializer.Deserialize<TransactionJournal>(await File.ReadAllTextAsync(journalPath, cancellationToken).ConfigureAwait(false)); } catch (JsonException) { }
+            try
+            {
+                journal = JsonSerializer.Deserialize<TransactionJournal>(await File.ReadAllTextAsync(journalPath, cancellationToken).ConfigureAwait(false));
+            }
+            catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException)
+            {
+                // A malformed or unreadable journal is evidence that recovery
+                // cannot be proven safe. Leave it in place for inspection.
+                continue;
+            }
+            if (journal is null || !IsSafeJournal(root, journalPath, journal)) continue;
             var databaseCommitted = journal is not null
                 && stateStore is not null
                 && await IsDatabaseCommittedAsync(stateStore, root, journal, cancellationToken).ConfigureAwait(false);
@@ -294,6 +304,37 @@ public sealed class Installer(
             }
         }
         await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    private static bool IsSafeJournal(string root, string journalPath, TransactionJournal journal)
+    {
+        if (!Guid.TryParseExact(journal.TransactionId, "N", out _)
+            || journal.Operation is not ("install" or "update")
+            || journal.State is not ("started" or "filesystem-committed" or "recoverable-failure" or "committed")
+            || string.IsNullOrWhiteSpace(journal.GameId)
+            || journal.CommittedPaths is null
+            || journal.RemovedPaths is null
+            || string.IsNullOrWhiteSpace(journal.BackupRoot))
+        {
+            return false;
+        }
+
+        var expectedJournalName = $".launcher-{journal.Operation}-{journal.TransactionId}.json";
+        if (!string.Equals(Path.GetFileName(journalPath), expectedJournalName, StringComparison.Ordinal)) return false;
+
+        try
+        {
+            var parent = Directory.GetParent(root)?.FullName;
+            if (parent is null) return false;
+            var expectedBackup = Path.Combine(parent, $".launcher-{journal.Operation}-{journal.TransactionId}.backup");
+            if (!string.Equals(Path.GetFullPath(journal.BackupRoot), expectedBackup, StringComparison.OrdinalIgnoreCase)) return false;
+            foreach (var path in journal.CommittedPaths.Concat(journal.RemovedPaths)) ManifestValidator.ValidatePortablePath(path);
+            return true;
+        }
+        catch (Exception error) when (error is InvalidDataException or ArgumentException or IOException)
+        {
+            return false;
+        }
     }
 
     private static async Task<bool> IsDatabaseCommittedAsync(LocalStateStore stateStore, string root, TransactionJournal journal, CancellationToken cancellationToken)
@@ -371,6 +412,7 @@ public sealed class Installer(
         if (!Directory.Exists(journal.BackupRoot)) return;
         foreach (var backup in Directory.EnumerateFiles(journal.BackupRoot, "*", SearchOption.AllDirectories))
         {
+            if (File.GetAttributes(backup).HasFlag(FileAttributes.ReparsePoint)) throw new IOException($"Refusing to restore reparse point: {backup}");
             var relative = Path.GetRelativePath(journal.BackupRoot, backup);
             var destination = PathGuard.ResolveUnderRoot(root, relative.Replace(Path.DirectorySeparatorChar, '/'));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);

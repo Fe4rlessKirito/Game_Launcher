@@ -132,7 +132,11 @@ public sealed class ChunkCache(string root, long maxBytes)
     private Task DeleteAsync(string encodedHash)
     {
         var path = GetPath(encodedHash);
-        try { if (File.Exists(path)) File.Delete(path); } finally { lock (_gate) { if (_entries.Remove(encodedHash, out var entry)) _currentBytes -= entry.Size; } }
+        // File.Delete is a no-op when the file is already gone, but it throws
+        // for a real I/O failure. Keep the index entry in that case so the
+        // accounting does not claim bytes were removed when they still exist.
+        File.Delete(path);
+        lock (_gate) { if (_entries.Remove(encodedHash, out var entry)) _currentBytes -= entry.Size; }
         return Task.CompletedTask;
     }
 

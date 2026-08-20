@@ -16,15 +16,18 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
 
-
 CHUNK_SIZE = 1024 * 1024
 
 
 def allowed_file_path(raw_path: str) -> str | None:
     candidate = os.path.realpath(unquote(raw_path))
     roots = [
-        os.path.realpath(os.environ.get("TELEGRAM_BOT_API_DIR", "/var/lib/telegram-bot-api")),
-        os.path.realpath(os.environ.get("TELEGRAM_BOT_API_TEMP_DIR", "/tmp/telegram-bot-api")),
+        os.path.realpath(
+            os.environ.get("TELEGRAM_BOT_API_DIR", "/var/lib/telegram-bot-api")
+        ),
+        os.path.realpath(
+            os.environ.get("TELEGRAM_BOT_API_TEMP_DIR", "/tmp/telegram-bot-api")
+        ),
     ]
     for root in roots:
         if candidate == root or candidate.startswith(root + os.sep):
@@ -35,21 +38,21 @@ def allowed_file_path(raw_path: str) -> str | None:
 class ProxyHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         parsed = urlsplit(self.path)
         if parsed.path.startswith("/file/bot"):
             self.serve_file(parsed.path)
             return
         self.forward(parsed)
 
-    def do_HEAD(self) -> None:  # noqa: N802
+    def do_HEAD(self) -> None:
         parsed = urlsplit(self.path)
         if parsed.path.startswith("/file/bot"):
             self.send_error(405, "HEAD is not supported for private file paths")
             return
         self.forward(parsed)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         self.forward(urlsplit(self.path))
 
     def serve_file(self, path: str) -> None:
@@ -86,7 +89,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_error(500)
 
     def forward(self, parsed) -> None:
-        content_length = int(self.headers.get("Content-Length", "0"))
+        transfer_encoding = self.headers.get("Transfer-Encoding", "").strip().lower()
+        if transfer_encoding not in {"", "identity"}:
+            self.send_error(501, "Chunked requests are not supported")
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400, "Invalid Content-Length")
+            return
+        if content_length < 0:
+            self.send_error(400, "Invalid Content-Length")
+            return
         upstream = http.client.HTTPConnection(
             self.server.upstream_host,
             self.server.upstream_port,
@@ -100,7 +114,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             }
             headers["Host"] = f"127.0.0.1:{self.server.upstream_port}"
             headers["Connection"] = "close"
-            upstream.putrequest(self.command, parsed.path + (f"?{parsed.query}" if parsed.query else ""))
+            upstream.putrequest(
+                self.command, parsed.path + (f"?{parsed.query}" if parsed.query else "")
+            )
             for key, value in headers.items():
                 upstream.putheader(key, value)
             upstream.endheaders()
@@ -114,7 +130,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             response = upstream.getresponse()
             self.send_response(response.status)
             for key, value in response.getheaders():
-                if key.lower() not in {"connection", "transfer-encoding", "server", "date"}:
+                if key.lower() not in {
+                    "connection",
+                    "transfer-encoding",
+                    "server",
+                    "date",
+                }:
                     self.send_header(key, value)
             self.send_header("Connection", "close")
             self.end_headers()

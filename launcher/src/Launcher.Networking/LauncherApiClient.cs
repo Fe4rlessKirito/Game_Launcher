@@ -124,6 +124,9 @@ public sealed class SupabaseAuthClient(HttpClient httpClient, Uri baseUri, strin
 public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
 {
     private const int MaxRestorePolls = 20;
+    private const int MaxCatalogItems = 100_000;
+    private const int MaxCatalogPages = 1_024;
+    private const int MaxCatalogCursorLength = 256;
     private static readonly TimeSpan DefaultRestorePollDelay = TimeSpan.FromSeconds(5);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
 
@@ -132,15 +135,30 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
         var games = new List<GameCatalogItem>();
         var seenCursors = new HashSet<string>(StringComparer.Ordinal);
         string? cursor = null;
+        var pageCount = 0;
 
         do
         {
+            if (++pageCount > MaxCatalogPages)
+            {
+                throw new HttpRequestException("The catalog exceeded the pagination safety limit.");
+            }
+            if (cursor is { Length: > MaxCatalogCursorLength })
+            {
+                throw new InvalidDataException("The catalog returned an oversized pagination cursor.");
+            }
             var query = cursor is null
                 ? "api/v1/games?limit=100"
                 : $"api/v1/games?limit=100&cursor={Uri.EscapeDataString(cursor)}";
             var response = await httpClient.GetFromJsonAsync<CatalogResponse>(new Uri(baseUri, query), JsonOptions, cancellationToken).ConfigureAwait(false);
             if (response is null) throw new InvalidDataException("API returned an empty catalog page.");
-            foreach (var item in response.Items ?? [])
+            var items = response.Items ?? [];
+            if (items.Count > 100) throw new InvalidDataException("The catalog returned an oversized page.");
+            if (games.Count > MaxCatalogItems - items.Count)
+            {
+                throw new InvalidDataException("The catalog exceeded the client safety limit.");
+            }
+            foreach (var item in items)
             {
                 ValidateCatalogItem(item);
                 games.Add(item);

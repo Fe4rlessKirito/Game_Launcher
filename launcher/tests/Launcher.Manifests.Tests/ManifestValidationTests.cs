@@ -46,6 +46,8 @@ public sealed class ManifestValidationTests
         var valid = CreateManifest();
         var duplicate = valid with { Files = new[] { valid.Files[0], valid.Files[0] } };
         Assert.Throws<InvalidDataException>(() => ManifestValidator.Validate(duplicate));
+        var caseOnlyDuplicate = valid with { Files = new[] { valid.Files[0], valid.Files[0] with { Path = "syntheticgame.exe" } } };
+        Assert.Throws<InvalidDataException>(() => ManifestValidator.Validate(caseOnlyDuplicate));
         var impossible = valid with { Files = new[] { valid.Files[0] with { Chunks = new[] { valid.Files[0].Chunks[0] with { RawSize = 0 } } } } };
         Assert.Throws<InvalidDataException>(() => ManifestValidator.Validate(impossible));
         var conflicting = valid with { Files = new[] { valid.Files[0] with { Chunks = new[] { valid.Files[0].Chunks[0], valid.Files[0].Chunks[0] with { RawSize = 2, EncodedSize = 2 } }, Size = 3 } } };

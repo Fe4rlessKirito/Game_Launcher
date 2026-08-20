@@ -2037,12 +2037,12 @@ async fn list_games(
     Query(query): Query<CatalogQuery>,
 ) -> Result<Json<CatalogPage>, ApiResponseError> {
     let limit = query.limit.unwrap_or(24).clamp(1, 100);
-    let offset = query
-        .cursor
-        .as_deref()
-        .unwrap_or("0")
-        .parse::<u32>()
-        .unwrap_or(0);
+    let offset = match query.cursor.as_deref() {
+        None => 0,
+        Some(cursor) => cursor.parse::<u32>().map_err(|_| {
+            ApiResponseError::bad_request("catalog cursor must be a non-negative integer")
+        })?,
+    };
     if let Some(database) = &state.database {
         return Ok(Json(
             database

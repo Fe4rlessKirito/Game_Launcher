@@ -73,7 +73,9 @@ client build.
 The private cold-stream relay has its own independent bearer secret. The API
 fails closed when its worker URL is configured without a token, and both API
 and worker reject tokens shorter than 32 bytes. Do not reuse the operator
-token for this relay.
+token for this relay. The worker also caps active cold streams with
+`LAUNCHER_COLD_STREAM_MAX_CONCURRENT` (default `8`) so a burst of authorized
+restore requests cannot consume all worker connections and memory.
 
 With `LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true`, an admin publish/signing
 job fails closed when the secret-managed signing key is absent; it will not

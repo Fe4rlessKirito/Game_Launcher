@@ -7,13 +7,18 @@ public sealed record UpdatePackage(string PackagePath, string ExpectedBlake3, st
 
 public static class UpdateCoordinator
 {
+    private const int MaxArchiveEntries = 100_000;
+    private const long MaxPackageBytes = 4L * 1024 * 1024 * 1024;
+    private const long MaxExpandedBytes = 4L * 1024 * 1024 * 1024;
+    private const long MaxEntryBytes = 2L * 1024 * 1024 * 1024;
+
     public static async Task ApplyAsync(UpdatePackage package, CancellationToken cancellationToken = default)
     {
         var installDirectory = Path.GetFullPath(package.InstallDirectory);
         if (!File.Exists(package.PackagePath)) throw new FileNotFoundException("Update package was not found.", package.PackagePath);
+        PathGuard.EnsureSafeRoot(installDirectory);
         var actual = await Hashing.ComputeFileHashAsync(package.PackagePath, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(actual, package.ExpectedBlake3, StringComparison.Ordinal)) throw new InvalidDataException("Launcher update package hash mismatch.");
-        Directory.CreateDirectory(installDirectory);
         var parentDirectory = Directory.GetParent(installDirectory)?.FullName ?? throw new InvalidDataException("Launcher install directory has no parent.");
         var staging = Path.Combine(parentDirectory, ".launcher-update-staging-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(staging);
@@ -49,21 +54,45 @@ public static class UpdateCoordinator
 
     private static void ExtractAndValidatePackage(string packagePath, string staging, CancellationToken cancellationToken)
     {
+        var packageLength = new FileInfo(packagePath).Length;
+        if (packageLength > MaxPackageBytes) throw new InvalidDataException("Launcher update package is too large.");
         using var archive = ZipFile.OpenRead(packagePath);
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        long expandedBytes = 0;
+        var entryCount = 0;
         foreach (var entry in archive.Entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (++entryCount > MaxArchiveEntries) throw new InvalidDataException("Launcher update package has too many entries.");
             var portable = entry.FullName.Replace('\\', '/');
+            if (string.IsNullOrEmpty(portable) || portable == "/") throw new InvalidDataException("Launcher update package contains an empty path.");
+            var normalizedPath = portable.TrimEnd('/');
+            if (!seenPaths.Add(normalizedPath)) throw new InvalidDataException($"Duplicate update package path: {portable}");
+            if (entry.Length < 0 || entry.Length > MaxEntryBytes || expandedBytes > MaxExpandedBytes - entry.Length)
+            {
+                throw new InvalidDataException("Launcher update package expands beyond its safety limit.");
+            }
+            expandedBytes += entry.Length;
             if (portable.EndsWith('/'))
             {
-                if (portable.Length > 1) Directory.CreateDirectory(PathGuard.ResolveUnderRoot(staging, portable.TrimEnd('/')));
+                Directory.CreateDirectory(PathGuard.ResolveUnderRoot(staging, normalizedPath));
                 continue;
             }
             var destination = PathGuard.ResolveUnderRoot(staging, portable);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             using var input = entry.Open();
             using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-            input.CopyTo(output);
+            var buffer = new byte[1024 * 1024];
+            long copied = 0;
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                copied = checked(copied + read);
+                if (copied > entry.Length) throw new InvalidDataException("Launcher update package entry length was invalid.");
+                output.Write(buffer, 0, read);
+            }
+            if (copied != entry.Length) throw new InvalidDataException("Launcher update package entry was truncated.");
         }
     }
 
