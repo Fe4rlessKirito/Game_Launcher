@@ -1,0 +1,70 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.302'
+
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid release version: $version" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Restore launcher
+        run: dotnet restore launcher/src/Launcher.App/Launcher.App.csproj --runtime win-x64
+
+      - name: Publish self-contained launcher
+        run: >-
+          dotnet publish launcher/src/Launcher.App/Launcher.App.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --no-restore
+          --output artifacts/vaultnode-win-x64
+          -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $compiler = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $compiler) { throw 'Inno Setup compiler was not found.' }
+          Push-Location packaging
+          & $compiler /Qp "/DAppVersion=${{ steps.version.outputs.version }}" Vaultnode.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          if (-not (Test-Path -LiteralPath artifacts/Vaultnode-Setup.exe)) { throw 'Installer output was not created.' }
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          artifacts/Vaultnode-Setup.exe
+          --verify-tag
+          --title "Vaultnode ${{ steps.version.outputs.version }}"
+          --generate-notes
