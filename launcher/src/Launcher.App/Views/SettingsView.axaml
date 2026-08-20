@@ -13,6 +13,7 @@
         <Button Content="Downloads" Classes="SettingsNavItem" Classes.active="{Binding IsDownloadsSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Downloads" />
         <Button Content="Steam" Classes="SettingsNavItem" Classes.active="{Binding IsSteamSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Steam" />
         <Button Content="Epic Games" Classes="SettingsNavItem" Classes.active="{Binding IsEpicSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Epic" />
+        <Button Content="Other stores" Classes="SettingsNavItem" Classes.active="{Binding IsIntegrationsSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Integrations" />
         <Button Content="Appearance" Classes="SettingsNavItem" Classes.active="{Binding IsAppearanceSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Appearance" />
         <Border Height="1" Background="{DynamicResource BorderSubtle}" Margin="8,8" />
         <Button Content="Advanced" Classes="SettingsNavItem" Classes.active="{Binding IsAdvancedSelected}" Command="{Binding SelectSectionCommand}" CommandParameter="Advanced" />
@@ -209,6 +210,69 @@
               </StackPanel>
             </Border>
             <TextBlock Text="Vaultnode does not copy, update, verify, or uninstall Epic files. Epic Games Launcher remains responsible for account ownership, downloads, updates, and file management." Classes="Caption" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+
+      <StackPanel IsVisible="{Binding IsIntegrationsSelected}" Spacing="18">
+        <StackPanel Spacing="4">
+          <TextBlock Text="Other stores" Classes="HeadingLarge" />
+          <TextBlock Text="Optional local integrations for games installed outside Vaultnode. Steam and Epic are enabled by default; these integrations are off until you turn them on." Classes="Caption" TextWrapping="Wrap" />
+        </StackPanel>
+        <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
+          <StackPanel Spacing="14">
+            <TextBlock Text="Local detection only" Classes="BodyStrong" />
+            <TextBlock Text="When enabled, Vaultnode scans the provider's known local install folders and launches detected executables. It does not connect accounts, collect passwords, or replace the provider's downloads, updates, ownership, or file management." Classes="Caption" TextWrapping="Wrap" />
+            <Border Background="{DynamicResource SurfaceSecondary}" CornerRadius="8" Padding="16">
+              <StackPanel Spacing="14">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="GOG Galaxy" Classes="BodyStrong" />
+                    <TextBlock Text="{Binding GogIntegrationStatus}" Classes="Caption" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <ToggleSwitch Grid.Column="1" IsChecked="{Binding GogIntegrationEnabled, Mode=TwoWay}" VerticalAlignment="Center" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="Ubisoft Connect" Classes="BodyStrong" />
+                    <TextBlock Text="{Binding UbisoftIntegrationStatus}" Classes="Caption" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <ToggleSwitch Grid.Column="1" IsChecked="{Binding UbisoftIntegrationEnabled, Mode=TwoWay}" VerticalAlignment="Center" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="EA app" Classes="BodyStrong" />
+                    <TextBlock Text="{Binding EaIntegrationStatus}" Classes="Caption" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <ToggleSwitch Grid.Column="1" IsChecked="{Binding EaIntegrationEnabled, Mode=TwoWay}" VerticalAlignment="Center" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="Battle.net" Classes="BodyStrong" />
+                    <TextBlock Text="{Binding BattleNetIntegrationStatus}" Classes="Caption" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <ToggleSwitch Grid.Column="1" IsChecked="{Binding BattleNetIntegrationEnabled, Mode=TwoWay}" VerticalAlignment="Center" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="Xbox / Microsoft Store" Classes="BodyStrong" />
+                    <TextBlock Text="{Binding XboxIntegrationStatus}" Classes="Caption" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <ToggleSwitch Grid.Column="1" IsChecked="{Binding XboxIntegrationEnabled, Mode=TwoWay}" VerticalAlignment="Center" />
+                </Grid>
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                  <StackPanel Spacing="3">
+                    <TextBlock Text="itch.io" Classes="BodyStrong" />
+                    <TextBlock Text="{Binding ItchIntegrationStatus}" Classes="Caption" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <ToggleSwitch Grid.Column="1" IsChecked="{Binding ItchIntegrationEnabled, Mode=TwoWay}" VerticalAlignment="Center" />
+                </Grid>
+              </StackPanel>
+            </Border>
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <Button Content="Refresh enabled stores" Classes="SmallSecondary" Command="{Binding RefreshOptionalStoresCommand}" />
+              <TextBlock Text="Save changes to keep the toggles after restart." Classes="Caption" VerticalAlignment="Center" TextWrapping="Wrap" />
+            </StackPanel>
           </StackPanel>
         </Border>
       </StackPanel>

@@ -28,15 +28,17 @@ public sealed record RuntimeGame(
     SteamOwnedGame? SteamOwned = null,
     string? ArtworkSource = null,
     string? IconArtworkSource = null,
-    EpicGameInstall? EpicInstall = null)
+    EpicGameInstall? EpicInstall = null,
+    OptionalStoreGameInstall? OptionalStoreInstall = null)
 {
     public bool IsSteamGame => SteamInstall is not null || SteamOwned is not null;
     public bool IsEpicGame => EpicInstall is not null;
-    public bool IsExternalStoreGame => IsSteamGame || IsEpicGame;
-    public bool IsInstalled => Installed is not null || SteamInstall is not null || EpicInstall is not null;
+    public bool IsOptionalStoreGame => OptionalStoreInstall is not null;
+    public bool IsExternalStoreGame => IsSteamGame || IsEpicGame || IsOptionalStoreGame;
+    public bool IsInstalled => Installed is not null || SteamInstall is not null || EpicInstall is not null || OptionalStoreInstall is not null;
     public bool HasBuild => !string.IsNullOrWhiteSpace(BuildId);
 
-    public string StatusText => SteamInstall is not null || EpicInstall is not null
+    public string StatusText => SteamInstall is not null || EpicInstall is not null || OptionalStoreInstall is not null
         ? "Installed"
         : SteamOwned is not null
             ? "Available in Steam"
@@ -77,7 +79,8 @@ public sealed record LauncherRuntimeSnapshot(
     SteamLibrarySnapshot? Steam = null,
     IReadOnlySet<string>? ExcludedGameIds = null,
     IReadOnlyList<LibraryCategoryState>? LibraryCategories = null,
-    EpicLibrarySnapshot? Epic = null);
+    EpicLibrarySnapshot? Epic = null,
+    IReadOnlyList<OptionalStoreSnapshot>? OptionalStores = null);
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
@@ -109,6 +112,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly PackCache _packCache;
     private readonly Func<SteamLibrarySnapshot> _steamDiscovery;
     private readonly Func<EpicLibrarySnapshot> _epicDiscovery;
+    private readonly Func<IReadOnlyDictionary<OptionalStoreProvider, bool>, IReadOnlyList<OptionalStoreSnapshot>> _optionalStoreDiscovery;
+    private readonly Dictionary<OptionalStoreProvider, bool> _optionalStoreEnabled;
     private SteamAccountLink? _steamAccount;
     private IReadOnlyList<SteamOwnedGame> _steamOwnedGames;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
@@ -130,7 +135,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
         HttpClient? httpClient = null,
         string? accessToken = null,
         Func<SteamLibrarySnapshot>? steamDiscovery = null,
-        Func<EpicLibrarySnapshot>? epicDiscovery = null)
+        Func<EpicLibrarySnapshot>? epicDiscovery = null,
+        Func<IReadOnlyDictionary<OptionalStoreProvider, bool>, IReadOnlyList<OptionalStoreSnapshot>>? optionalStoreDiscovery = null)
     {
         _settings = settings;
         _paths = LauncherPaths.FromRoot(stateRoot);
@@ -158,6 +164,16 @@ public sealed class LauncherRuntime : IAsyncDisposable
         _packCache = new PackCache(packCacheRoot, packCacheBytes);
         _steamDiscovery = steamDiscovery ?? (() => SteamLibraryDiscovery.Discover());
         _epicDiscovery = epicDiscovery ?? (() => EpicLibraryDiscovery.Discover());
+        _optionalStoreDiscovery = optionalStoreDiscovery ?? OptionalStoreDiscovery.Discover;
+        _optionalStoreEnabled = new Dictionary<OptionalStoreProvider, bool>
+        {
+            [OptionalStoreProvider.Gog] = settings.GogIntegrationEnabled,
+            [OptionalStoreProvider.UbisoftConnect] = settings.UbisoftIntegrationEnabled,
+            [OptionalStoreProvider.EaApp] = settings.EaIntegrationEnabled,
+            [OptionalStoreProvider.BattleNet] = settings.BattleNetIntegrationEnabled,
+            [OptionalStoreProvider.Xbox] = settings.XboxIntegrationEnabled,
+            [OptionalStoreProvider.Itch] = settings.ItchIntegrationEnabled,
+        };
         _steamAccount = SteamLibraryDiscovery.IsValidSteamId64(settings.SteamId64)
             ? new SteamAccountLink(settings.SteamId64, string.IsNullOrWhiteSpace(settings.SteamPersonaName) ? null : settings.SteamPersonaName)
             : null;
@@ -165,6 +181,12 @@ public sealed class LauncherRuntime : IAsyncDisposable
     }
 
     public LauncherRuntimeSnapshot Snapshot => _snapshot;
+
+    public IReadOnlyDictionary<OptionalStoreProvider, bool> OptionalStoreEnabled =>
+        new Dictionary<OptionalStoreProvider, bool>(_optionalStoreEnabled);
+
+    public void SetOptionalStoreEnabled(OptionalStoreProvider provider, bool enabled) =>
+        _optionalStoreEnabled[provider] = enabled;
 
     public bool IsAuthenticated => !string.IsNullOrWhiteSpace(_accessToken);
 
@@ -394,7 +416,29 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 epic = new EpicLibrarySnapshot([], [], $"Epic discovery failed: {exception.Message}");
             }
 
-            var games = BuildGames(_catalog, installed, steam.Games, steam.OwnedGames ?? [], epic.Games);
+            IReadOnlyList<OptionalStoreSnapshot> optionalStores;
+            try
+            {
+                // Optional store scans are disabled by default and only inspect
+                // local install metadata/folders after the user enables them.
+                var enabled = new Dictionary<OptionalStoreProvider, bool>(_optionalStoreEnabled);
+                optionalStores = await Task.Run(() => _optionalStoreDiscovery(enabled), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+            {
+                optionalStores = Enum.GetValues<OptionalStoreProvider>()
+                    .Select(provider => new OptionalStoreSnapshot(
+                        provider,
+                        _optionalStoreEnabled.TryGetValue(provider, out var enabled) && enabled,
+                        false,
+                        [],
+                        [],
+                        $"{provider.DisplayName()} discovery failed: {exception.Message}"))
+                    .ToArray();
+            }
+
+            var optionalStoreGames = optionalStores.SelectMany(store => store.Games).ToArray();
+            var games = BuildGames(_catalog, installed, steam.Games, steam.OwnedGames ?? [], epic.Games, optionalStoreGames);
             var connectionStatus = online ? "Online" : "Offline-ready";
             LauncherUserProfile? user = null;
             if (IsAuthenticated)
@@ -412,7 +456,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 }
             }
 
-            _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds, libraryCategories, epic);
+            _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds, libraryCategories, epic, optionalStores);
             SnapshotChanged?.Invoke(_snapshot);
             return _snapshot;
         }
@@ -569,6 +613,11 @@ public sealed class LauncherRuntime : IAsyncDisposable
             return EpicLauncher.LaunchAsync(game.EpicInstall);
         }
 
+        if (game.OptionalStoreInstall is not null)
+        {
+            return OptionalStoreLauncher.LaunchAsync(game.OptionalStoreInstall);
+        }
+
         if (game.Installed is null) throw new LauncherOperationException($"{game.Title} is not installed.");
 
         var manifest = ManifestJson.Deserialize(game.Installed.ManifestJson);
@@ -632,9 +681,10 @@ public sealed class LauncherRuntime : IAsyncDisposable
         IReadOnlyList<InstalledGame> installed,
         IReadOnlyList<SteamGameInstall> steamGames,
         IReadOnlyList<SteamOwnedGame> steamOwnedGames,
-        IReadOnlyList<EpicGameInstall> epicGames)
+        IReadOnlyList<EpicGameInstall> epicGames,
+        OptionalStoreGameInstall[] optionalStoreGames)
     {
-        var games = new List<RuntimeGame>(catalog.Count + installed.Count + steamGames.Count + steamOwnedGames.Count + epicGames.Count);
+        var games = new List<RuntimeGame>(catalog.Count + installed.Count + steamGames.Count + steamOwnedGames.Count + epicGames.Count + optionalStoreGames.Length);
         var matchedInstalled = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in catalog)
         {
@@ -760,6 +810,35 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 null,
                 null,
                 epicGame));
+        }
+
+        foreach (var optionalStoreGame in optionalStoreGames)
+        {
+            var id = $"{optionalStoreGame.Provider.ToString().ToLowerInvariant()}:{optionalStoreGame.AppId}";
+            if (games.Any(game => string.Equals(game.Id, id, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            games.Add(new RuntimeGame(
+                id,
+                id,
+                optionalStoreGame.Name,
+                $"Installed through {optionalStoreGame.ProviderName}. {optionalStoreGame.ProviderName} manages this installation and its updates.",
+                BuildMonogram(optionalStoreGame.Name),
+                null,
+                optionalStoreGame.ProviderName,
+                optionalStoreGame.SizeBytes,
+                GameState.Launchable,
+                optionalStoreGame.InstallRoot,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                optionalStoreGame));
         }
 
         return games;

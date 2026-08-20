@@ -38,6 +38,8 @@ public partial class GameDetailsViewModel : ObservableObject
                 ? "Steam manages this installation. Launching will open Steam."
             : game?.IsEpicGame == true
                 ? "Epic Games manages this installation. Launching will open Epic Games Launcher."
+            : game?.IsOptionalStoreGame == true
+                ? $"{game.OptionalStoreInstall!.ProviderName} manages this installation. Launching will open the installed game."
             : game is null ? "Ready to launch." : "Build metadata is loaded from the launcher service.";
         _isInstalled = game?.IsInstalled ?? true;
     }
@@ -47,9 +49,14 @@ public partial class GameDetailsViewModel : ObservableObject
     public bool IsSteamInstalled => _game?.SteamInstall is not null;
     public bool IsSteamOwned => _game?.SteamOwned is not null;
     public bool IsEpicGame => _game?.IsEpicGame == true;
+    public bool IsOptionalStoreGame => _game?.IsOptionalStoreGame == true;
     public bool IsExternalStoreGame => _game?.IsExternalStoreGame == true;
     public bool IsVaultnodeGame => !IsExternalStoreGame;
-    public string ExternalPlatformName => IsEpicGame ? "Epic Games" : "Steam";
+    public string ExternalPlatformName => IsEpicGame
+        ? "Epic Games"
+        : IsSteamGame
+            ? "Steam"
+            : _game?.OptionalStoreInstall?.ProviderName ?? "Store";
     public string ExternalPlatformMessage => $"{ExternalPlatformName} manages this game's files and updates.";
     public string? ArtworkSource => _game?.ArtworkSource;
     public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
@@ -64,13 +71,21 @@ public partial class GameDetailsViewModel : ObservableObject
             ? "Installed through Steam. Vaultnode can launch it, while Steam remains responsible for ownership, updates, and file management."
         : IsEpicGame
             ? "Installed through Epic Games. Vaultnode can launch it, while Epic remains responsible for ownership, downloads, updates, and file management."
+        : IsOptionalStoreGame
+            ? $"Installed through {ExternalPlatformName}. Vaultnode can launch it, while {ExternalPlatformName} remains responsible for ownership, downloads, updates, and file management."
         : _game?.Description ?? "A verified local build with content-addressed updates, repairable files, and an offline-ready launch profile.";
     public string Version => IsExternalStoreGame ? $"{ExternalPlatformName} installation" : _game?.DisplayVersion ?? "1.0.0";
     public string InstallSize => IsSteamOwned && !IsSteamInstalled ? "Calculated by Steam" : _game?.SizeDisplay ?? "90 B";
     public string InstallLocation => IsSteamOwned && !IsSteamInstalled
         ? "Not installed · Steam chooses the library location"
         : _game?.InstallRoot ?? @"C:\Games\Synthetic Game";
-    public string PlayButtonLabel => IsSteamGame ? "Play in Steam" : IsEpicGame ? "Play in Epic Games" : "Play";
+    public string PlayButtonLabel => IsSteamGame
+        ? "Play in Steam"
+        : IsEpicGame
+            ? "Play in Epic Games"
+            : IsOptionalStoreGame
+                ? "Play game"
+                : "Play";
     public bool ShowPlay => IsInstalled && !IsBusy;
     public bool ShowInstall => !IsExternalStoreGame
         && (!IsInstalled || _game?.State == Launcher.Core.GameState.UpdateAvailable)
@@ -98,10 +113,15 @@ public partial class GameDetailsViewModel : ObservableObject
         {
             ActionMessage = "Epic Games manages this installation. Launching will open Epic Games Launcher.";
         }
+        else if (game.IsOptionalStoreGame)
+        {
+            ActionMessage = $"{game.OptionalStoreInstall!.ProviderName} manages this installation. Launching will open the installed game.";
+        }
         OnPropertyChanged(nameof(IsSteamGame));
         OnPropertyChanged(nameof(IsSteamInstalled));
         OnPropertyChanged(nameof(IsSteamOwned));
         OnPropertyChanged(nameof(IsEpicGame));
+        OnPropertyChanged(nameof(IsOptionalStoreGame));
         OnPropertyChanged(nameof(IsExternalStoreGame));
         OnPropertyChanged(nameof(IsVaultnodeGame));
         OnPropertyChanged(nameof(ExternalPlatformName));
@@ -145,7 +165,9 @@ public partial class GameDetailsViewModel : ObservableObject
                 ? $"{Title} was handed off to Steam."
                 : IsEpicGame
                     ? $"{Title} was handed off to Epic Games Launcher."
-                : $"{Title} is running locally.";
+                    : IsOptionalStoreGame
+                        ? $"{Title} was launched from its {ExternalPlatformName} installation."
+                        : $"{Title} is running locally.";
         }
         catch (Exception error)
         {

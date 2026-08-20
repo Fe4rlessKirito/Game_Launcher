@@ -154,6 +154,12 @@ public sealed record LauncherSettings(
     bool CompactMode = false,
     string SteamId64 = "",
     string SteamPersonaName = "",
-    IReadOnlyList<SteamOwnedGame>? SteamOwnedGames = null);
+    IReadOnlyList<SteamOwnedGame>? SteamOwnedGames = null,
+    bool GogIntegrationEnabled = false,
+    bool UbisoftIntegrationEnabled = false,
+    bool EaIntegrationEnabled = false,
+    bool BattleNetIntegrationEnabled = false,
+    bool XboxIntegrationEnabled = false,
+    bool ItchIntegrationEnabled = false);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

@@ -101,9 +101,28 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _steamConnectionStatus = "Not connected.";
 
+    [ObservableProperty]
+    private bool _gogIntegrationEnabled;
+
+    [ObservableProperty]
+    private bool _ubisoftIntegrationEnabled;
+
+    [ObservableProperty]
+    private bool _eaIntegrationEnabled;
+
+    [ObservableProperty]
+    private bool _battleNetIntegrationEnabled;
+
+    [ObservableProperty]
+    private bool _xboxIntegrationEnabled;
+
+    [ObservableProperty]
+    private bool _itchIntegrationEnabled;
+
     private SteamLibrarySnapshot _steamSnapshot = SteamLibrarySnapshot.Empty;
     private IReadOnlyList<SteamOwnedGame> _cachedSteamOwnedGames = [];
     private EpicLibrarySnapshot _epicSnapshot = EpicLibrarySnapshot.Empty;
+    private IReadOnlyList<OptionalStoreSnapshot> _optionalStoreSnapshots = [];
 
     public bool HasProfileImage => ProfileImage is not null;
     public bool ShowDefaultProfile => !HasProfileImage;
@@ -114,6 +133,7 @@ public partial class SettingsViewModel : ObservableObject
     public bool IsAdvancedSelected => SelectedSection == "Advanced";
     public bool IsSteamSelected => SelectedSection == "Steam";
     public bool IsEpicSelected => SelectedSection == "Epic";
+    public bool IsIntegrationsSelected => SelectedSection == "Integrations";
     public bool IsNotSignedIn => !IsSignedIn;
     public bool CanSubmitAuth => !IsSigningIn;
     public bool HasSteamAccount => !string.IsNullOrWhiteSpace(SteamId64);
@@ -155,6 +175,13 @@ public partial class SettingsViewModel : ObservableObject
     public string EpicAccountStatus => EpicManifestRoots.Count == 0
         ? "Epic does not provide a supported public consumer-library connection for third-party launchers. Install detection will begin when Epic Games Launcher manifests are available."
         : "Epic does not provide a supported public consumer-library connection for third-party launchers. Vaultnode detects these installed titles locally and hands launching back to Epic Games Launcher.";
+    public string GogIntegrationStatus => GetOptionalStoreStatus(OptionalStoreProvider.Gog);
+    public string UbisoftIntegrationStatus => GetOptionalStoreStatus(OptionalStoreProvider.UbisoftConnect);
+    public string EaIntegrationStatus => GetOptionalStoreStatus(OptionalStoreProvider.EaApp);
+    public string BattleNetIntegrationStatus => GetOptionalStoreStatus(OptionalStoreProvider.BattleNet);
+    public string XboxIntegrationStatus => GetOptionalStoreStatus(OptionalStoreProvider.Xbox);
+    public string ItchIntegrationStatus => GetOptionalStoreStatus(OptionalStoreProvider.Itch);
+    public IReadOnlyList<OptionalStoreSnapshot> OptionalStoreSnapshots => _optionalStoreSnapshots;
     public Color AccentColorValue
     {
         get => _accentColorValue;
@@ -185,8 +212,16 @@ public partial class SettingsViewModel : ObservableObject
     public void AttachRuntime(LauncherRuntime runtime)
     {
         _runtime = runtime;
+        var enabled = runtime.OptionalStoreEnabled;
+        GogIntegrationEnabled = enabled.TryGetValue(OptionalStoreProvider.Gog, out var gog) && gog;
+        UbisoftIntegrationEnabled = enabled.TryGetValue(OptionalStoreProvider.UbisoftConnect, out var ubisoft) && ubisoft;
+        EaIntegrationEnabled = enabled.TryGetValue(OptionalStoreProvider.EaApp, out var ea) && ea;
+        BattleNetIntegrationEnabled = enabled.TryGetValue(OptionalStoreProvider.BattleNet, out var battleNet) && battleNet;
+        XboxIntegrationEnabled = enabled.TryGetValue(OptionalStoreProvider.Xbox, out var xbox) && xbox;
+        ItchIntegrationEnabled = enabled.TryGetValue(OptionalStoreProvider.Itch, out var itch) && itch;
         ApplySteamSnapshot(runtime.Snapshot.Steam ?? SteamLibrarySnapshot.Empty);
         ApplyEpicSnapshot(runtime.Snapshot.Epic ?? EpicLibrarySnapshot.Empty);
+        ApplyOptionalStoreSnapshots(runtime.Snapshot.OptionalStores ?? []);
     }
 
     public void ApplySteamSnapshot(SteamLibrarySnapshot snapshot)
@@ -225,6 +260,18 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(HasEpicGames));
         OnPropertyChanged(nameof(EpicStatus));
         OnPropertyChanged(nameof(EpicLibrarySummary));
+    }
+
+    public void ApplyOptionalStoreSnapshots(IReadOnlyList<OptionalStoreSnapshot> snapshots)
+    {
+        _optionalStoreSnapshots = snapshots;
+        OnPropertyChanged(nameof(OptionalStoreSnapshots));
+        OnPropertyChanged(nameof(GogIntegrationStatus));
+        OnPropertyChanged(nameof(UbisoftIntegrationStatus));
+        OnPropertyChanged(nameof(EaIntegrationStatus));
+        OnPropertyChanged(nameof(BattleNetIntegrationStatus));
+        OnPropertyChanged(nameof(XboxIntegrationStatus));
+        OnPropertyChanged(nameof(ItchIntegrationStatus));
     }
 
     public void ApplyUser(LauncherUserProfile? user)
@@ -462,8 +509,15 @@ public partial class SettingsViewModel : ObservableObject
                 CompactMode: CompactMode,
                 SteamId64: SteamId64,
                 SteamPersonaName: SteamPersonaName,
-                SteamOwnedGames: _cachedSteamOwnedGames);
+                SteamOwnedGames: _cachedSteamOwnedGames,
+                GogIntegrationEnabled: GogIntegrationEnabled,
+                UbisoftIntegrationEnabled: UbisoftIntegrationEnabled,
+                EaIntegrationEnabled: EaIntegrationEnabled,
+                BattleNetIntegrationEnabled: BattleNetIntegrationEnabled,
+                XboxIntegrationEnabled: XboxIntegrationEnabled,
+                ItchIntegrationEnabled: ItchIntegrationEnabled);
             File.WriteAllText(_settingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
+            ApplyOptionalStoreSettingsToRuntime();
             SaveStatus = "Changes saved locally.";
         }
         catch (IOException)
@@ -495,6 +549,12 @@ public partial class SettingsViewModel : ObservableObject
         SteamPersonaName = string.Empty;
         _cachedSteamOwnedGames = [];
         SteamConnectionStatus = "Not connected.";
+        GogIntegrationEnabled = false;
+        UbisoftIntegrationEnabled = false;
+        EaIntegrationEnabled = false;
+        BattleNetIntegrationEnabled = false;
+        XboxIntegrationEnabled = false;
+        ItchIntegrationEnabled = false;
         _trustedManifestKeysPem = null;
         _requireTrustedManifestKeys = false;
         SaveStatus = "Defaults restored. Save to keep them.";
@@ -511,6 +571,7 @@ public partial class SettingsViewModel : ObservableObject
             "Advanced" => "Advanced",
             "Steam" => "Steam",
             "Epic" => "Epic",
+            "Integrations" => "Integrations",
             _ => "Profile"
         };
     }
@@ -552,6 +613,36 @@ public partial class SettingsViewModel : ObservableObject
         catch (Exception error) when (error is IOException or HttpRequestException or InvalidDataException or TaskCanceledException)
         {
             ApplyEpicSnapshot(new EpicLibrarySnapshot([], [], error.Message));
+        }
+    }
+
+    [RelayCommand]
+    private async Task RefreshOptionalStores()
+    {
+        ApplyOptionalStoreSettingsToRuntime();
+        if (_runtime is null)
+        {
+            try
+            {
+                var snapshots = await Task.Run(() => OptionalStoreDiscovery.Discover(GetOptionalStoreSettings())).ConfigureAwait(true);
+                ApplyOptionalStoreSnapshots(snapshots);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+            {
+                SaveStatus = error.Message;
+            }
+
+            return;
+        }
+
+        try
+        {
+            var snapshot = await _runtime.RefreshAsync().ConfigureAwait(true);
+            ApplyOptionalStoreSnapshots(snapshot.OptionalStores ?? []);
+        }
+        catch (Exception error) when (error is IOException or HttpRequestException or InvalidDataException or TaskCanceledException or ArgumentException)
+        {
+            SaveStatus = error.Message;
         }
     }
 
@@ -614,6 +705,12 @@ public partial class SettingsViewModel : ObservableObject
             SteamId64 = SteamLibraryDiscovery.IsValidSteamId64(snapshot.SteamId64) ? snapshot.SteamId64 : string.Empty;
             SteamPersonaName = string.IsNullOrWhiteSpace(snapshot.SteamPersonaName) ? string.Empty : snapshot.SteamPersonaName;
             _cachedSteamOwnedGames = snapshot.SteamOwnedGames ?? [];
+            GogIntegrationEnabled = snapshot.GogIntegrationEnabled;
+            UbisoftIntegrationEnabled = snapshot.UbisoftIntegrationEnabled;
+            EaIntegrationEnabled = snapshot.EaIntegrationEnabled;
+            BattleNetIntegrationEnabled = snapshot.BattleNetIntegrationEnabled;
+            XboxIntegrationEnabled = snapshot.XboxIntegrationEnabled;
+            ItchIntegrationEnabled = snapshot.ItchIntegrationEnabled;
             SteamConnectionStatus = string.IsNullOrWhiteSpace(SteamId64)
                 ? "Not connected."
                 : string.IsNullOrWhiteSpace(SteamPersonaName)
@@ -677,6 +774,7 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(IsAdvancedSelected));
         OnPropertyChanged(nameof(IsSteamSelected));
         OnPropertyChanged(nameof(IsEpicSelected));
+        OnPropertyChanged(nameof(IsIntegrationsSelected));
     }
 
     partial void OnThemePresetChanged(string value) => ApplyAppearance();
@@ -704,6 +802,18 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(CanConnectSteam));
     }
 
+    partial void OnGogIntegrationEnabledChanged(bool value) => OnOptionalStoreSettingChanged();
+
+    partial void OnUbisoftIntegrationEnabledChanged(bool value) => OnOptionalStoreSettingChanged();
+
+    partial void OnEaIntegrationEnabledChanged(bool value) => OnOptionalStoreSettingChanged();
+
+    partial void OnBattleNetIntegrationEnabledChanged(bool value) => OnOptionalStoreSettingChanged();
+
+    partial void OnXboxIntegrationEnabledChanged(bool value) => OnOptionalStoreSettingChanged();
+
+    partial void OnItchIntegrationEnabledChanged(bool value) => OnOptionalStoreSettingChanged();
+
     partial void OnSteamId64Changed(string value)
     {
         OnPropertyChanged(nameof(HasSteamAccount));
@@ -726,6 +836,49 @@ public partial class SettingsViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(HasProfileImage));
         OnPropertyChanged(nameof(ShowDefaultProfile));
+    }
+
+    private Dictionary<OptionalStoreProvider, bool> GetOptionalStoreSettings() =>
+        new Dictionary<OptionalStoreProvider, bool>
+        {
+            [OptionalStoreProvider.Gog] = GogIntegrationEnabled,
+            [OptionalStoreProvider.UbisoftConnect] = UbisoftIntegrationEnabled,
+            [OptionalStoreProvider.EaApp] = EaIntegrationEnabled,
+            [OptionalStoreProvider.BattleNet] = BattleNetIntegrationEnabled,
+            [OptionalStoreProvider.Xbox] = XboxIntegrationEnabled,
+            [OptionalStoreProvider.Itch] = ItchIntegrationEnabled,
+        };
+
+    private void ApplyOptionalStoreSettingsToRuntime()
+    {
+        if (_runtime is null) return;
+        foreach (var setting in GetOptionalStoreSettings())
+        {
+            _runtime.SetOptionalStoreEnabled(setting.Key, setting.Value);
+        }
+    }
+
+    private void OnOptionalStoreSettingChanged()
+    {
+        _optionalStoreSnapshots = [];
+        OnPropertyChanged(nameof(OptionalStoreSnapshots));
+        OnPropertyChanged(nameof(GogIntegrationStatus));
+        OnPropertyChanged(nameof(UbisoftIntegrationStatus));
+        OnPropertyChanged(nameof(EaIntegrationStatus));
+        OnPropertyChanged(nameof(BattleNetIntegrationStatus));
+        OnPropertyChanged(nameof(XboxIntegrationStatus));
+        OnPropertyChanged(nameof(ItchIntegrationStatus));
+    }
+
+    private string GetOptionalStoreStatus(OptionalStoreProvider provider)
+    {
+        if (!GetOptionalStoreSettings().TryGetValue(provider, out var enabled) || !enabled)
+        {
+            return "Disabled";
+        }
+
+        return _optionalStoreSnapshots.FirstOrDefault(snapshot => snapshot.Provider == provider)?.StatusText
+            ?? "Enabled · refresh to scan";
     }
 
     private static bool IsLegacyApiBaseUrl(string value)

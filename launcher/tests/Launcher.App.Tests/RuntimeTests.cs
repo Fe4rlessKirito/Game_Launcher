@@ -161,6 +161,50 @@ public sealed class RuntimeTests
     }
 
     [Fact]
+    public async Task EnabledOptionalStoreGamesAreAvailableLocallyAndStayOutsideVaultnodeStore()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vaultnode-optional-runtime-test", Guid.NewGuid().ToString("N"));
+        var installRoot = Path.Combine(root, "GOG Demo");
+        Directory.CreateDirectory(installRoot);
+        using var client = new HttpClient(new EmptyCatalogHandler());
+        var optionalGame = new OptionalStoreGameInstall(
+            OptionalStoreProvider.Gog,
+            "123",
+            "GOG Demo",
+            installRoot,
+            Path.Combine(installRoot, "gog-demo.exe"),
+            4096);
+        var runtime = new LauncherRuntime(
+            new LauncherSettings(ApiBaseUrl: "http://launcher/"),
+            root,
+            client,
+            steamDiscovery: () => SteamLibrarySnapshot.Empty,
+            epicDiscovery: () => EpicLibrarySnapshot.Empty,
+            optionalStoreDiscovery: _ =>
+            [new OptionalStoreSnapshot(OptionalStoreProvider.Gog, true, true, [root], [optionalGame], null)]);
+
+        try
+        {
+            var snapshot = await runtime.InitializeAsync();
+
+            var game = Assert.Single(snapshot.Games);
+            Assert.Equal("gog:123", game.Id);
+            Assert.True(game.IsOptionalStoreGame);
+            Assert.True(game.IsExternalStoreGame);
+            Assert.True(game.IsInstalled);
+            Assert.Equal("GOG Galaxy", game.DisplayVersion);
+            Assert.Same(optionalGame, game.OptionalStoreInstall);
+            Assert.Same(optionalGame, Assert.Single(snapshot.OptionalStores!).Games[0]);
+        }
+        finally
+        {
+            await runtime.DisposeAsync();
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SteamLibraryResponseIsValidatedAndMapped()
     {
         using var client = new HttpClient(new SteamLibraryHandler());

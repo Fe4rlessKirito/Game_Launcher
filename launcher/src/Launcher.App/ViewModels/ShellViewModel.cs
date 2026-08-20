@@ -154,6 +154,7 @@ public partial class ShellViewModel : ObservableObject
         _settingsPage.ApplyUser(snapshot.User);
         _settingsPage.ApplySteamSnapshot(snapshot.Steam ?? SteamLibrarySnapshot.Empty);
         _settingsPage.ApplyEpicSnapshot(snapshot.Epic ?? EpicLibrarySnapshot.Empty);
+        _settingsPage.ApplyOptionalStoreSnapshots(snapshot.OptionalStores ?? []);
         _downloadsPage.ApplyRuntimeJobs(snapshot.DownloadJobs, snapshot.Games);
         _storePage.ApplyRuntimeGames(snapshot.Games);
         UpdateDownloadStatus(snapshot.DownloadJobs);
