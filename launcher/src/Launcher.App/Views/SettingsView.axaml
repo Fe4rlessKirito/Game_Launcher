@@ -140,7 +140,7 @@
                 </ItemsControl>
               </StackPanel>
             </Border>
-            <TextBlock Text="Steam discovery is local only. Vaultnode authorization and catalog access remain separate." Classes="Caption" TextWrapping="Wrap" />
+            <TextBlock Text="Steam discovery is local only. Favorites sync from Steam account metadata, while Steam remains responsible for ownership, updates, and files." Classes="Caption" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
       </StackPanel>

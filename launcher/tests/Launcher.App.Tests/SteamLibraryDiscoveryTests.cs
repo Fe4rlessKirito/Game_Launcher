@@ -107,6 +107,113 @@ public sealed class SteamLibraryDiscoveryTests
         }
     }
 
+    [Fact]
+    public void PrefersMostRecentSteamAccountForFavorites()
+    {
+        var root = CreateTempDirectory();
+        try
+        {
+            var steamApps = Path.Combine(root, "steamapps");
+            Directory.CreateDirectory(Path.Combine(steamApps, "common", "Recent Game"));
+            Directory.CreateDirectory(Path.Combine(steamApps, "common", "Auto Login Game"));
+            File.WriteAllText(
+                Path.Combine(steamApps, "appmanifest_30.acf"),
+                "\"AppState\"\n{\n  \"appid\" \"30\"\n  \"name\" \"Recent Game\"\n  \"installdir\" \"Recent Game\"\n}");
+            File.WriteAllText(
+                Path.Combine(steamApps, "appmanifest_40.acf"),
+                "\"AppState\"\n{\n  \"appid\" \"40\"\n  \"name\" \"Auto Login Game\"\n  \"installdir\" \"Auto Login Game\"\n}");
+
+            WriteFavoriteConfig(root, "123", "40");
+            WriteFavoriteConfig(root, "456", "30");
+            Directory.CreateDirectory(Path.Combine(root, "config"));
+            File.WriteAllText(
+                Path.Combine(root, "config", "loginusers.vdf"),
+                "\"users\"\n{\n"
+                + "  \"76561197960265851\"\n  {\n    \"MostRecent\" \"0\"\n    \"AllowAutoLogin\" \"1\"\n  }\n"
+                + "  \"76561197960266184\"\n  {\n    \"MostRecent\" \"1\"\n    \"AllowAutoLogin\" \"0\"\n  }\n}");
+
+            var snapshot = SteamLibraryDiscovery.Discover(root);
+
+            Assert.False(snapshot.Games.Single(game => game.AppId == "40").IsFavorite);
+            Assert.True(snapshot.Games.Single(game => game.AppId == "30").IsFavorite);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ReadsLegacyLibraryFolderPathsAndRejectsInvalidManifests()
+    {
+        var root = CreateTempDirectory();
+        var secondLibrary = CreateTempDirectory();
+        try
+        {
+            var steamApps = Path.Combine(root, "steamapps");
+            Directory.CreateDirectory(steamApps);
+            var installRoot = Path.Combine(secondLibrary, "steamapps", "common", "Valid Game");
+            Directory.CreateDirectory(installRoot);
+            File.WriteAllText(
+                Path.Combine(secondLibrary, "steamapps", "appmanifest_50.acf"),
+                "\"AppState\"\n{\n  \"appid\" \"50\"\n  \"name\" \"Valid Game\"\n  \"installdir\" \"Valid Game\"\n}");
+            File.WriteAllText(
+                Path.Combine(steamApps, "appmanifest_invalid.acf"),
+                "\"AppState\"\n{\n  \"appid\" \"not-an-app-id\"\n  \"name\" \"Invalid\"\n  \"installdir\" \"Invalid\"\n}");
+            Directory.CreateDirectory(Path.Combine(steamApps, "common"));
+            File.WriteAllText(
+                Path.Combine(steamApps, "appmanifest_60.acf"),
+                "\"AppState\"\n{\n  \"appid\" \"60\"\n  \"name\" \"Common Root\"\n  \"installdir\" \".\"\n}");
+            File.WriteAllText(
+                Path.Combine(steamApps, "libraryfolders.vdf"),
+                "\"libraryfolders\"\n{\n"
+                + "  \"0\" \"" + root.Replace("\\", "\\\\", StringComparison.Ordinal) + "\"\n"
+                + "  \"1\" \"" + secondLibrary.Replace("\\", "\\\\", StringComparison.Ordinal) + "\"\n}");
+
+            var snapshot = SteamLibraryDiscovery.Discover(root);
+
+            var game = Assert.Single(snapshot.Games);
+            Assert.Equal("50", game.AppId);
+            Assert.Equal(Path.GetFullPath(installRoot), game.InstallRoot);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            Directory.Delete(secondLibrary, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void FindsSteamExecutableFromAnExplicitRootAndValidatesAppIds()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var root = CreateTempDirectory();
+        try
+        {
+            var executable = Path.Combine(root, "steam.exe");
+            File.WriteAllBytes(executable, []);
+
+            Assert.Equal(Path.GetFullPath(executable), SteamLibraryDiscovery.FindSteamExecutable(root));
+            Assert.True(SteamLibraryDiscovery.IsValidAppId("480"));
+            Assert.False(SteamLibraryDiscovery.IsValidAppId("0"));
+            Assert.False(SteamLibraryDiscovery.IsValidAppId("not-an-app-id"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void WriteFavoriteConfig(string steamRoot, string accountId, string appId)
+    {
+        var configRoot = Path.Combine(steamRoot, "userdata", accountId, "7", "remote");
+        Directory.CreateDirectory(configRoot);
+        File.WriteAllText(
+            Path.Combine(configRoot, "sharedconfig.vdf"),
+            "\"UserRoamingConfigStore\"\n{\n  \"Software\"\n  {\n    \"Valve\"\n    {\n      \"Steam\"\n      {\n        \"apps\"\n        {\n          \"" + appId + "\"\n          {\n            \"tags\"\n            {\n              \"0\" \"favorite\"\n            }\n          }\n        }\n      }\n    }\n  }\n}");
+    }
+
     private static string CreateTempDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "vaultnode-steam-test-" + Guid.NewGuid().ToString("N"));

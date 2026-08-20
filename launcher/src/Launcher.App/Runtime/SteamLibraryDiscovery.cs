@@ -1,7 +1,8 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text;
-using System.Text.RegularExpressions;
-using System.Diagnostics;
 using Microsoft.Win32;
 
 namespace Launcher.App.Runtime;
@@ -48,6 +49,7 @@ public static class SteamLibraryDiscovery
 {
     private const int MaxVdfBytes = 8 * 1024 * 1024;
     private const ulong SteamId64Base = 76561197960265728;
+    private const uint MaxSteamAppId = uint.MaxValue;
 
     public static SteamLibrarySnapshot Discover(string? steamRoot = null)
     {
@@ -128,22 +130,42 @@ public static class SteamLibraryDiscovery
     {
         try
         {
-            var text = ReadBoundedText(manifestPath);
-            var appId = ReadVdfValue(text, "appid")
-                ?? Path.GetFileNameWithoutExtension(manifestPath)["appmanifest_".Length..];
-            var installDirectory = ReadVdfValue(text, "installdir");
-            if (string.IsNullOrWhiteSpace(appId) || string.IsNullOrWhiteSpace(installDirectory)) return null;
+            var document = ParseVdf(ReadBoundedText(manifestPath));
+            var manifestName = Path.GetFileNameWithoutExtension(manifestPath);
+            var manifestAppId = manifestName.StartsWith("appmanifest_", StringComparison.OrdinalIgnoreCase)
+                ? manifestName["appmanifest_".Length..]
+                : null;
+            var appId = (ReadVdfValue(document, "appid") ?? manifestAppId)?.Trim();
+            var installDirectory = ReadVdfValue(document, "installdir")?.Trim();
+            if (!IsValidAppId(appId) || string.IsNullOrWhiteSpace(installDirectory)) return null;
+            if (Path.IsPathRooted(installDirectory)
+                || installDirectory is "." or ".."
+                || installDirectory.Contains(Path.DirectorySeparatorChar)
+                || installDirectory.Contains(Path.AltDirectorySeparatorChar))
+            {
+                return null;
+            }
 
             var commonRoot = Path.GetFullPath(Path.Combine(libraryRoot, "steamapps", "common"));
             var installRoot = Path.GetFullPath(Path.Combine(commonRoot, installDirectory));
-            if (!IsWithin(commonRoot, installRoot) || !Directory.Exists(installRoot)) return null;
+            if (string.Equals(commonRoot, installRoot, StringComparison.OrdinalIgnoreCase)
+                || !IsWithin(commonRoot, installRoot)
+                || !Directory.Exists(installRoot))
+            {
+                return null;
+            }
 
-            var sizeBytes = long.TryParse(ReadVdfValue(text, "SizeOnDisk"), out var parsedSize)
+            var sizeBytes = long.TryParse(
+                    ReadVdfValue(document, "SizeOnDisk"),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out var parsedSize)
                 ? Math.Max(0, parsedSize)
                 : 0;
+            var name = ReadVdfValue(document, "name")?.Trim();
             return new SteamGameInstall(
-                appId,
-                ReadVdfValue(text, "name") ?? installDirectory,
+                appId!,
+                string.IsNullOrWhiteSpace(name) ? installDirectory : name,
                 installDirectory,
                 installRoot,
                 libraryRoot,
@@ -171,10 +193,31 @@ public static class SteamLibraryDiscovery
     {
         try
         {
-            var text = ReadBoundedText(path);
-            return Regex.Matches(text, "\\\"path\\\"\\s+\\\"(?<value>(?:\\\\.|[^\\\"\\\\])*)\\\"", RegexOptions.CultureInvariant)
-                .Select(match => UnescapeVdf(match.Groups["value"].Value))
+            var document = ParseVdf(ReadBoundedText(path));
+            var paths = new List<string>();
+            foreach (var libraryFolders in FindObjects(document, "libraryfolders"))
+            {
+                foreach (var entry in libraryFolders.Values)
+                {
+                    if (entry.Value.Object is { } folder)
+                    {
+                        var folderPath = ReadScalar(folder, "path");
+                        if (!string.IsNullOrWhiteSpace(folderPath)) paths.Add(folderPath);
+                    }
+                    else if (long.TryParse(entry.Key, NumberStyles.None, CultureInfo.InvariantCulture, out _)
+                        && !string.IsNullOrWhiteSpace(entry.Value.Scalar))
+                    {
+                        // Steam's older libraryfolders.vdf stored the path as
+                        // the value of each numeric entry instead of nesting
+                        // it under a "path" key.
+                        paths.Add(entry.Value.Scalar!);
+                    }
+                }
+            }
+
+            return paths
                 .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
                 .ToArray();
         }
         catch (IOException)
@@ -186,6 +229,14 @@ public static class SteamLibraryDiscovery
             return [];
         }
         catch (UnauthorizedAccessException)
+        {
+            return [];
+        }
+        catch (ArgumentException)
+        {
+            return [];
+        }
+        catch (NotSupportedException)
         {
             return [];
         }
@@ -277,25 +328,36 @@ public static class SteamLibraryDiscovery
                         && long.TryParse(timestampValue.Scalar, out var parsedTimestamp)
                             ? parsedTimestamp
                             : 0;
-                    return (accountId, autoLogin, timestamp);
+                    var mostRecent = ReadFlag(user, "MostRecent");
+                    var allowAutoLogin = ReadFlag(user, "AllowAutoLogin") || ReadFlag(user, "AutoLogin");
+                    return (accountId, mostRecent, allowAutoLogin, timestamp);
                 })
                 .Where(candidate => candidate.accountId is not null)
                 .ToArray();
             if (candidates.Length == 0) return null;
 
-            var active = candidates
-                .Where(candidate => candidate.autoLogin)
+            var mostRecent = candidates
+                .Where(candidate => candidate.mostRecent)
                 .Select(candidate => candidate.accountId!)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (active.Count > 0) return active;
+            if (mostRecent.Count > 0) return mostRecent;
 
-            var mostRecent = candidates
+            var autoLogin = candidates
+                .Where(candidate => candidate.allowAutoLogin)
+                .Select(candidate => candidate.accountId!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (autoLogin.Count > 0) return autoLogin;
+
+            // Timestamp is not present in every Steam version. Only use it
+            // when it identifies one unambiguous account; otherwise read all
+            // accounts rather than silently choosing the wrong user's tags.
+            var timestamped = candidates
+                .Where(candidate => candidate.timestamp > 0)
                 .OrderByDescending(candidate => candidate.timestamp)
-                .First()
-                .accountId;
-            return mostRecent is null
-                ? null
-                : new HashSet<string>([mostRecent], StringComparer.OrdinalIgnoreCase);
+                .ToArray();
+            return timestamped.Length == 1
+                ? new HashSet<string>([timestamped[0].accountId!], StringComparer.OrdinalIgnoreCase)
+                : null;
         }
         catch (IOException)
         {
@@ -337,6 +399,13 @@ public static class SteamLibraryDiscovery
 
         return favoriteAppIds;
     }
+
+    private static bool ReadFlag(VdfObject document, string key) =>
+        document.Values.TryGetValue(key, out var value)
+        && string.Equals(value.Scalar, "1", StringComparison.Ordinal);
+
+    private static string? ReadScalar(VdfObject document, string key) =>
+        document.Values.TryGetValue(key, out var value) ? value.Scalar : null;
 
     private static IEnumerable<VdfObject> FindObjects(VdfObject parent, string name)
     {
@@ -461,11 +530,25 @@ public static class SteamLibraryDiscovery
         return tokens;
     }
 
-    private static string? ReadVdfValue(string text, string key)
+    private static string? ReadVdfValue(VdfObject document, string key)
     {
-        var pattern = $"\\\"{Regex.Escape(key)}\\\"\\s+\\\"(?<value>(?:\\\\.|[^\\\"\\\\])*)\\\"";
-        var match = Regex.Match(text, pattern, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
-        return match.Success ? UnescapeVdf(match.Groups["value"].Value) : null;
+        foreach (var entry in document.Values)
+        {
+            if (string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return entry.Value.Scalar;
+            }
+        }
+
+        foreach (var child in document.Values.Values
+            .Where(value => value.Object is not null)
+            .Select(value => value.Object!))
+        {
+            var result = ReadVdfValue(child, key);
+            if (result is not null) return result;
+        }
+
+        return null;
     }
 
     private static string ReadBoundedText(string path)
@@ -602,9 +685,12 @@ public static class SteamLibraryDiscovery
         AddCandidate(candidates, Environment.GetEnvironmentVariable("STEAM_PATH"));
         if (OperatingSystem.IsWindows())
         {
-            AddCandidate(candidates, ReadSteamRegistryValue(RegistryHive.CurrentUser, @"Software\Valve\Steam", "SteamPath"));
-            AddCandidate(candidates, ReadSteamRegistryValue(RegistryHive.LocalMachine, @"Software\Valve\Steam", "InstallPath"));
-            AddCandidate(candidates, ReadSteamRegistryValue(RegistryHive.LocalMachine, @"Software\WOW6432Node\Valve\Steam", "InstallPath"));
+            foreach (var view in new[] { RegistryView.Default, RegistryView.Registry64, RegistryView.Registry32 }.Distinct())
+            {
+                AddCandidate(candidates, ReadSteamRegistryValue(RegistryHive.CurrentUser, @"Software\Valve\Steam", "SteamPath", view));
+                AddCandidate(candidates, ReadSteamRegistryValue(RegistryHive.LocalMachine, @"Software\Valve\Steam", "InstallPath", view));
+                AddCandidate(candidates, ReadSteamRegistryValue(RegistryHive.LocalMachine, @"Software\WOW6432Node\Valve\Steam", "InstallPath", view));
+            }
         }
 
         var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
@@ -615,11 +701,11 @@ public static class SteamLibraryDiscovery
     }
 
     [SupportedOSPlatform("windows")]
-    private static string? ReadSteamRegistryValue(RegistryHive hive, string subKey, string valueName)
+    private static string? ReadSteamRegistryValue(RegistryHive hive, string subKey, string valueName, RegistryView view)
     {
         try
         {
-            using var baseKey = RegistryKey.OpenBaseKey(hive, RegistryView.Default);
+            using var baseKey = RegistryKey.OpenBaseKey(hive, view);
             using var key = baseKey.OpenSubKey(subKey);
             return key?.GetValue(valueName) as string;
         }
@@ -635,14 +721,40 @@ public static class SteamLibraryDiscovery
 
     private static void AddCandidate(List<string> candidates, string? path)
     {
-        if (!string.IsNullOrWhiteSpace(path)) candidates.Add(path);
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        var candidate = path.Trim().Trim('"');
+        try
+        {
+            if (File.Exists(candidate)
+                && string.Equals(Path.GetFileName(candidate), "steam.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = Path.GetDirectoryName(candidate) ?? candidate;
+            }
+        }
+        catch (ArgumentException)
+        {
+            return;
+        }
+
+        if (!candidates.Any(existing => string.Equals(existing, candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            candidates.Add(candidate);
+        }
     }
 
     private static void AddRoot(List<string> roots, string path)
     {
         try
         {
-            var fullPath = Path.GetFullPath(path.Trim().Trim('"'));
+            var candidate = path.Trim().Trim('"');
+            if (File.Exists(candidate)
+                && string.Equals(Path.GetFileName(candidate), "steam.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = Path.GetDirectoryName(candidate) ?? candidate;
+            }
+
+            var fullPath = Path.GetFullPath(candidate);
             if (!Directory.Exists(fullPath)) return;
             if (!roots.Any(existing => string.Equals(existing, fullPath, StringComparison.OrdinalIgnoreCase)))
             {
@@ -658,6 +770,34 @@ public static class SteamLibraryDiscovery
             // Ignore malformed paths in Steam metadata.
         }
     }
+
+    public static string? FindSteamExecutable(string? steamRoot = null)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+
+        var roots = new List<string>();
+        if (!string.IsNullOrWhiteSpace(steamRoot))
+        {
+            AddRoot(roots, steamRoot);
+        }
+        else
+        {
+            foreach (var candidate in FindSteamRoots()) AddRoot(roots, candidate);
+        }
+
+        foreach (var root in roots)
+        {
+            var executable = Path.Combine(root, "steam.exe");
+            if (File.Exists(executable)) return executable;
+        }
+
+        return null;
+    }
+
+    public static bool IsValidAppId(string? appId) =>
+        uint.TryParse(appId, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+        && parsed > 0
+        && parsed <= MaxSteamAppId;
 
     private static bool IsWithin(string root, string candidate)
     {
@@ -689,17 +829,78 @@ public static class SteamLauncher
             throw new Launcher.Core.LauncherOperationException("Steam launching is currently supported on Windows only.");
         }
 
-        var started = Process.Start(new ProcessStartInfo
+        if (!SteamLibraryDiscovery.IsValidAppId(game.AppId))
         {
-            FileName = $"steam://rungameid/{game.AppId}",
-            UseShellExecute = true
-        });
-        if (started is null)
-        {
-            throw new Launcher.Core.LauncherOperationException("Steam could not open this game.");
+            throw new Launcher.Core.LauncherOperationException("Steam returned an invalid application id.");
         }
 
-        started.Dispose();
-        return Task.CompletedTask;
+        try
+        {
+            using var started = Process.Start(new ProcessStartInfo
+            {
+                FileName = $"steam://rungameid/{game.AppId}",
+                UseShellExecute = true
+            });
+            if (started is not null)
+            {
+                return Task.CompletedTask;
+            }
+        }
+        catch (ArgumentException)
+        {
+            // Fall through to the direct Steam executable handoff.
+        }
+        catch (InvalidOperationException)
+        {
+            // Fall through to the direct Steam executable handoff.
+        }
+        catch (Win32Exception)
+        {
+            // Fall through to the direct Steam executable handoff.
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // Fall through to the direct Steam executable handoff.
+        }
+
+        var steamExecutable = SteamLibraryDiscovery.FindSteamExecutable();
+        if (steamExecutable is not null)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = steamExecutable,
+                    UseShellExecute = false,
+                    WorkingDirectory = Path.GetDirectoryName(steamExecutable) ?? string.Empty
+                };
+                startInfo.ArgumentList.Add("-applaunch");
+                startInfo.ArgumentList.Add(game.AppId);
+                using var started = Process.Start(startInfo);
+                if (started is not null)
+                {
+                    return Task.CompletedTask;
+                }
+            }
+            catch (ArgumentException)
+            {
+                // Convert all launch failures into one actionable message.
+            }
+            catch (InvalidOperationException)
+            {
+                // Convert all launch failures into one actionable message.
+            }
+            catch (Win32Exception)
+            {
+                // Convert all launch failures into one actionable message.
+            }
+        }
+
+        if (steamExecutable is null)
+        {
+            throw new Launcher.Core.LauncherOperationException("Steam is not installed or its executable could not be found.");
+        }
+
+        throw new Launcher.Core.LauncherOperationException("Steam could not open this game.");
     }
 }

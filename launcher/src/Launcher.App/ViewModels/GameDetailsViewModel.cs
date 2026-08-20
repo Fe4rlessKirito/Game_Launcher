@@ -54,6 +54,7 @@ public partial class GameDetailsViewModel : ObservableObject
     public string Version => IsSteamGame ? "Steam installation" : _game?.DisplayVersion ?? "1.0.0";
     public string InstallSize => _game?.SizeDisplay ?? "90 B";
     public string InstallLocation => _game?.InstallRoot ?? @"C:\Games\Synthetic Game";
+    public string PlayButtonLabel => IsSteamGame ? "Play in Steam" : "Play";
     public bool ShowPlay => IsInstalled && !IsBusy;
     public bool ShowInstall => !IsSteamGame
         && (!IsInstalled || _game?.State == Launcher.Core.GameState.UpdateAvailable)
@@ -85,6 +86,7 @@ public partial class GameDetailsViewModel : ObservableObject
         OnPropertyChanged(nameof(Version));
         OnPropertyChanged(nameof(InstallSize));
         OnPropertyChanged(nameof(InstallLocation));
+        OnPropertyChanged(nameof(PlayButtonLabel));
         OnPropertyChanged(nameof(IntegrityStatus));
         OnPropertyChanged(nameof(ShowPlay));
         OnPropertyChanged(nameof(ShowInstall));

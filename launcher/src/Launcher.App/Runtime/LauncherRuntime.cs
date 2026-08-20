@@ -1,6 +1,6 @@
-using System.Text.Json;
-using System.Net.Http.Headers;
 using System.Diagnostics;
+using System.Net.Http.Headers;
+using System.Text.Json;
 using Launcher.Core;
 using Launcher.Downloads;
 using Launcher.Installation;
@@ -35,13 +35,13 @@ public sealed record RuntimeGame(
     public string StatusText => IsSteamGame
         ? "Installed"
         : State switch
-    {
-        GameState.Launchable or GameState.Installed => "Installed",
-        GameState.UpdateAvailable => "Update available",
-        GameState.Queued or GameState.Downloading or GameState.Installing => "Installing",
-        GameState.Error => "Error",
-        _ => "Ready to install"
-    };
+        {
+            GameState.Launchable or GameState.Installed => "Installed",
+            GameState.UpdateAvailable => "Update available",
+            GameState.Queued or GameState.Downloading or GameState.Installing => "Installing",
+            GameState.Error => "Error",
+            _ => "Ready to install"
+        };
 
     public string SizeDisplay => FormatBytes(SizeBytes);
 
@@ -102,6 +102,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly PackCache _packCache;
     private readonly Func<SteamLibrarySnapshot> _steamDiscovery;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly CancellationTokenSource _catalogRefreshCancellation = new();
     private readonly object _downloaderGate = new();
     private DownloadManager? _activeDownloader;
@@ -272,56 +273,76 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
     public async Task<LauncherRuntimeSnapshot> RefreshAsync(CancellationToken cancellationToken = default)
     {
-        if (!_initialized)
-        {
-            await _stateStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            await _chunkCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            await RecoverInstallationsAsync(cancellationToken).ConfigureAwait(false);
-            await _stateStore.FailInterruptedDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
-            _initialized = true;
-            StartCatalogRefreshLoop();
-        }
-
-        var installed = await _stateStore.GetInstalledGamesAsync(cancellationToken).ConfigureAwait(false);
-        var jobs = await _stateStore.GetDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
-        var excludedGameIds = await _stateStore.GetExcludedGameIdsAsync(cancellationToken).ConfigureAwait(false);
-        var libraryCategories = await _stateStore.GetLibraryCategoriesAsync(cancellationToken).ConfigureAwait(false);
-        var online = false;
-        string? error = null;
+        await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(8));
-            _catalog = await _apiClient.GetGamesAsync(timeout.Token).ConfigureAwait(false);
-            online = true;
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidDataException)
-        {
-            error = exception.Message;
-        }
+            if (!_initialized)
+            {
+                await _stateStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                await _chunkCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                await RecoverInstallationsAsync(cancellationToken).ConfigureAwait(false);
+                await _stateStore.FailInterruptedDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
+                _initialized = true;
+                StartCatalogRefreshLoop();
+            }
 
-        var steam = _steamDiscovery();
-        var games = BuildGames(_catalog, installed, steam.Games);
-        var connectionStatus = online ? "Online" : "Offline-ready";
-        LauncherUserProfile? user = null;
-        if (IsAuthenticated)
-        {
+            var installed = await _stateStore.GetInstalledGamesAsync(cancellationToken).ConfigureAwait(false);
+            var jobs = await _stateStore.GetDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
+            var excludedGameIds = await _stateStore.GetExcludedGameIdsAsync(cancellationToken).ConfigureAwait(false);
+            var libraryCategories = await _stateStore.GetLibraryCategoriesAsync(cancellationToken).ConfigureAwait(false);
+            var online = false;
+            string? error = null;
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(TimeSpan.FromSeconds(8));
-                user = await _apiClient.GetCurrentUserAsync(timeout.Token).ConfigureAwait(false);
+                _catalog = await _apiClient.GetGamesAsync(timeout.Token).ConfigureAwait(false);
+                online = true;
             }
-            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidDataException or JsonException)
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidDataException)
             {
-                // Catalog access remains usable if the optional profile lookup
-                // fails or the staging token has expired.
+                error = exception.Message;
             }
-        }
 
-        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds, libraryCategories);
-        SnapshotChanged?.Invoke(_snapshot);
-        return _snapshot;
+            SteamLibrarySnapshot steam;
+            try
+            {
+                // Steam scans touch a large number of local files and artwork
+                // caches. Keep that work off Avalonia's UI thread and serialize
+                // refreshes so manual and periodic scans cannot race.
+                steam = await Task.Run(_steamDiscovery, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException)
+            {
+                steam = new SteamLibrarySnapshot([], [], $"Steam discovery failed: {exception.Message}");
+            }
+
+            var games = BuildGames(_catalog, installed, steam.Games);
+            var connectionStatus = online ? "Online" : "Offline-ready";
+            LauncherUserProfile? user = null;
+            if (IsAuthenticated)
+            {
+                try
+                {
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(8));
+                    user = await _apiClient.GetCurrentUserAsync(timeout.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or InvalidDataException or JsonException)
+                {
+                    // Catalog access remains usable if the optional profile lookup
+                    // fails or the staging token has expired.
+                }
+            }
+
+            _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds, libraryCategories);
+            SnapshotChanged?.Invoke(_snapshot);
+            return _snapshot;
+        }
+        finally
+        {
+            _refreshGate.Release();
+        }
     }
 
     public Task SaveLibraryCategoriesAsync(IReadOnlyList<LibraryCategoryState> categories, CancellationToken cancellationToken = default) =>
@@ -490,6 +511,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
         _catalogRefreshCancellation.Dispose();
         _operationGate.Dispose();
+        _refreshGate.Dispose();
         _downloadHttpClient.Dispose();
         if (_ownsApiHttpClient) _apiHttpClient.Dispose();
     }
