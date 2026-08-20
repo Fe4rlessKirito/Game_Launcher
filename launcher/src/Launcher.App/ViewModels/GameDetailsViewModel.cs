@@ -32,14 +32,18 @@ public partial class GameDetailsViewModel : ObservableObject
         _runtime = runtime;
         _game = game;
         _status = game?.StatusText ?? "Installed and launchable";
-        _actionMessage = game?.IsSteamGame == true
-            ? "Steam manages this installation. Launching will open Steam."
+        _actionMessage = game?.SteamOwned is not null && game.SteamInstall is null
+            ? "This game is owned through Steam. The install button will hand the request to Steam."
+            : game?.IsSteamGame == true
+                ? "Steam manages this installation. Launching will open Steam."
             : game is null ? "Ready to launch." : "Build metadata is loaded from the launcher service.";
         _isInstalled = game?.IsInstalled ?? true;
     }
 
     public string Title { get; }
     public bool IsSteamGame => _game?.IsSteamGame == true;
+    public bool IsSteamInstalled => _game?.SteamInstall is not null;
+    public bool IsSteamOwned => _game?.SteamOwned is not null;
     public bool IsVaultnodeGame => !IsSteamGame;
     public string? ArtworkSource => _game?.ArtworkSource;
     public bool HasArtwork => !string.IsNullOrWhiteSpace(ArtworkSource);
@@ -48,17 +52,22 @@ public partial class GameDetailsViewModel : ObservableObject
     public bool ShowMonogram => !HasArtwork;
     public bool ShowSteamBadge => IsSteamGame;
     public string Monogram => _game?.Monogram ?? BuildMonogram(Title);
-    public string Description => IsSteamGame
-        ? "Installed through Steam. Vaultnode can launch it, while Steam remains responsible for ownership, updates, and file management."
+    public string Description => IsSteamOwned && !IsSteamInstalled
+        ? "Owned through Steam. Vaultnode can show it in your library and hand installation to Steam, while Steam remains responsible for ownership, downloads, updates, and files."
+        : IsSteamGame
+            ? "Installed through Steam. Vaultnode can launch it, while Steam remains responsible for ownership, updates, and file management."
         : _game?.Description ?? "A verified local build with content-addressed updates, repairable files, and an offline-ready launch profile.";
     public string Version => IsSteamGame ? "Steam installation" : _game?.DisplayVersion ?? "1.0.0";
-    public string InstallSize => _game?.SizeDisplay ?? "90 B";
-    public string InstallLocation => _game?.InstallRoot ?? @"C:\Games\Synthetic Game";
+    public string InstallSize => IsSteamOwned && !IsSteamInstalled ? "Calculated by Steam" : _game?.SizeDisplay ?? "90 B";
+    public string InstallLocation => IsSteamOwned && !IsSteamInstalled
+        ? "Not installed · Steam chooses the library location"
+        : _game?.InstallRoot ?? @"C:\Games\Synthetic Game";
     public string PlayButtonLabel => IsSteamGame ? "Play in Steam" : "Play";
     public bool ShowPlay => IsInstalled && !IsBusy;
     public bool ShowInstall => !IsSteamGame
         && (!IsInstalled || _game?.State == Launcher.Core.GameState.UpdateAvailable)
         && !IsBusy;
+    public bool ShowSteamInstall => IsSteamOwned && !IsSteamInstalled && !IsBusy;
     public bool ShowRepair => !IsSteamGame && IsInstalled && !IsBusy;
     public bool ShowUninstall => !IsSteamGame && ShowPlay;
     public string IntegrityStatus => IsSteamGame ? "Managed by Steam" : "Verified";
@@ -69,11 +78,17 @@ public partial class GameDetailsViewModel : ObservableObject
         _game = game;
         IsInstalled = game.IsInstalled;
         Status = game.StatusText;
-        if (game.IsSteamGame)
+        if (game.SteamOwned is not null && game.SteamInstall is null)
+        {
+            ActionMessage = "This game is owned through Steam. The install button will hand the request to Steam.";
+        }
+        else if (game.IsSteamGame)
         {
             ActionMessage = "Steam manages this installation. Launching will open Steam.";
         }
         OnPropertyChanged(nameof(IsSteamGame));
+        OnPropertyChanged(nameof(IsSteamInstalled));
+        OnPropertyChanged(nameof(IsSteamOwned));
         OnPropertyChanged(nameof(IsVaultnodeGame));
         OnPropertyChanged(nameof(ArtworkSource));
         OnPropertyChanged(nameof(HasArtwork));
@@ -90,6 +105,7 @@ public partial class GameDetailsViewModel : ObservableObject
         OnPropertyChanged(nameof(IntegrityStatus));
         OnPropertyChanged(nameof(ShowPlay));
         OnPropertyChanged(nameof(ShowInstall));
+        OnPropertyChanged(nameof(ShowSteamInstall));
         OnPropertyChanged(nameof(ShowRepair));
         OnPropertyChanged(nameof(ShowUninstall));
     }
@@ -123,6 +139,7 @@ public partial class GameDetailsViewModel : ObservableObject
             IsBusy = false;
             OnPropertyChanged(nameof(ShowPlay));
             OnPropertyChanged(nameof(ShowInstall));
+            OnPropertyChanged(nameof(ShowSteamInstall));
             OnPropertyChanged(nameof(ShowRepair));
             OnPropertyChanged(nameof(ShowUninstall));
         }
@@ -165,6 +182,35 @@ public partial class GameDetailsViewModel : ObservableObject
         catch (Exception error)
         {
             Status = "Install failed";
+            ActionMessage = error.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+            NotifyActionVisibility();
+        }
+    }
+
+    [RelayCommand]
+    private async Task InstallSteam()
+    {
+        if (!IsSteamOwned || _runtime is null || _game is null)
+        {
+            ActionMessage = "Connect Steam and use Steam to install this game.";
+            return;
+        }
+
+        try
+        {
+            IsBusy = true;
+            Status = "Opening Steam";
+            ActionMessage = "Handing the install request to Steam…";
+            await _runtime.InstallSteamAsync(_game.Id).ConfigureAwait(true);
+            ActionMessage = $"{Title} was handed off to Steam. Steam will handle the download.";
+        }
+        catch (Exception error)
+        {
+            Status = "Steam install failed";
             ActionMessage = error.Message;
         }
         finally
@@ -253,6 +299,7 @@ public partial class GameDetailsViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(ShowPlay));
         OnPropertyChanged(nameof(ShowInstall));
+        OnPropertyChanged(nameof(ShowSteamInstall));
         OnPropertyChanged(nameof(ShowRepair));
         OnPropertyChanged(nameof(ShowUninstall));
     }

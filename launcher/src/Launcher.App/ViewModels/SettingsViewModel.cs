@@ -89,7 +89,20 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private string _selectedSection = "Profile";
 
+    [ObservableProperty]
+    private string _steamId64 = string.Empty;
+
+    [ObservableProperty]
+    private string _steamPersonaName = string.Empty;
+
+    [ObservableProperty]
+    private bool _isSteamConnecting;
+
+    [ObservableProperty]
+    private string _steamConnectionStatus = "Not connected.";
+
     private SteamLibrarySnapshot _steamSnapshot = SteamLibrarySnapshot.Empty;
+    private IReadOnlyList<SteamOwnedGame> _cachedSteamOwnedGames = [];
 
     public bool HasProfileImage => ProfileImage is not null;
     public bool ShowDefaultProfile => !HasProfileImage;
@@ -101,18 +114,30 @@ public partial class SettingsViewModel : ObservableObject
     public bool IsSteamSelected => SelectedSection == "Steam";
     public bool IsNotSignedIn => !IsSignedIn;
     public bool CanSubmitAuth => !IsSigningIn;
+    public bool HasSteamAccount => !string.IsNullOrWhiteSpace(SteamId64);
+    public bool CanConnectSteam => !IsSteamConnecting;
+    public string SteamConnectButtonLabel => HasSteamAccount ? "Sync Steam library" : "Connect Steam account";
     public IReadOnlyList<SteamGameInstall> SteamGames => _steamSnapshot.Games;
+    public IReadOnlyList<SteamOwnedGame> SteamOwnedGames => _cachedSteamOwnedGames;
     public IReadOnlyList<string> SteamLibraryRoots => _steamSnapshot.LibraryRoots;
     public bool HasSteamGames => SteamGames.Count > 0;
-    public string SteamStatus => _steamSnapshot.Error
-        ?? (!_steamSnapshot.IsDetected
-            ? "Steam was not found on this PC."
-            : SteamGames.Count == 0
-                ? "Steam detected · No installed games found."
-                : $"{SteamGames.Count} installed Steam game{(SteamGames.Count == 1 ? string.Empty : "s")} detected.");
-    public string SteamLibrarySummary => SteamLibraryRoots.Count == 0
-        ? "Steam library locations will appear here when Steam is installed."
-        : $"{SteamLibraryRoots.Count} Steam library location{(SteamLibraryRoots.Count == 1 ? string.Empty : "s")} detected.";
+    public bool HasSteamOwnedGames => SteamOwnedGames.Count > 0;
+    public string SteamStatus => HasSteamAccount
+        ? _steamSnapshot.OwnedGamesError
+            ?? $"Connected · {SteamOwnedGames.Count} owned, {SteamGames.Count} installed"
+        : _steamSnapshot.Error
+            ?? (!_steamSnapshot.IsDetected
+                ? "Steam was not found on this PC."
+                : SteamGames.Count == 0
+                    ? "Steam detected · No installed games found."
+                    : $"{SteamGames.Count} installed Steam game{(SteamGames.Count == 1 ? string.Empty : "s")} detected.");
+    public string SteamLibrarySummary => HasSteamAccount
+        ? SteamLibraryRoots.Count == 0
+            ? $"Account {SteamId64} connected · local Steam install scan unavailable"
+            : $"{SteamLibraryRoots.Count} local location{(SteamLibraryRoots.Count == 1 ? string.Empty : "s")} · account {SteamId64}"
+        : SteamLibraryRoots.Count == 0
+            ? "Steam library locations will appear here when Steam is installed."
+            : $"{SteamLibraryRoots.Count} Steam library location{(SteamLibraryRoots.Count == 1 ? string.Empty : "s")} detected.";
     public Color AccentColorValue
     {
         get => _accentColorValue;
@@ -149,9 +174,27 @@ public partial class SettingsViewModel : ObservableObject
     public void ApplySteamSnapshot(SteamLibrarySnapshot snapshot)
     {
         _steamSnapshot = snapshot;
+        if (snapshot.ConnectedAccount is { } account)
+        {
+            SteamId64 = account.SteamId64;
+            SteamPersonaName = account.PersonaName ?? string.Empty;
+            SteamConnectionStatus = string.IsNullOrWhiteSpace(account.PersonaName)
+                ? $"Connected · {account.SteamId64}"
+                : $"Connected as {account.PersonaName}";
+        }
+        else if (string.IsNullOrWhiteSpace(SteamId64))
+        {
+            SteamConnectionStatus = "Not connected.";
+        }
+
+        _cachedSteamOwnedGames = snapshot.OwnedGames ?? [];
         OnPropertyChanged(nameof(SteamGames));
+        OnPropertyChanged(nameof(SteamOwnedGames));
         OnPropertyChanged(nameof(SteamLibraryRoots));
         OnPropertyChanged(nameof(HasSteamGames));
+        OnPropertyChanged(nameof(HasSteamOwnedGames));
+        OnPropertyChanged(nameof(HasSteamAccount));
+        OnPropertyChanged(nameof(SteamConnectButtonLabel));
         OnPropertyChanged(nameof(SteamStatus));
         OnPropertyChanged(nameof(SteamLibrarySummary));
     }
@@ -230,6 +273,74 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task ConnectSteam()
+    {
+        if (_runtime is null)
+        {
+            SteamConnectionStatus = "The launcher is still connecting. Try again in a moment.";
+            return;
+        }
+
+        IsSteamConnecting = true;
+        SteamConnectionStatus = "Waiting for Steam sign-in…";
+        try
+        {
+            var library = await _runtime.ConnectSteamAsync().ConfigureAwait(true);
+            SteamId64 = library.SteamId64;
+            SteamPersonaName = library.PersonaName ?? string.Empty;
+            _cachedSteamOwnedGames = library.Games;
+            ApplySteamSnapshot(_runtime.Snapshot.Steam ?? SteamLibrarySnapshot.Empty);
+            Save();
+            SteamConnectionStatus = string.IsNullOrWhiteSpace(SteamPersonaName)
+                ? $"Connected · {SteamId64}"
+                : $"Connected as {SteamPersonaName}";
+        }
+        catch (Exception error) when (error is HttpRequestException or InvalidOperationException or InvalidDataException or IOException or LauncherOperationException or TaskCanceledException)
+        {
+            SteamConnectionStatus = error.Message;
+        }
+        finally
+        {
+            IsSteamConnecting = false;
+        }
+    }
+
+    [RelayCommand]
+    private async Task DisconnectSteam()
+    {
+        if (_runtime is null)
+        {
+            SteamId64 = string.Empty;
+            SteamPersonaName = string.Empty;
+            _cachedSteamOwnedGames = [];
+            SteamConnectionStatus = "Not connected.";
+            Save();
+            return;
+        }
+
+        IsSteamConnecting = true;
+        SteamConnectionStatus = "Disconnecting Steam…";
+        try
+        {
+            await _runtime.DisconnectSteamAsync().ConfigureAwait(true);
+            SteamId64 = string.Empty;
+            SteamPersonaName = string.Empty;
+            _cachedSteamOwnedGames = [];
+            ApplySteamSnapshot(_runtime.Snapshot.Steam ?? SteamLibrarySnapshot.Empty);
+            Save();
+            SteamConnectionStatus = "Not connected.";
+        }
+        catch (Exception error) when (error is IOException or HttpRequestException or InvalidDataException or TaskCanceledException)
+        {
+            SteamConnectionStatus = error.Message;
+        }
+        finally
+        {
+            IsSteamConnecting = false;
+        }
+    }
+
+    [RelayCommand]
     private async Task SaveUsername()
     {
         if (_runtime is null || !IsSignedIn)
@@ -301,7 +412,10 @@ public partial class SettingsViewModel : ObservableObject
                 ProfileImagePath: ProfileImagePath,
                 ThemePreset: ThemePreset,
                 AccentColor: AccentColor,
-                CompactMode: CompactMode);
+                CompactMode: CompactMode,
+                SteamId64: SteamId64,
+                SteamPersonaName: SteamPersonaName,
+                SteamOwnedGames: _cachedSteamOwnedGames);
             File.WriteAllText(_settingsPath, JsonSerializer.Serialize(snapshot, JsonOptions));
             SaveStatus = "Changes saved locally.";
         }
@@ -330,6 +444,10 @@ public partial class SettingsViewModel : ObservableObject
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
         ProfileImagePath = string.Empty;
+        SteamId64 = string.Empty;
+        SteamPersonaName = string.Empty;
+        _cachedSteamOwnedGames = [];
+        SteamConnectionStatus = "Not connected.";
         _trustedManifestKeysPem = null;
         _requireTrustedManifestKeys = false;
         SaveStatus = "Defaults restored. Save to keep them.";
@@ -425,6 +543,14 @@ public partial class SettingsViewModel : ObservableObject
                     ? DefaultApiBaseUrl
                     : snapshot.ApiBaseUrl;
             ProfileImagePath = snapshot.ProfileImagePath ?? string.Empty;
+            SteamId64 = SteamLibraryDiscovery.IsValidSteamId64(snapshot.SteamId64) ? snapshot.SteamId64 : string.Empty;
+            SteamPersonaName = string.IsNullOrWhiteSpace(snapshot.SteamPersonaName) ? string.Empty : snapshot.SteamPersonaName;
+            _cachedSteamOwnedGames = snapshot.SteamOwnedGames ?? [];
+            SteamConnectionStatus = string.IsNullOrWhiteSpace(SteamId64)
+                ? "Not connected."
+                : string.IsNullOrWhiteSpace(SteamPersonaName)
+                    ? $"Connected · {SteamId64}"
+                    : $"Connected as {SteamPersonaName}";
             _trustedManifestKeysPem = snapshot.TrustedManifestKeysPem;
             _requireTrustedManifestKeys = snapshot.RequireTrustedManifestKeys;
 
@@ -503,6 +629,29 @@ public partial class SettingsViewModel : ObservableObject
     partial void OnIsSignedInChanged(bool value) => OnPropertyChanged(nameof(IsNotSignedIn));
 
     partial void OnIsSigningInChanged(bool value) => OnPropertyChanged(nameof(CanSubmitAuth));
+
+    partial void OnIsSteamConnectingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanConnectSteam));
+    }
+
+    partial void OnSteamId64Changed(string value)
+    {
+        OnPropertyChanged(nameof(HasSteamAccount));
+        OnPropertyChanged(nameof(SteamConnectButtonLabel));
+        OnPropertyChanged(nameof(SteamStatus));
+        OnPropertyChanged(nameof(SteamLibrarySummary));
+    }
+
+    partial void OnSteamPersonaNameChanged(string value)
+    {
+        if (HasSteamAccount)
+        {
+            SteamConnectionStatus = string.IsNullOrWhiteSpace(value)
+                ? $"Connected · {SteamId64}"
+                : $"Connected as {value}";
+        }
+    }
 
     partial void OnProfileImageChanged(Bitmap? value)
     {

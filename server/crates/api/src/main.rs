@@ -180,6 +180,8 @@ struct AppState {
     operator_token: Option<Arc<String>>,
     operator_auth_required: bool,
     supabase_auth: Option<SupabaseAuth>,
+    steam_web_api_key: Option<Arc<String>>,
+    steam_client: reqwest::Client,
     public_status: Arc<RwLock<PublicStatusResponse>>,
     public_status_poll_seconds: u64,
     work_status_store: WorkStatusStore,
@@ -311,6 +313,48 @@ struct CurrentUserResponse {
     id: String,
     email: Option<String>,
     username: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SteamConnectRequest {
+    parameters: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SteamLibraryResponse {
+    steam_id: String,
+    persona_name: Option<String>,
+    games: Vec<SteamOwnedGameResponse>,
+    game_count: usize,
+    refreshed_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct SteamOwnedGameResponse {
+    app_id: String,
+    name: String,
+    playtime_minutes: u32,
+    icon_url: Option<String>,
+    header_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SteamOwnedGamesEnvelope {
+    response: SteamOwnedGamesResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct SteamOwnedGamesResponse {
+    game_count: Option<usize>,
+    games: Option<Vec<SteamOwnedGameRecord>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SteamOwnedGameRecord {
+    appid: u32,
+    name: Option<String>,
+    playtime_forever: Option<u32>,
+    img_icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -541,6 +585,15 @@ async fn main() -> anyhow::Result<()> {
     }
     let operator_auth_required = env_bool("LAUNCHER_OPERATOR_AUTH_REQUIRED", false);
     let supabase_auth = SupabaseAuth::from_env()?;
+    let steam_web_api_key = env::var("LAUNCHER_STEAM_WEB_API_KEY")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(Arc::new);
+    let steam_client = reqwest::Client::builder()
+        .user_agent("Vaultnode Launcher/1.0")
+        .build()
+        .context("could not create Steam API client")?;
     let max_request_bytes = env::var("LAUNCHER_MAX_REQUEST_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -622,6 +675,8 @@ async fn main() -> anyhow::Result<()> {
         operator_token,
         operator_auth_required,
         supabase_auth,
+        steam_web_api_key,
+        steam_client,
         public_status: public_status_snapshot,
         public_status_poll_seconds,
         work_status_store: WorkStatusStore::new(work_status_dir),
@@ -634,6 +689,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/ready", get(readiness))
         .route("/api/v1/public/status", get(public_status))
         .route("/api/v1/me", get(current_user))
+        .route("/api/v1/steam/connect", post(connect_steam))
         .route("/internal/v1/email-events", post(email_events))
         .route("/metrics", get(storage_metrics))
         .route("/api/v1/storage/status", get(storage_status))
@@ -944,6 +1000,191 @@ async fn current_user(
         email: user.email,
         username,
     }))
+}
+
+async fn connect_steam(
+    State(state): State<AppState>,
+    Json(request): Json<SteamConnectRequest>,
+) -> Result<Json<SteamLibraryResponse>, ApiResponseError> {
+    let Some(api_key) = state.steam_web_api_key.as_ref() else {
+        return Err(ApiResponseError::temporary(
+            "steam_api_unconfigured",
+            "Steam account sync is not configured on this server",
+            60,
+        ));
+    };
+    if request.parameters.is_empty() || request.parameters.len() > 32 {
+        return Err(ApiResponseError::bad_request(
+            "Steam returned an invalid OpenID response",
+        ));
+    }
+    if request
+        .parameters
+        .iter()
+        .any(|(key, value)| !key.starts_with("openid.") || key.len() > 128 || value.len() > 8192)
+    {
+        return Err(ApiResponseError::bad_request(
+            "Steam returned an invalid OpenID response",
+        ));
+    }
+
+    let claimed_id = request.parameters.get("openid.claimed_id").ok_or_else(|| {
+        ApiResponseError::bad_request("Steam did not return an account identifier")
+    })?;
+    let steam_id = parse_steam_id64(claimed_id).ok_or_else(|| {
+        ApiResponseError::bad_request("Steam returned an invalid account identifier")
+    })?;
+    if request.parameters.get("openid.mode").map(String::as_str) != Some("id_res") {
+        return Err(ApiResponseError::bad_request(
+            "Steam returned an incomplete OpenID response",
+        ));
+    }
+
+    let mut verification_form = request.parameters.clone();
+    verification_form.insert("openid.mode".to_owned(), "check_authentication".to_owned());
+    let verification = state
+        .steam_client
+        .post("https://steamcommunity.com/openid/login")
+        .form(&verification_form)
+        .send()
+        .await
+        .map_err(|_| {
+            ApiResponseError::temporary(
+                "steam_openid_unavailable",
+                "Steam sign-in verification is temporarily unavailable",
+                30,
+            )
+        })?;
+    if !verification.status().is_success() {
+        return Err(ApiResponseError::temporary(
+            "steam_openid_unavailable",
+            "Steam sign-in verification is temporarily unavailable",
+            30,
+        ));
+    }
+    let verification_body = verification.text().await.map_err(|_| {
+        ApiResponseError::temporary(
+            "steam_openid_unavailable",
+            "Steam sign-in verification is temporarily unavailable",
+            30,
+        )
+    })?;
+    if !verification_body
+        .lines()
+        .any(|line| line.trim() == "is_valid:true")
+    {
+        return Err(ApiResponseError::bad_request(
+            "Steam sign-in could not be verified",
+        ));
+    }
+
+    let mut upstream_url =
+        reqwest::Url::parse("https://api.steampowered.com/IPlayerService/GetOwnedGames/v0001/")
+            .expect("Steam API URL is a compile-time constant");
+    upstream_url
+        .query_pairs_mut()
+        .append_pair("key", api_key.as_str())
+        .append_pair("steamid", steam_id.as_str())
+        .append_pair("format", "json")
+        .append_pair("include_appinfo", "1")
+        .append_pair("include_played_free_games", "1");
+    let upstream = state
+        .steam_client
+        .get(upstream_url)
+        .send()
+        .await
+        .map_err(|_| {
+            ApiResponseError::temporary(
+                "steam_api_unavailable",
+                "Steam library sync is temporarily unavailable",
+                30,
+            )
+        })?;
+    if !upstream.status().is_success() {
+        return Err(ApiResponseError::temporary(
+            "steam_api_unavailable",
+            "Steam library sync is temporarily unavailable",
+            30,
+        ));
+    }
+    let payload = upstream
+        .json::<SteamOwnedGamesEnvelope>()
+        .await
+        .map_err(|_| {
+            ApiResponseError::temporary(
+                "steam_api_unavailable",
+                "Steam returned an invalid library response",
+                30,
+            )
+        })?;
+    let game_count = payload.response.game_count.ok_or_else(|| {
+        ApiResponseError::forbidden(
+            "steam_library_private",
+            "Steam game details are private or unavailable for this account",
+        )
+    })?;
+    if game_count > 100_000 {
+        return Err(ApiResponseError::bad_request(
+            "Steam returned an unexpectedly large library",
+        ));
+    }
+
+    let games = payload
+        .response
+        .games
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|game| {
+            let name = game.name?.trim().to_owned();
+            if name.is_empty() || name.len() > 512 || game.appid == 0 {
+                return None;
+            }
+            let app_id = game.appid.to_string();
+            let icon_url = game
+                .img_icon_url
+                .filter(|hash| is_steam_asset_hash(hash))
+                .map(|hash| {
+                    format!(
+                        "https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/{app_id}/{hash}.jpg"
+                    )
+                });
+            Some(SteamOwnedGameResponse {
+                app_id: app_id.clone(),
+                name,
+                playtime_minutes: game.playtime_forever.unwrap_or_default(),
+                icon_url,
+                header_url: Some(format!(
+                    "https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg"
+                )),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(SteamLibraryResponse {
+        steam_id,
+        persona_name: None,
+        games,
+        game_count,
+        refreshed_at: Utc::now(),
+    }))
+}
+
+fn parse_steam_id64(claimed_id: &str) -> Option<String> {
+    const HTTPS_PREFIX: &str = "https://steamcommunity.com/openid/id/";
+    const HTTP_PREFIX: &str = "http://steamcommunity.com/openid/id/";
+    let value = claimed_id.trim();
+    let id = value
+        .strip_prefix(HTTPS_PREFIX)
+        .or_else(|| value.strip_prefix(HTTP_PREFIX))?;
+    if id.is_empty() || id.len() > 20 || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = id.parse::<u64>().ok()?;
+    (parsed >= 76_561_197_960_265_728).then(|| parsed.to_string())
+}
+
+fn is_steam_asset_hash(value: &str) -> bool {
+    value.len() <= 128 && !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -2553,6 +2794,15 @@ impl ApiResponseError {
         Self {
             status: StatusCode::BAD_REQUEST,
             code: "bad_request",
+            message: message.to_owned(),
+            retry_after_seconds: None,
+        }
+    }
+
+    fn forbidden(code: &'static str, message: &str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code,
             message: message.to_owned(),
             retry_after_seconds: None,
         }

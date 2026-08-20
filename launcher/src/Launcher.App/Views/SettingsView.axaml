@@ -113,7 +113,7 @@
       <StackPanel IsVisible="{Binding IsSteamSelected}" Spacing="18">
         <StackPanel Spacing="4">
           <TextBlock Text="Steam" Classes="HeadingLarge" />
-          <TextBlock Text="See the Steam games installed on this PC without sharing Steam credentials." Classes="Caption" TextWrapping="Wrap" />
+          <TextBlock Text="Use local detection without connecting, or link Steam to import the complete visible library and start installs through Steam." Classes="Caption" TextWrapping="Wrap" />
         </StackPanel>
         <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
           <StackPanel Spacing="16">
@@ -122,8 +122,22 @@
                 <TextBlock Text="{Binding SteamStatus}" Classes="HeadingMedium" />
                 <TextBlock Text="{Binding SteamLibrarySummary}" Classes="Caption" TextWrapping="Wrap" />
               </StackPanel>
-              <Button Grid.Column="1" Content="Refresh" Classes="SmallSecondary" Command="{Binding RefreshSteamCommand}" VerticalAlignment="Center" />
+              <Button Grid.Column="1" Content="Refresh installed games" Classes="SmallSecondary" Command="{Binding RefreshSteamCommand}" IsEnabled="{Binding CanConnectSteam}" VerticalAlignment="Center" />
             </Grid>
+            <Border Background="{DynamicResource SurfaceSecondary}" CornerRadius="8" Padding="16">
+              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" ColumnSpacing="16" RowSpacing="10">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="Connect Steam account" Classes="BodyStrong" />
+                  <TextBlock Text="Steam opens its own sign-in page. Vaultnode never receives your Steam password." Classes="Caption" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding SteamConnectionStatus}" Classes="Caption" TextWrapping="Wrap" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                  <Button Content="{Binding SteamConnectButtonLabel}" Classes="Primary" Command="{Binding ConnectSteamCommand}" IsEnabled="{Binding CanConnectSteam}" />
+                  <Button Content="Disconnect" Classes="SmallSecondary" Command="{Binding DisconnectSteamCommand}" IsVisible="{Binding HasSteamAccount}" IsEnabled="{Binding CanConnectSteam}" />
+                </StackPanel>
+                <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="Owned games are added to the library as Available in Steam. Clicking install hands the request to the Steam client; Vaultnode never copies Steam game files." Classes="Caption" TextWrapping="Wrap" />
+              </Grid>
+            </Border>
             <Border IsVisible="{Binding HasSteamGames}" Background="{DynamicResource SurfaceSecondary}" CornerRadius="8" Padding="16">
               <StackPanel Spacing="10">
                 <TextBlock Text="Installed games" Classes="BodyStrong" />
@@ -140,7 +154,16 @@
                 </ItemsControl>
               </StackPanel>
             </Border>
-            <TextBlock Text="Steam discovery is local only. Favorites sync from Steam account metadata, while Steam remains responsible for ownership, updates, and files." Classes="Caption" TextWrapping="Wrap" />
+            <Border IsVisible="{Binding HasSteamOwnedGames}" Background="{DynamicResource SurfaceSecondary}" CornerRadius="8" Padding="16">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <StackPanel Spacing="3">
+                  <TextBlock Text="Owned library synced" Classes="BodyStrong" />
+                  <TextBlock Text="These games are available in the launcher and can be installed through Steam." Classes="Caption" TextWrapping="Wrap" />
+                </StackPanel>
+                <TextBlock Grid.Column="1" Text="{Binding SteamOwnedGames.Count}" Classes="HeadingMedium" VerticalAlignment="Center" />
+              </Grid>
+            </Border>
+            <TextBlock Text="Local detection, favorites, launching, and Steam-client install handoff work without connecting. Full owned-library sync depends on the server Steam Web API key and your Steam game-details visibility." Classes="Caption" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
       </StackPanel>

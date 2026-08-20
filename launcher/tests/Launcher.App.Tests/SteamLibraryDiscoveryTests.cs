@@ -205,6 +205,19 @@ public sealed class SteamLibraryDiscoveryTests
         }
     }
 
+    [Fact]
+    public void ExtractsOnlyValidSteamIdsFromOpenIdClaims()
+    {
+        Assert.Equal(
+            "76561197960265729",
+            SteamLibraryDiscovery.TryGetSteamId64FromClaimedId("https://steamcommunity.com/openid/id/76561197960265729"));
+        Assert.Equal(
+            "76561197960265729",
+            SteamLibraryDiscovery.TryGetSteamId64FromClaimedId("http://steamcommunity.com/openid/id/76561197960265729"));
+        Assert.Null(SteamLibraryDiscovery.TryGetSteamId64FromClaimedId("https://example.com/openid/id/76561197960265729"));
+        Assert.False(SteamLibraryDiscovery.IsValidSteamId64("123"));
+    }
+
     private static void WriteFavoriteConfig(string steamRoot, string accountId, string appId)
     {
         var configRoot = Path.Combine(steamRoot, "userdata", accountId, "7", "remote");

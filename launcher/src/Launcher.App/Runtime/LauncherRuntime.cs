@@ -25,15 +25,18 @@ public sealed record RuntimeGame(
     GameCatalogItem? Catalog,
     InstalledGame? Installed,
     SteamGameInstall? SteamInstall = null,
+    SteamOwnedGame? SteamOwned = null,
     string? ArtworkSource = null,
     string? IconArtworkSource = null)
 {
-    public bool IsSteamGame => SteamInstall is not null;
-    public bool IsInstalled => Installed is not null || IsSteamGame;
+    public bool IsSteamGame => SteamInstall is not null || SteamOwned is not null;
+    public bool IsInstalled => Installed is not null || SteamInstall is not null;
     public bool HasBuild => !string.IsNullOrWhiteSpace(BuildId);
 
-    public string StatusText => IsSteamGame
+    public string StatusText => SteamInstall is not null
         ? "Installed"
+        : SteamOwned is not null
+            ? "Available in Steam"
         : State switch
         {
             GameState.Launchable or GameState.Installed => "Installed",
@@ -101,6 +104,8 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly ChunkCache _chunkCache;
     private readonly PackCache _packCache;
     private readonly Func<SteamLibrarySnapshot> _steamDiscovery;
+    private SteamAccountLink? _steamAccount;
+    private IReadOnlyList<SteamOwnedGame> _steamOwnedGames;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly CancellationTokenSource _catalogRefreshCancellation = new();
@@ -146,6 +151,10 @@ public sealed class LauncherRuntime : IAsyncDisposable
         var packCacheBytes = Math.Clamp(settings.CacheSizeBytes / 2, 512L * 1024 * 1024, 2L * 1024 * 1024 * 1024);
         _packCache = new PackCache(packCacheRoot, packCacheBytes);
         _steamDiscovery = steamDiscovery ?? (() => SteamLibraryDiscovery.Discover());
+        _steamAccount = SteamLibraryDiscovery.IsValidSteamId64(settings.SteamId64)
+            ? new SteamAccountLink(settings.SteamId64, string.IsNullOrWhiteSpace(settings.SteamPersonaName) ? null : settings.SteamPersonaName)
+            : null;
+        _steamOwnedGames = settings.SteamOwnedGames ?? [];
     }
 
     public LauncherRuntimeSnapshot Snapshot => _snapshot;
@@ -192,6 +201,42 @@ public sealed class LauncherRuntime : IAsyncDisposable
     {
         SetAccessToken(null);
         await RefreshAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<SteamLibraryResponse> ConnectSteamAsync(CancellationToken cancellationToken = default)
+    {
+        var assertion = await SteamAccountConnector.AuthorizeAsync(cancellationToken).ConfigureAwait(false);
+        var library = await _apiClient
+            .ConnectSteamAsync(assertion.Parameters, _accessToken, cancellationToken)
+            .ConfigureAwait(false);
+        if (!SteamLibraryDiscovery.IsValidSteamId64(library.SteamId64))
+        {
+            throw new InvalidDataException("Steam returned an invalid account identifier.");
+        }
+
+        _steamAccount = new SteamAccountLink(library.SteamId64, library.PersonaName);
+        _steamOwnedGames = library.Games;
+        await RefreshAsync(cancellationToken).ConfigureAwait(false);
+        return library;
+    }
+
+    public async Task DisconnectSteamAsync(CancellationToken cancellationToken = default)
+    {
+        _steamAccount = null;
+        _steamOwnedGames = [];
+        await RefreshAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task InstallSteamAsync(string gameId)
+    {
+        var game = FindGame(gameId) ?? throw new LauncherOperationException($"Game was not found: {gameId}");
+        var appId = game.SteamInstall?.AppId ?? game.SteamOwned?.AppId;
+        if (appId is null)
+        {
+            throw new LauncherOperationException($"{game.Title} is not a Steam game.");
+        }
+
+        return SteamLauncher.InstallAsync(appId);
     }
 
     public static async Task<LauncherRuntime> CreateDefaultAsync(CancellationToken cancellationToken = default)
@@ -317,7 +362,17 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 steam = new SteamLibrarySnapshot([], [], $"Steam discovery failed: {exception.Message}");
             }
 
-            var games = BuildGames(_catalog, installed, steam.Games);
+            steam = steam with
+            {
+                ConnectedAccount = _steamAccount,
+                OwnedGames = _steamAccount is null ? [] : _steamOwnedGames,
+                OwnedGamesError = _steamAccount is null
+                    ? null
+                    : _steamOwnedGames.Count == 0
+                        ? "No cached owned games. Sync the connected Steam account to refresh it."
+                        : null
+            };
+            var games = BuildGames(_catalog, installed, steam.Games, steam.OwnedGames ?? []);
             var connectionStatus = online ? "Online" : "Offline-ready";
             LauncherUserProfile? user = null;
             if (IsAuthenticated)
@@ -548,9 +603,10 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private static List<RuntimeGame> BuildGames(
         IReadOnlyList<GameCatalogItem> catalog,
         IReadOnlyList<InstalledGame> installed,
-        IReadOnlyList<SteamGameInstall> steamGames)
+        IReadOnlyList<SteamGameInstall> steamGames,
+        IReadOnlyList<SteamOwnedGame> steamOwnedGames)
     {
-        var games = new List<RuntimeGame>(catalog.Count + installed.Count);
+        var games = new List<RuntimeGame>(catalog.Count + installed.Count + steamOwnedGames.Count);
         var matchedInstalled = new HashSet<string>(StringComparer.Ordinal);
         foreach (var item in catalog)
         {
@@ -618,8 +674,36 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 null,
                 null,
                 steamGame,
+                null,
                 steamGame.ArtworkPath,
                 steamGame.IconArtworkPath));
+        }
+
+        foreach (var ownedGame in steamOwnedGames)
+        {
+            var id = $"steam:{ownedGame.AppId}";
+            if (games.Any(game => string.Equals(game.Id, id, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            games.Add(new RuntimeGame(
+                id,
+                id,
+                ownedGame.Name,
+                "Owned through Steam. Steam will manage the download, installation, updates, and files.",
+                BuildMonogram(ownedGame.Name),
+                null,
+                "Steam",
+                0,
+                GameState.NotInstalled,
+                string.Empty,
+                null,
+                null,
+                null,
+                ownedGame,
+                ownedGame.HeaderUrl,
+                ownedGame.IconUrl));
         }
 
         return games;

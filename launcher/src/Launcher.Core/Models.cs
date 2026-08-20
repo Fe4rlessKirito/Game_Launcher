@@ -81,6 +81,24 @@ public sealed record LibraryCategoryState(
     bool IsExpanded,
     IReadOnlyList<string> GameIds);
 
+public sealed record SteamAccountLink(
+    string SteamId64,
+    string? PersonaName = null);
+
+public sealed record SteamOwnedGame(
+    string AppId,
+    string Name,
+    int PlaytimeMinutes = 0,
+    string? IconUrl = null,
+    string? HeaderUrl = null)
+{
+    public string PlaytimeDisplay => PlaytimeMinutes <= 0
+        ? "No play time recorded"
+        : PlaytimeMinutes >= 60
+            ? $"{PlaytimeMinutes / 60}h {PlaytimeMinutes % 60}m played"
+            : $"{PlaytimeMinutes}m played";
+}
+
 public enum InstallationFailurePoint
 {
     None,
@@ -133,6 +151,9 @@ public sealed record LauncherSettings(
     string ProfileImagePath = "",
     string ThemePreset = "Slate",
     string AccentColor = "#1A9FFF",
-    bool CompactMode = false);
+    bool CompactMode = false,
+    string SteamId64 = "",
+    string SteamPersonaName = "",
+    IReadOnlyList<SteamOwnedGame>? SteamOwnedGames = null);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

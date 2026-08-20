@@ -34,6 +34,13 @@ public sealed record LauncherUserProfile(
     [property: JsonPropertyName("email")] string? Email,
     [property: JsonPropertyName("username")] string? Username);
 
+public sealed record SteamLibraryResponse(
+    [property: JsonPropertyName("steam_id")] string SteamId64,
+    [property: JsonPropertyName("persona_name")] string? PersonaName,
+    [property: JsonPropertyName("games")] IReadOnlyList<SteamOwnedGame> Games,
+    [property: JsonPropertyName("game_count")] int GameCount,
+    [property: JsonPropertyName("refreshed_at")] DateTimeOffset RefreshedAt);
+
 public sealed record SupabaseAuthSession(string AccessToken);
 
 public sealed class SupabaseAuthClient(HttpClient httpClient, Uri baseUri, string publishableKey)
@@ -156,6 +163,36 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
             ?? throw new HttpRequestException("API returned an empty user profile.");
     }
 
+    public async Task<SteamLibraryResponse> ConnectSteamAsync(
+        IReadOnlyDictionary<string, string> openIdParameters,
+        string? accessToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (openIdParameters is null || openIdParameters.Count == 0)
+        {
+            throw new ArgumentException("Steam returned no OpenID parameters.", nameof(openIdParameters));
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(baseUri, "api/v1/steam/connect"));
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {accessToken}");
+        }
+
+        request.Content = JsonContent.Create(new SteamConnectRequest(openIdParameters), options: JsonOptions);
+        using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(ReadApiError(body, response.StatusCode));
+        }
+
+        var result = JsonSerializer.Deserialize<SteamLibraryResponse>(body, JsonOptions)
+            ?? throw new InvalidDataException("API returned an empty Steam library.");
+        ValidateSteamLibrary(result);
+        return result;
+    }
+
     public async Task<Manifest> GetManifestAsync(string buildId, CancellationToken cancellationToken = default)
     {
         var manifest = await httpClient.GetFromJsonAsync<Manifest>(new Uri(baseUri, $"api/v1/builds/{Uri.EscapeDataString(buildId)}/manifest"), JsonOptions, cancellationToken).ConfigureAwait(false) ?? throw new HttpRequestException("API returned an empty manifest.");
@@ -253,7 +290,59 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
         }
     }
 
+    private static void ValidateSteamLibrary(SteamLibraryResponse response)
+    {
+        if (!IsValidSteamId64(response.SteamId64)
+            || response.GameCount < 0
+            || response.Games is null
+            || response.Games.Count > 100_000)
+        {
+            throw new InvalidDataException("API returned an invalid Steam library.");
+        }
+
+        foreach (var game in response.Games)
+        {
+            if (game is null
+                || !IsValidSteamAppId(game.AppId)
+                || string.IsNullOrWhiteSpace(game.Name)
+                || game.Name.Length > 512
+                || game.PlaytimeMinutes < 0
+                || game.IconUrl is not null && !IsHttpUrl(game.IconUrl)
+                || game.HeaderUrl is not null && !IsHttpUrl(game.HeaderUrl))
+            {
+                throw new InvalidDataException("API returned an invalid Steam game.");
+            }
+        }
+    }
+
+    private static bool IsValidSteamId64(string? value) =>
+        value is { Length: >= 10 and <= 20 }
+        && ulong.TryParse(value, out var parsed)
+        && parsed > 0;
+
+    private static bool IsValidSteamAppId(string? value) =>
+        value is { Length: >= 1 and <= 10 }
+        && uint.TryParse(value, out var parsed)
+        && parsed > 0;
+
+    private static string ReadApiError(string body, HttpStatusCode statusCode)
+    {
+        try
+        {
+            var error = JsonSerializer.Deserialize<ApiErrorResponse>(body, JsonOptions);
+            if (!string.IsNullOrWhiteSpace(error?.Message)) return error.Message;
+        }
+        catch (JsonException)
+        {
+            // Fall through to a safe status-based message.
+        }
+
+        return $"Steam connection failed ({(int)statusCode} {statusCode}).";
+    }
+
     private sealed record CatalogResponse([property: JsonPropertyName("items")] IReadOnlyList<GameCatalogItem>? Items, [property: JsonPropertyName("next_cursor")] string? NextCursor);
     private sealed record ChunkResolutionRequest([property: JsonPropertyName("encoded_hashes")] IReadOnlyCollection<string> EncodedHashes);
     private sealed record PackResolutionRequest([property: JsonPropertyName("encoded_hashes")] IReadOnlyCollection<string> EncodedHashes);
+    private sealed record SteamConnectRequest([property: JsonPropertyName("parameters")] IReadOnlyDictionary<string, string> Parameters);
+    private sealed record ApiErrorResponse([property: JsonPropertyName("message")] string? Message);
 }

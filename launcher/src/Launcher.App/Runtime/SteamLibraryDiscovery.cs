@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.Versioning;
 using System.Text;
+using Launcher.Core;
 using Microsoft.Win32;
 
 namespace Launcher.App.Runtime;
@@ -39,7 +40,10 @@ public sealed record SteamGameInstall(
 public sealed record SteamLibrarySnapshot(
     IReadOnlyList<string> LibraryRoots,
     IReadOnlyList<SteamGameInstall> Games,
-    string? Error)
+    string? Error,
+    SteamAccountLink? ConnectedAccount = null,
+    IReadOnlyList<SteamOwnedGame>? OwnedGames = null,
+    string? OwnedGamesError = null)
 {
     public static SteamLibrarySnapshot Empty { get; } = new([], [], null);
     public bool IsDetected => LibraryRoots.Count > 0;
@@ -799,6 +803,23 @@ public static class SteamLibraryDiscovery
         && parsed > 0
         && parsed <= MaxSteamAppId;
 
+    public static bool IsValidSteamId64(string? steamId64) =>
+        ulong.TryParse(steamId64, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+        && parsed >= SteamId64Base;
+
+    public static string? TryGetSteamId64FromClaimedId(string? claimedId)
+    {
+        const string httpsPrefix = "https://steamcommunity.com/openid/id/";
+        const string httpPrefix = "http://steamcommunity.com/openid/id/";
+        var value = claimedId?.Trim();
+        var steamId64 = value?.StartsWith(httpsPrefix, StringComparison.OrdinalIgnoreCase) == true
+            ? value[httpsPrefix.Length..]
+            : value?.StartsWith(httpPrefix, StringComparison.OrdinalIgnoreCase) == true
+                ? value[httpPrefix.Length..]
+                : null;
+        return IsValidSteamId64(steamId64) ? steamId64 : null;
+    }
+
     private static bool IsWithin(string root, string candidate)
     {
         var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) + Path.DirectorySeparatorChar;
@@ -834,11 +855,37 @@ public static class SteamLauncher
             throw new Launcher.Core.LauncherOperationException("Steam returned an invalid application id.");
         }
 
+        return OpenSteamUriAsync(
+            $"steam://rungameid/{game.AppId}",
+            ["-applaunch", game.AppId],
+            "Steam could not open this game.");
+    }
+
+    public static Task InstallAsync(string appId)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new Launcher.Core.LauncherOperationException("Steam installation handoff is currently supported on Windows only.");
+        }
+
+        if (!SteamLibraryDiscovery.IsValidAppId(appId))
+        {
+            throw new Launcher.Core.LauncherOperationException("Steam returned an invalid application id.");
+        }
+
+        return OpenSteamUriAsync(
+            $"steam://install/{appId}",
+            [$"steam://install/{appId}"],
+            "Steam could not open the install request.");
+    }
+
+    private static Task OpenSteamUriAsync(string uri, IReadOnlyList<string> fallbackArguments, string failureMessage)
+    {
         try
         {
             using var started = Process.Start(new ProcessStartInfo
             {
-                FileName = $"steam://rungameid/{game.AppId}",
+                FileName = uri,
                 UseShellExecute = true
             });
             if (started is not null)
@@ -874,8 +921,10 @@ public static class SteamLauncher
                     UseShellExecute = false,
                     WorkingDirectory = Path.GetDirectoryName(steamExecutable) ?? string.Empty
                 };
-                startInfo.ArgumentList.Add("-applaunch");
-                startInfo.ArgumentList.Add(game.AppId);
+                foreach (var argument in fallbackArguments)
+                {
+                    startInfo.ArgumentList.Add(argument);
+                }
                 using var started = Process.Start(startInfo);
                 if (started is not null)
                 {
@@ -901,6 +950,6 @@ public static class SteamLauncher
             throw new Launcher.Core.LauncherOperationException("Steam is not installed or its executable could not be found.");
         }
 
-        throw new Launcher.Core.LauncherOperationException("Steam could not open this game.");
+        throw new Launcher.Core.LauncherOperationException(failureMessage);
     }
 }
