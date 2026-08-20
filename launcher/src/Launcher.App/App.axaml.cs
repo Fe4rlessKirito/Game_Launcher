@@ -21,7 +21,9 @@ public partial class App : Application
         {
             var shell = new ShellViewModel(seedDemoData: false);
             desktop.MainWindow = new MainWindow { DataContext = shell };
+            shell.LauncherUpdateInstallStarted += () => Dispatcher.UIThread.Post(() => desktop.Shutdown());
             desktop.Exit += OnDesktopExit;
+            shell.StartAutomaticUpdateCheck();
             _ = InitializeRuntimeAsync(shell);
             InstanceCoordinator?.Start(() => Dispatcher.UIThread.Post(() =>
             {

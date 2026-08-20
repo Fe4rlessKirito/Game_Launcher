@@ -160,6 +160,8 @@ public sealed record LauncherSettings(
     bool EaIntegrationEnabled = false,
     bool BattleNetIntegrationEnabled = false,
     bool XboxIntegrationEnabled = false,
-    bool ItchIntegrationEnabled = false);
+    bool ItchIntegrationEnabled = false,
+    string BackgroundImagePath = "",
+    bool AutomaticUpdatesEnabled = true);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
+using System.Text.Json;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
@@ -26,9 +28,13 @@ public partial class ShellViewModel : ObservableObject
     private readonly Stack<NavigationTarget> _backStack = new();
     private readonly Stack<NavigationTarget> _forwardStack = new();
     private readonly HashSet<string> _excludedGameIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly LauncherUpdateService _launcherUpdateService;
     private readonly object _categoryPersistenceLock = new();
     private IReadOnlyList<LibraryCategoryState>? _pendingCategoryState;
     private Task? _categoryPersistenceTask;
+    private CancellationTokenSource? _launcherUpdateCancellation;
+    private LauncherUpdateInfo? _availableLauncherUpdate;
+    private DispatcherTimer? _launcherUpdateTimer;
     private bool _libraryCategoriesHydrated;
     private NavigationTarget _currentTarget = new("Library", null, true);
 
@@ -49,6 +55,10 @@ public partial class ShellViewModel : ObservableObject
     [ObservableProperty] private string _connectionStatus = "Offline-ready";
     [ObservableProperty] private string _runtimeError = string.Empty;
     [ObservableProperty] private string _accountDisplayName = "Guest";
+    [ObservableProperty] private bool _isLauncherUpdateVisible;
+    [ObservableProperty] private string _launcherUpdateMessage = string.Empty;
+    [ObservableProperty] private string _launcherUpdateActionLabel = "Install";
+    [ObservableProperty] private bool _isInstallingLauncherUpdate;
 
     public ObservableCollection<SidebarCategory> SidebarCategories { get; }
     public SettingsViewModel Settings => _settingsPage;
@@ -71,9 +81,16 @@ public partial class ShellViewModel : ObservableObject
         || string.Equals(CurrentDestination, "Library", StringComparison.OrdinalIgnoreCase);
     public bool HasSearchQuery => !string.IsNullOrWhiteSpace(SearchQuery);
     public string ReadyToPlayFilterTip => ShowOnlyReadyToPlay ? "Show all games" : "Show only ready to play games";
+    public bool CanInstallLauncherUpdate => _availableLauncherUpdate is not null && !IsInstallingLauncherUpdate;
+    public event Action? LauncherUpdateInstallStarted;
 
-    public ShellViewModel(LauncherRuntime? runtime = null, bool seedDemoData = true)
+    public ShellViewModel(
+        LauncherRuntime? runtime = null,
+        bool seedDemoData = true,
+        LauncherUpdateService? launcherUpdateService = null)
     {
+        _launcherUpdateService = launcherUpdateService ?? new LauncherUpdateService();
+        _settingsPage.AutomaticUpdatesPreferenceChanged += OnAutomaticUpdatesPreferenceChanged;
         SidebarCategories =
         [
             new SidebarCategory(FavoritesCategoryName, false, seedDemoData ? new[]
@@ -95,6 +112,206 @@ public partial class ShellViewModel : ObservableObject
         RefreshVisibleSidebarCategories();
         if (runtime is not null) AttachRuntime(runtime);
     }
+
+    public void StartAutomaticUpdateCheck()
+    {
+        if (!Settings.AutomaticUpdatesEnabled)
+        {
+            return;
+        }
+
+        _launcherUpdateTimer ??= CreateLauncherUpdateTimer();
+        _launcherUpdateTimer.Start();
+        _ = CheckForLauncherUpdateAsync(force: false);
+    }
+
+    private DispatcherTimer CreateLauncherUpdateTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromHours(6) };
+        timer.Tick += (_, _) => _ = CheckForLauncherUpdateAsync(force: false);
+        return timer;
+    }
+
+    [RelayCommand]
+    private async Task CheckForLauncherUpdate()
+    {
+        await CheckForLauncherUpdateAsync(force: true).ConfigureAwait(true);
+    }
+
+    private async Task CheckForLauncherUpdateAsync(bool force)
+    {
+        if (!force && !Settings.AutomaticUpdatesEnabled)
+        {
+            return;
+        }
+
+        _launcherUpdateCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _launcherUpdateCancellation = cancellation;
+        IsLauncherUpdateVisible = false;
+
+        try
+        {
+            var update = await _launcherUpdateService.CheckAsync(cancellation.Token).ConfigureAwait(true);
+            if (cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _availableLauncherUpdate = update;
+            LauncherUpdateActionLabel = "Install";
+            LauncherUpdateMessage = update is null
+                ? string.Empty
+                : $"Version {FormatUpdateVersion(update.Version)} is ready. Review the release before installing.";
+            IsLauncherUpdateVisible = update is not null;
+            OnPropertyChanged(nameof(CanInstallLauncherUpdate));
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer check, a disabled preference, or a network timeout superseded this request.
+        }
+        catch (HttpRequestException)
+        {
+            // Update checks are best effort and must never make the launcher unavailable.
+        }
+        catch (JsonException)
+        {
+            // Ignore malformed remote release metadata and keep the launcher usable.
+        }
+        catch (InvalidDataException)
+        {
+            // Ignore untrusted release metadata and keep the launcher usable.
+        }
+        finally
+        {
+            if (ReferenceEquals(_launcherUpdateCancellation, cancellation))
+            {
+                _launcherUpdateCancellation = null;
+            }
+        }
+    }
+
+    [RelayCommand]
+    private void DismissLauncherUpdate() => IsLauncherUpdateVisible = false;
+
+    [RelayCommand]
+    private void OpenLauncherUpdate()
+    {
+        if (_availableLauncherUpdate?.ReleaseUri is not { } releaseUri)
+        {
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = releaseUri.ToString(),
+                UseShellExecute = true,
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            RuntimeError = "Could not open the release notes in your browser.";
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            RuntimeError = "Could not open the release notes in your browser.";
+        }
+    }
+
+    [RelayCommand]
+    private async Task InstallLauncherUpdate()
+    {
+        if (_availableLauncherUpdate is not { } update || IsInstallingLauncherUpdate)
+        {
+            return;
+        }
+
+        IsInstallingLauncherUpdate = true;
+        LauncherUpdateActionLabel = "Downloading…";
+        LauncherUpdateMessage = $"Downloading {FormatUpdateVersion(update.Version)} and verifying the installer…";
+
+        try
+        {
+            var installerPath = await _launcherUpdateService
+                .DownloadInstallerAsync(update)
+                .ConfigureAwait(true);
+            var installerProcess = Process.Start(new ProcessStartInfo
+            {
+                FileName = installerPath,
+                UseShellExecute = true,
+            });
+            if (installerProcess is null)
+            {
+                throw new InvalidOperationException("The verified installer process did not start.");
+            }
+
+            LauncherUpdateMessage = "The verified installer is ready. Vaultnode will close to finish the update.";
+            LauncherUpdateActionLabel = "Ready";
+            LauncherUpdateInstallStarted?.Invoke();
+        }
+        catch (OperationCanceledException)
+        {
+            LauncherUpdateActionLabel = "Retry";
+            LauncherUpdateMessage = "The update was cancelled before it could be installed.";
+            IsInstallingLauncherUpdate = false;
+        }
+        catch (HttpRequestException)
+        {
+            LauncherUpdateActionLabel = "Retry";
+            LauncherUpdateMessage = "The update could not be downloaded. Check your connection and try again.";
+            IsInstallingLauncherUpdate = false;
+        }
+        catch (InvalidDataException)
+        {
+            LauncherUpdateActionLabel = "Retry";
+            LauncherUpdateMessage = "The update failed verification and was discarded.";
+            IsInstallingLauncherUpdate = false;
+        }
+        catch (IOException)
+        {
+            LauncherUpdateActionLabel = "Retry";
+            LauncherUpdateMessage = "The update could not be saved locally. Check available disk space and try again.";
+            IsInstallingLauncherUpdate = false;
+        }
+        catch (InvalidOperationException)
+        {
+            LauncherUpdateActionLabel = "Retry";
+            LauncherUpdateMessage = "The verified installer could not be started.";
+            IsInstallingLauncherUpdate = false;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            LauncherUpdateActionLabel = "Retry";
+            LauncherUpdateMessage = "The verified installer could not be started.";
+            IsInstallingLauncherUpdate = false;
+        }
+    }
+
+    private void OnAutomaticUpdatesPreferenceChanged()
+    {
+        if (Settings.AutomaticUpdatesEnabled)
+        {
+            StartAutomaticUpdateCheck();
+            return;
+        }
+
+        _launcherUpdateCancellation?.Cancel();
+        _launcherUpdateTimer?.Stop();
+        _availableLauncherUpdate = null;
+        IsLauncherUpdateVisible = false;
+        LauncherUpdateMessage = string.Empty;
+        OnPropertyChanged(nameof(CanInstallLauncherUpdate));
+    }
+
+    private static string FormatUpdateVersion(string version)
+    {
+        var trimmed = version.Trim();
+        return trimmed.StartsWith("v", StringComparison.OrdinalIgnoreCase) ? trimmed : $"v{trimmed}";
+    }
+
+    partial void OnIsInstallingLauncherUpdateChanged(bool value) => OnPropertyChanged(nameof(CanInstallLauncherUpdate));
 
     public async Task InitializeRuntimeAsync(LauncherRuntime runtime, CancellationToken cancellationToken = default)
     {

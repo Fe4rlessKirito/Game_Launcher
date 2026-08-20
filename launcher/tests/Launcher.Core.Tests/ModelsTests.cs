@@ -29,6 +29,15 @@ public class ModelsTests
             Assert.Equal("https://staging.example.invalid/", settings.ApiBaseUrl);
             Assert.Contains("staging-2026-01", settings.TrustedManifestKeysPem!.Keys);
             Assert.True(settings.RequireTrustedManifestKeys);
+
+            await store.SaveAsync(settings with
+            {
+                BackgroundImagePath = "C:\\Users\\Public\\Pictures\\vaultnode.png",
+                AutomaticUpdatesEnabled = false,
+            });
+            var presentationSettings = await store.LoadAsync();
+            Assert.Equal("C:\\Users\\Public\\Pictures\\vaultnode.png", presentationSettings.BackgroundImagePath);
+            Assert.False(presentationSettings.AutomaticUpdatesEnabled);
         }
         finally
         {

@@ -28,4 +28,24 @@ public partial class SettingsView : UserControl
             settings.SetProfileImagePath(file.Path.LocalPath);
         }
     }
+
+    private async void OnChooseBackgroundImageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is not SettingsViewModel settings || TopLevel.GetTopLevel(this) is not { } topLevel)
+        {
+            return;
+        }
+
+        var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Choose launcher background",
+            AllowMultiple = false,
+            FileTypeFilter = new[] { FilePickerFileTypes.ImageAll }
+        });
+        var file = files.Count > 0 ? files[0] : null;
+        if (file?.Path.IsFile == true)
+        {
+            settings.SetBackgroundImagePath(file.Path.LocalPath);
+        }
+    }
 }

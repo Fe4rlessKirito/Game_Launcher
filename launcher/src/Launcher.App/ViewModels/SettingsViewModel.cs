@@ -69,6 +69,9 @@ public partial class SettingsViewModel : ObservableObject
     private bool _compactMode;
 
     [ObservableProperty]
+    private bool _automaticUpdatesEnabled = true;
+
+    [ObservableProperty]
     private string _downloadDirectory = @"C:\Games\Launcher\Downloads";
 
     [ObservableProperty]
@@ -82,6 +85,12 @@ public partial class SettingsViewModel : ObservableObject
 
     [ObservableProperty]
     private Bitmap? _profileImage;
+
+    [ObservableProperty]
+    private string _backgroundImagePath = string.Empty;
+
+    [ObservableProperty]
+    private Bitmap? _backgroundImage;
 
     [ObservableProperty]
     private string _saveStatus = "Changes are stored locally.";
@@ -124,8 +133,11 @@ public partial class SettingsViewModel : ObservableObject
     private EpicLibrarySnapshot _epicSnapshot = EpicLibrarySnapshot.Empty;
     private IReadOnlyList<OptionalStoreSnapshot> _optionalStoreSnapshots = [];
 
+    public event Action? AutomaticUpdatesPreferenceChanged;
+
     public bool HasProfileImage => ProfileImage is not null;
     public bool ShowDefaultProfile => !HasProfileImage;
+    public bool HasBackgroundImage => BackgroundImage is not null;
     public bool IsProfileSelected => SelectedSection == "Profile";
     public bool IsGeneralSelected => SelectedSection == "General";
     public bool IsDownloadsSelected => SelectedSection == "Downloads";
@@ -506,6 +518,8 @@ public partial class SettingsViewModel : ObservableObject
                 ThemePreset: ThemePreset,
                 AccentColor: AccentColor,
                 CompactMode: CompactMode,
+                BackgroundImagePath: BackgroundImagePath,
+                AutomaticUpdatesEnabled: AutomaticUpdatesEnabled,
                 SteamId64: SteamId64,
                 SteamPersonaName: SteamPersonaName,
                 SteamOwnedGames: _cachedSteamOwnedGames,
@@ -568,10 +582,12 @@ public partial class SettingsViewModel : ObservableObject
         ThemePreset = "Slate";
         AccentColor = "#1A9FFF";
         CompactMode = false;
+        AutomaticUpdatesEnabled = true;
         DownloadDirectory = @"C:\Games\Launcher\Downloads";
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
         ProfileImagePath = string.Empty;
+        BackgroundImagePath = string.Empty;
         SteamId64 = string.Empty;
         SteamPersonaName = string.Empty;
         _cachedSteamOwnedGames = [];
@@ -687,6 +703,20 @@ public partial class SettingsViewModel : ObservableObject
         SetProfileImagePath(string.Empty);
     }
 
+    public void SetBackgroundImagePath(string? path)
+    {
+        BackgroundImagePath = path?.Trim() ?? string.Empty;
+        SaveStatus = string.IsNullOrWhiteSpace(BackgroundImagePath)
+            ? "Default launcher background selected. Save to keep it."
+            : "Launcher background selected. Save to keep it.";
+    }
+
+    [RelayCommand]
+    private void ClearBackgroundImage()
+    {
+        SetBackgroundImagePath(string.Empty);
+    }
+
     private void Load()
     {
         try
@@ -717,6 +747,7 @@ public partial class SettingsViewModel : ObservableObject
                 : "Slate";
             AccentColor = string.IsNullOrWhiteSpace(snapshot.AccentColor) ? "#1A9FFF" : snapshot.AccentColor;
             CompactMode = snapshot.CompactMode;
+            AutomaticUpdatesEnabled = snapshot.AutomaticUpdatesEnabled;
             DownloadDirectory = string.IsNullOrWhiteSpace(snapshot.DownloadDirectory)
                 ? @"C:\Games\Launcher\Downloads"
                 : snapshot.DownloadDirectory;
@@ -729,6 +760,7 @@ public partial class SettingsViewModel : ObservableObject
                     ? DefaultApiBaseUrl
                     : snapshot.ApiBaseUrl;
             ProfileImagePath = snapshot.ProfileImagePath ?? string.Empty;
+            BackgroundImagePath = snapshot.BackgroundImagePath ?? string.Empty;
             SteamId64 = SteamLibraryDiscovery.IsValidSteamId64(snapshot.SteamId64) ? snapshot.SteamId64 : string.Empty;
             SteamPersonaName = string.IsNullOrWhiteSpace(snapshot.SteamPersonaName) ? string.Empty : snapshot.SteamPersonaName;
             _cachedSteamOwnedGames = snapshot.SteamOwnedGames ?? [];
@@ -792,6 +824,33 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    partial void OnBackgroundImagePathChanged(string value)
+    {
+        BackgroundImage?.Dispose();
+        BackgroundImage = null;
+        if (string.IsNullOrWhiteSpace(value) || !File.Exists(value))
+        {
+            return;
+        }
+
+        try
+        {
+            BackgroundImage = new Bitmap(value);
+        }
+        catch (ArgumentException)
+        {
+            SaveStatus = "That launcher background could not be loaded.";
+        }
+        catch (IOException)
+        {
+            SaveStatus = "That launcher background could not be loaded.";
+        }
+        catch (UnauthorizedAccessException)
+        {
+            SaveStatus = "That launcher background could not be loaded.";
+        }
+    }
+
     partial void OnSelectedSectionChanged(string value)
     {
         OnPropertyChanged(nameof(IsProfileSelected));
@@ -819,6 +878,8 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     partial void OnCompactModeChanged(bool value) => ApplyAppearance();
+
+    partial void OnAutomaticUpdatesEnabledChanged(bool value) => AutomaticUpdatesPreferenceChanged?.Invoke();
 
     partial void OnIsSignedInChanged(bool value) => OnPropertyChanged(nameof(IsNotSignedIn));
 
@@ -864,6 +925,8 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(HasProfileImage));
         OnPropertyChanged(nameof(ShowDefaultProfile));
     }
+
+    partial void OnBackgroundImageChanged(Bitmap? value) => OnPropertyChanged(nameof(HasBackgroundImage));
 
     private Dictionary<OptionalStoreProvider, bool> GetOptionalStoreSettings() =>
         new Dictionary<OptionalStoreProvider, bool>

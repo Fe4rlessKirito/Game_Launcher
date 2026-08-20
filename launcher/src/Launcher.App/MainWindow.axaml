@@ -12,7 +12,14 @@
         Background="{DynamicResource BackgroundPrimary}"
         Icon="avares://Launcher.App/Assets/vaultnode.ico"
         Title="{DynamicResource ProductName}">
-  <Grid RowDefinitions="78,*,38">
+  <Grid>
+    <Image Source="{Binding Settings.BackgroundImage}"
+           IsVisible="{Binding Settings.HasBackgroundImage}"
+           Stretch="UniformToFill"
+           Opacity="0.30" />
+    <Border Background="#C70B111B"
+            IsVisible="{Binding Settings.HasBackgroundImage}" />
+    <Grid RowDefinitions="78,Auto,*,38">
     <Border x:Name="TitleBar"
             Grid.Row="0"
             Background="{DynamicResource ChromeBar}"
@@ -83,7 +90,36 @@
       </Grid>
     </Border>
 
-    <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
+    <Border Grid.Row="1"
+            IsVisible="{Binding IsLauncherUpdateVisible}"
+            Background="#3A2B16"
+            BorderBrush="#A87627"
+            BorderThickness="0,0,0,1"
+            Padding="18,10">
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" ColumnSpacing="12">
+        <Border Width="28"
+                Height="28"
+                CornerRadius="14"
+                Background="#A87627"
+                VerticalAlignment="Center">
+          <TextBlock Text="!"
+                     Foreground="#1A1205"
+                     FontSize="16"
+                     FontWeight="Bold"
+                     HorizontalAlignment="Center"
+                     VerticalAlignment="Center" />
+        </Border>
+        <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+          <TextBlock Text="Launcher update available" Classes="BodyStrong" Foreground="#FFE2A8" />
+          <TextBlock Text="{Binding LauncherUpdateMessage}" Classes="Caption" Foreground="#F4D6A0" TextWrapping="Wrap" />
+        </StackPanel>
+        <Button Grid.Column="2" Content="Release notes" Classes="SmallSecondary" Command="{Binding OpenLauncherUpdateCommand}" VerticalAlignment="Center" />
+        <Button Grid.Column="3" Content="{Binding LauncherUpdateActionLabel}" Classes="Primary" Command="{Binding InstallLauncherUpdateCommand}" IsEnabled="{Binding CanInstallLauncherUpdate}" VerticalAlignment="Center" />
+        <Button Grid.Column="4" Content="Later" Classes="SmallSecondary" Command="{Binding DismissLauncherUpdateCommand}" VerticalAlignment="Center" />
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="Auto,*">
       <Border Grid.Column="0" Width="{DynamicResource SidebarWidth}" IsVisible="{Binding IsSidebarVisible}" Background="{DynamicResource SidebarBackground}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,0,1,0">
         <Grid RowDefinitions="Auto,*">
           <StackPanel Grid.Row="0" Spacing="9" Margin="12,16,12,0">
@@ -242,7 +278,7 @@
       </Grid>
     </Grid>
 
-    <Border Grid.Row="2" Background="{DynamicResource ChromeBar}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,1,0,0">
+    <Border Grid.Row="3" Background="{DynamicResource ChromeBar}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="0,1,0,0">
       <Grid ColumnDefinitions="Auto,*,Auto" Margin="12,0">
         <Button Content="+   Add a Game" Classes="AddGame" Command="{Binding BeginAddGameCommand}" />
         <Button Grid.Column="1" Command="{Binding NavigateCommand}" CommandParameter="Downloads" Classes="DownloadCenter" HorizontalAlignment="Center">
@@ -255,7 +291,7 @@
       </Grid>
     </Border>
 
-    <Border Grid.Row="1"
+    <Border Grid.Row="2"
             Grid.RowSpan="2"
             IsVisible="{Binding IsAddingCategory}"
             Background="#B0000000">
@@ -287,5 +323,6 @@
         </StackPanel>
       </Border>
     </Border>
+    </Grid>
   </Grid>
 </Window>
