@@ -164,6 +164,7 @@ public sealed record LauncherSettings(
     string BackgroundImagePath = "",
     bool AutomaticUpdatesEnabled = true,
     double InterfaceTransparency = 0,
-    double BackgroundImageOpacity = 0.30);
+    double BackgroundImageOpacity = 0.30,
+    bool MatchBackgroundColors = true);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

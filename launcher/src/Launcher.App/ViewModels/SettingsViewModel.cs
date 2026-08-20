@@ -78,6 +78,9 @@ public partial class SettingsViewModel : ObservableObject
     private double _backgroundImageOpacity = 0.30;
 
     [ObservableProperty]
+    private bool _matchBackgroundColors = true;
+
+    [ObservableProperty]
     private string _downloadDirectory = @"C:\Games\Launcher\Downloads";
 
     [ObservableProperty]
@@ -156,6 +159,10 @@ public partial class SettingsViewModel : ObservableObject
     }
     public string InterfaceTransparencyDisplay => $"{Math.Round(InterfaceTransparencyPercent):0}%";
     public string BackgroundImageOpacityDisplay => $"{Math.Round(BackgroundImageOpacityPercent):0}%";
+    public bool IsManualAccentEnabled => !MatchBackgroundColors || !HasBackgroundImage;
+    public string AccentColorDescription => MatchBackgroundColors && HasBackgroundImage
+        ? "Colors are sampled from the selected background. Turn matching off to choose manually."
+        : "Choose an accent from the color spectrum or palette.";
     public bool IsProfileSelected => SelectedSection == "Profile";
     public bool IsGeneralSelected => SelectedSection == "General";
     public bool IsDownloadsSelected => SelectedSection == "Downloads";
@@ -540,6 +547,7 @@ public partial class SettingsViewModel : ObservableObject
                 AutomaticUpdatesEnabled: AutomaticUpdatesEnabled,
                 InterfaceTransparency: InterfaceTransparency,
                 BackgroundImageOpacity: BackgroundImageOpacity,
+                MatchBackgroundColors: MatchBackgroundColors,
                 SteamId64: SteamId64,
                 SteamPersonaName: SteamPersonaName,
                 SteamOwnedGames: _cachedSteamOwnedGames,
@@ -605,6 +613,7 @@ public partial class SettingsViewModel : ObservableObject
         AutomaticUpdatesEnabled = true;
         InterfaceTransparency = 0;
         BackgroundImageOpacity = 0.30;
+        MatchBackgroundColors = true;
         DownloadDirectory = @"C:\Games\Launcher\Downloads";
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
@@ -772,6 +781,7 @@ public partial class SettingsViewModel : ObservableObject
             AutomaticUpdatesEnabled = snapshot.AutomaticUpdatesEnabled;
             InterfaceTransparency = Math.Clamp(snapshot.InterfaceTransparency, 0, 0.70);
             BackgroundImageOpacity = Math.Clamp(snapshot.BackgroundImageOpacity, 0, 1);
+            MatchBackgroundColors = snapshot.MatchBackgroundColors;
             DownloadDirectory = string.IsNullOrWhiteSpace(snapshot.DownloadDirectory)
                 ? @"C:\Games\Launcher\Downloads"
                 : snapshot.DownloadDirectory;
@@ -932,6 +942,13 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(BackgroundImageOpacityDisplay));
     }
 
+    partial void OnMatchBackgroundColorsChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsManualAccentEnabled));
+        OnPropertyChanged(nameof(AccentColorDescription));
+        ApplyAppearance();
+    }
+
     partial void OnIsSignedInChanged(bool value) => OnPropertyChanged(nameof(IsNotSignedIn));
 
     partial void OnIsSigningInChanged(bool value) => OnPropertyChanged(nameof(CanSubmitAuth));
@@ -977,7 +994,13 @@ public partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowDefaultProfile));
     }
 
-    partial void OnBackgroundImageChanged(Bitmap? value) => OnPropertyChanged(nameof(HasBackgroundImage));
+    partial void OnBackgroundImageChanged(Bitmap? value)
+    {
+        OnPropertyChanged(nameof(HasBackgroundImage));
+        OnPropertyChanged(nameof(IsManualAccentEnabled));
+        OnPropertyChanged(nameof(AccentColorDescription));
+        ApplyAppearance();
+    }
 
     private Dictionary<OptionalStoreProvider, bool> GetOptionalStoreSettings() =>
         new Dictionary<OptionalStoreProvider, bool>
@@ -1043,30 +1066,41 @@ public partial class SettingsViewModel : ObservableObject
             "Graphite" => ThemePalette.Graphite,
             _ => ThemePalette.Slate
         };
+        var imagePalette = MatchBackgroundColors && BackgroundImage is not null
+            ? BackgroundPaletteExtractor.Extract(BackgroundImage)
+            : null;
+        var background = TintColor(Color.Parse(palette.Background), imagePalette, 0.18);
+        var chromeBar = TintColor(Color.Parse(palette.ChromeBar), imagePalette, 0.11);
+        var sidebar = TintColor(Color.Parse(palette.Sidebar), imagePalette, 0.16);
+        var surface = TintColor(Color.Parse(palette.Surface), imagePalette, 0.16);
+        var elevated = TintColor(Color.Parse(palette.Elevated), imagePalette, 0.22);
+        var border = TintColor(Color.Parse(palette.Border), imagePalette, 0.18);
+        var downloadChart = TintColor(Color.Parse(palette.DownloadChart), imagePalette, 0.08);
+        var downloadPanel = TintColor(Color.Parse(palette.DownloadPanel), imagePalette, 0.15);
         var resources = application.Resources;
         var surfaceAlpha = ToAlpha(1 - InterfaceTransparency);
         var borderAlpha = Math.Max((byte)96, surfaceAlpha);
-        resources["BackgroundPrimaryColor"] = WithAlpha(Color.Parse(palette.Background), surfaceAlpha);
-        resources["ChromeBarColor"] = WithAlpha(Color.Parse(palette.ChromeBar), surfaceAlpha);
-        resources["SidebarBackgroundColor"] = WithAlpha(Color.Parse(palette.Sidebar), surfaceAlpha);
-        resources["SurfacePrimaryColor"] = WithAlpha(Color.Parse(palette.Surface), surfaceAlpha);
-        resources["SurfaceElevatedColor"] = WithAlpha(Color.Parse(palette.Elevated), surfaceAlpha);
-        resources["BorderSubtleColor"] = WithAlpha(Color.Parse(palette.Border), borderAlpha);
+        resources["BackgroundPrimaryColor"] = WithAlpha(background, surfaceAlpha);
+        resources["ChromeBarColor"] = WithAlpha(chromeBar, surfaceAlpha);
+        resources["SidebarBackgroundColor"] = WithAlpha(sidebar, surfaceAlpha);
+        resources["SurfacePrimaryColor"] = WithAlpha(surface, surfaceAlpha);
+        resources["SurfaceElevatedColor"] = WithAlpha(elevated, surfaceAlpha);
+        resources["BorderSubtleColor"] = WithAlpha(border, borderAlpha);
         resources["TextPrimaryColor"] = Color.Parse(palette.TextPrimary);
         resources["TextSecondaryColor"] = Color.Parse(palette.TextSecondary);
         resources["TextMutedColor"] = Color.Parse(palette.TextMuted);
         resources["ArtworkPrimaryColor"] = Color.Parse(palette.ArtworkPrimary);
         resources["ArtworkSecondaryColor"] = Color.Parse(palette.ArtworkSecondary);
         resources["ArtworkTertiaryColor"] = Color.Parse(palette.ArtworkTertiary);
-        resources["DownloadChartColor"] = WithAlpha(Color.Parse(palette.DownloadChart), surfaceAlpha);
-        resources["DownloadPanelColor"] = WithAlpha(Color.Parse(palette.DownloadPanel), surfaceAlpha);
+        resources["DownloadChartColor"] = WithAlpha(downloadChart, surfaceAlpha);
+        resources["DownloadPanelColor"] = WithAlpha(downloadPanel, surfaceAlpha);
         var overlayAlpha = (byte)Math.Clamp(
             (int)Math.Round(199 * (0.55 + ((100 - InterfaceTransparency * 100) / 100 * 0.45))),
             90,
             199);
         resources["BackgroundImageOverlayColor"] = Color.FromArgb(overlayAlpha, 11, 17, 27);
 
-        var accent = ParseColorOrDefault(AccentColor, Color.Parse(palette.Accent));
+        var accent = imagePalette?.Accent ?? ParseColorOrDefault(AccentColor, Color.Parse(palette.Accent));
         resources["AccentPrimaryColor"] = accent;
         resources["AccentSoftColor"] = Color.FromArgb(64, accent.R, accent.G, accent.B);
         // Fluent controls (including ToggleSwitch) use the theme's system
@@ -1105,6 +1139,26 @@ public partial class SettingsViewModel : ObservableObject
             ScaleChannel(color.G, factor),
             ScaleChannel(color.B, factor));
     }
+
+    private static Color TintColor(Color baseColor, BackgroundPalette? imagePalette, double amount)
+    {
+        return imagePalette is null
+            ? baseColor
+            : BlendColor(baseColor, imagePalette.Tint, amount);
+    }
+
+    private static Color BlendColor(Color first, Color second, double amount)
+    {
+        var factor = Math.Clamp(amount, 0, 1);
+        return Color.FromArgb(
+            first.A,
+            BlendChannel(first.R, second.R, factor),
+            BlendChannel(first.G, second.G, factor),
+            BlendChannel(first.B, second.B, factor));
+    }
+
+    private static byte BlendChannel(byte first, byte second, double amount) =>
+        (byte)Math.Clamp((int)Math.Round(first + (second - first) * amount), 0, byte.MaxValue);
 
     private static Color WithAlpha(Color color, byte alpha) =>
         Color.FromArgb(alpha, color.R, color.G, color.B);

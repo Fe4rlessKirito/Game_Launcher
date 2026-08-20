@@ -290,19 +290,20 @@
           <TextBlock Text="Adjust how the launcher feels while you use it." Classes="Caption" />
         </StackPanel>
         <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
-          <Grid ColumnDefinitions="210,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="16">
+          <Grid ColumnDefinitions="210,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="16">
             <TextBlock Text="Theme" Classes="BodyStrong" VerticalAlignment="Center" />
             <ComboBox Grid.Column="1" ItemsSource="{Binding ThemeOptions}" SelectedItem="{Binding ThemePreset}" />
 
             <StackPanel Grid.Row="1" Spacing="3" VerticalAlignment="Center">
               <TextBlock Text="Accent color" Classes="BodyStrong" />
-              <TextBlock Text="Choose an accent from the color spectrum or palette." Classes="Caption" TextWrapping="Wrap" MaxWidth="198" />
+              <TextBlock Text="{Binding AccentColorDescription}" Classes="Caption" TextWrapping="Wrap" MaxWidth="198" />
             </StackPanel>
             <ColorPicker Grid.Row="1"
                          Grid.Column="1"
                          Width="190"
                          HorizontalAlignment="Left"
                          Color="{Binding AccentColorValue, Mode=TwoWay}"
+                         IsEnabled="{Binding IsManualAccentEnabled}"
                          IsAlphaEnabled="False"
                          IsHexInputVisible="False" />
 
@@ -346,6 +347,12 @@
               <Slider Minimum="0" Maximum="100" Value="{Binding BackgroundImageOpacityPercent, Mode=TwoWay}" />
               <TextBlock Grid.Column="1" Text="{Binding BackgroundImageOpacityDisplay}" Classes="BodyStrong" MinWidth="42" VerticalAlignment="Center" />
             </Grid>
+
+            <StackPanel Grid.Row="6" Spacing="3" VerticalAlignment="Center">
+              <TextBlock Text="Match background colors" Classes="BodyStrong" />
+              <TextBlock Text="Tint the launcher surfaces and accent from the selected image." Classes="Caption" TextWrapping="Wrap" MaxWidth="198" />
+            </StackPanel>
+            <ToggleSwitch Grid.Row="6" Grid.Column="1" IsChecked="{Binding MatchBackgroundColors}" HorizontalAlignment="Left" />
           </Grid>
         </Border>
       </StackPanel>

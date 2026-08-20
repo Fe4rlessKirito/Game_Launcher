@@ -36,12 +36,14 @@ public class ModelsTests
                 AutomaticUpdatesEnabled = false,
                 InterfaceTransparency = 0.35,
                 BackgroundImageOpacity = 0.80,
+                MatchBackgroundColors = false,
             });
             var presentationSettings = await store.LoadAsync();
             Assert.Equal("C:\\Users\\Public\\Pictures\\vaultnode.png", presentationSettings.BackgroundImagePath);
             Assert.False(presentationSettings.AutomaticUpdatesEnabled);
             Assert.Equal(0.35, presentationSettings.InterfaceTransparency);
             Assert.Equal(0.80, presentationSettings.BackgroundImageOpacity);
+            Assert.False(presentationSettings.MatchBackgroundColors);
         }
         finally
         {
