@@ -2,14 +2,15 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use launcher_common::{
     MANIFEST_SIGNATURE_SCHEMA_VERSION, Manifest, ManifestSignature, ManifestValidationError,
 };
-use rand::rngs::OsRng;
 use rsa::{
     RsaPrivateKey, RsaPublicKey,
     pkcs1::{DecodeRsaPrivateKey, Error as Pkcs1Error},
     pkcs1v15::Pkcs1v15Sign,
     pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey, LineEnding},
+    rand_core::UnwrapErr,
 };
-use sha2::{Digest, Sha256};
+use rsa_rand::rngs::SysRng;
+use rsa_sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub fn validate_json(bytes: &[u8]) -> Result<Manifest, String> {
@@ -41,7 +42,9 @@ pub enum SignatureError {
 }
 
 pub fn generate_signing_key() -> Result<RsaPrivateKey, SignatureError> {
-    Ok(RsaPrivateKey::new(&mut OsRng, 2048)?)
+    let mut rng = SysRng;
+    let mut infallible_rng = UnwrapErr(&mut rng);
+    Ok(RsaPrivateKey::new(&mut infallible_rng, 2048)?)
 }
 
 pub fn load_private_key_pem(pem: &str) -> Result<RsaPrivateKey, SignatureError> {

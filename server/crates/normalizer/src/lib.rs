@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, bail};
 use bzip2::read::BzDecoder;
 use flate2::read::GzDecoder;
-use sevenz_rust::SevenZArchiveEntry;
+use sevenz_rust2::ArchiveEntry as SevenZArchiveEntry;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -337,20 +337,21 @@ fn extract_tar<R: Read>(reader: R, destination: &Path, limits: &NormalizationLim
 
 fn extract_seven_zip(input: &Path, destination: &Path, limits: &NormalizationLimits) -> Result<()> {
     let mut state = ExtractionState::default();
-    sevenz_rust::decompress_with_extract_fn(
+    sevenz_rust2::decompress_with_extract_fn(
         File::open(input)?,
         destination,
         |entry: &SevenZArchiveEntry, reader: &mut dyn Read, _default_path: &PathBuf| {
             let relative = safe_relative_path(entry.name()).map_err(to_sevenz_error)?;
             state.entry(limits, &relative).map_err(to_sevenz_error)?;
             if entry.is_anti_item() {
-                return Err(sevenz_rust::Error::other(
+                return Err(sevenz_rust2::Error::from(io::Error::new(
+                    io::ErrorKind::InvalidData,
                     "7z anti-item entries are not allowed",
-                ));
+                )));
             }
             let target = destination.join(relative);
             if entry.is_directory() {
-                fs::create_dir_all(target).map_err(sevenz_rust::Error::io)?;
+                fs::create_dir_all(target).map_err(sevenz_rust2::Error::from)?;
             } else {
                 state
                     .file_size(limits, entry.size())
@@ -490,8 +491,8 @@ fn is_reserved_windows_name(part: &str) -> bool {
             && stem.as_bytes()[3] <= b'9')
 }
 
-fn to_sevenz_error(error: anyhow::Error) -> sevenz_rust::Error {
-    sevenz_rust::Error::io(io::Error::new(
+fn to_sevenz_error(error: anyhow::Error) -> sevenz_rust2::Error {
+    sevenz_rust2::Error::from(io::Error::new(
         io::ErrorKind::InvalidData,
         error.to_string(),
     ))

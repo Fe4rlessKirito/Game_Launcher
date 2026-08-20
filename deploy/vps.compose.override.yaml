@@ -48,6 +48,8 @@ services:
       context: ..
       dockerfile: deploy/worker.Dockerfile
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       DATABASE_URL: ${DATABASE_URL}
       LAUNCHER_STORAGE_ROOT: /var/lib/launcher/ephemeral
@@ -94,6 +96,10 @@ services:
       context: ..
       dockerfile: deploy/scraper.Dockerfile
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     env_file:
       - ../secrets/scraper.env
     environment:
@@ -105,12 +111,11 @@ services:
       SCRAPER_ALLOW_LOCALHOST: "false"
       SCRAPER_MAX_ARTIFACT_BYTES: "6442450944"
     command: ["--store", "/var/lib/launcher/storage/scraper/scraper-state.db", "--output-root", "/var/lib/launcher/ephemeral/scraper/artifacts", "worker", "--poll-seconds", "15"]
-    depends_on:
-      api:
-        condition: service_started
     volumes:
       - launcher-storage:/var/lib/launcher/storage
       - launcher-ephemeral-content:/var/lib/launcher/ephemeral
+    networks:
+      - scraper-egress
 
   telegram-bot-api:
     build:
@@ -159,3 +164,10 @@ volumes:
       device: tmpfs
       o: size=8g,mode=1777
   telegram-bot-api-data:
+
+networks:
+  # The scraper needs outbound internet access but never needs to resolve or
+  # connect to the API, worker, database, or Telegram services. Keeping it on
+  # a separate network narrows the impact of an SSRF or browser escape.
+  scraper-egress:
+    driver: bridge

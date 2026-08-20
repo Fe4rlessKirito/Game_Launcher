@@ -10,7 +10,7 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -23,6 +23,7 @@ use std::{collections::HashMap, env};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::sync::Semaphore;
+use tokio_util::io::ReaderStream;
 
 mod http_hot;
 mod mantle;
@@ -832,6 +833,36 @@ impl LocalStorage {
                 return false;
             }
         }
+    }
+
+    /// Stream an immutable local pack without cloning the complete pack into
+    /// the API process. The pack hash is validated on write; clients still
+    /// verify the logical pack digest after download.
+    pub async fn read_pack_stream(
+        &self,
+        pack_hash: &str,
+    ) -> Result<StorageByteStream, StorageError> {
+        let file = tokio::fs::File::open(self.pack_path(pack_hash)?).await?;
+        let stream = ReaderStream::with_capacity(file, 1024 * 1024)
+            .map(|result| result.map_err(StorageError::Io));
+        Ok(Box::pin(stream))
+    }
+
+    /// Stream a bounded byte range from an immutable local pack. This keeps
+    /// range requests bounded even when a caller asks for a large physical
+    /// pack.
+    pub async fn read_pack_range_stream(
+        &self,
+        pack_hash: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<StorageByteStream, StorageError> {
+        validate_pack_hash(pack_hash)?;
+        let mut file = tokio::fs::File::open(self.pack_path(pack_hash)?).await?;
+        file.seek(SeekFrom::Start(offset)).await?;
+        let stream = ReaderStream::with_capacity(file.take(length), 1024 * 1024)
+            .map(|result| result.map_err(StorageError::Io));
+        Ok(Box::pin(stream))
     }
 }
 

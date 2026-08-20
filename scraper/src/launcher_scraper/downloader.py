@@ -391,6 +391,11 @@ class HttpDownloader:
         current = url
         redirects: list[str] = []
         for _ in range(self.policy.max_redirects + 1):
+            # Resolve and validate immediately before every socket open. The
+            # container is also kept off the application network in Compose;
+            # this second check narrows the DNS-rebinding window between
+            # redirect validation and the actual request.
+            current = self.policy.validate(current)
             request = urllib.request.Request(current, headers=headers, method="GET")
             try:
                 response = self._opener.open(request, timeout=self.timeout_seconds)

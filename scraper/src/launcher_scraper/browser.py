@@ -82,6 +82,11 @@ class HttpPageFetcher:
         current = self.policy.validate(url)
         redirects: list[str] = []
         for _ in range(self.policy.max_redirects + 1):
+            # Re-resolve immediately before opening each connection. Compose
+            # additionally places the scraper on an egress-only network so a
+            # rebinding cannot reach the API, worker, database, or Telegram
+            # services even if DNS changes after this check.
+            current = self.policy.validate(current)
             request = urllib.request.Request(
                 current,
                 headers={"User-Agent": self.user_agent, "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1"},

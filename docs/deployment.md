@@ -59,10 +59,10 @@ LAUNCHER_SIGNING_REQUIRE_EXTERNAL_KEY=true
 ```
 
 Caddy receives `SITE_HOST` and `ACME_EMAIL` from the Compose environment. The
-HTTP Mantle file uses the host as a bounded staging target; the HTTPS file
-uses the same variables for the ACME certificate cutover. Recreate Caddy
-after changing either value and validate the rendered configuration before
-opening public traffic.
+checked-in HTTP Mantle file is a wildcarded plaintext fallback that redirects
+to `https://vaultnode.pp.ua`; the HTTPS file uses the host variables for the
+ACME certificate cutover. Recreate Caddy after changing either value and
+validate the rendered configuration before opening public traffic.
 
 When an operator token is configured, the API requires at least 32 bytes and
 compares bearer values without an early-exit equality check. Keep the token in
@@ -96,9 +96,11 @@ seconds), so an unavailable HOT provider cannot hang operator monitoring.
 
 The API also applies a bounded global request window. `LAUNCHER_RATE_LIMIT_REQUESTS`
 defaults to 600 requests per `LAUNCHER_RATE_LIMIT_WINDOW_SECONDS` (default 60).
-Exceeded requests receive HTTP 429 and a `Retry-After` header. Keep the limit
-appropriate for the number of launcher clients and retain the concurrency and
-body-size limits as separate protections.
+Exceeded requests receive HTTP 429 and a `Retry-After` header. Restore admission
+has a separate 30-request window, a 16-job per-request cap, and a combined
+logical/physical queue cap controlled by `LAUNCHER_MAX_PENDING_RESTORE_JOBS`.
+Keep these limits appropriate for the number of launcher clients and retain the
+concurrency and body-size limits as separate protections.
 
 Before calling the VPS production-shaped, run the fail-closed public cutover
 check from a host that can resolve the final DNS record:

@@ -9,6 +9,7 @@ use std::{
 use uuid::Uuid;
 
 pub const WORK_STATUS_SCHEMA_VERSION: u32 = 1;
+const MAX_WORK_STATUS_FILE_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WorkStatus {
@@ -88,6 +89,14 @@ impl WorkStatusStore {
 
     pub fn write(&self, status: &WorkStatus) -> io::Result<()> {
         let file_name = status_file_name(&status.id)?;
+        let bytes = serde_json::to_vec_pretty(status)
+            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
+        if bytes.len() as u64 > MAX_WORK_STATUS_FILE_BYTES {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "work status record exceeds the configured size limit",
+            ));
+        }
         fs::create_dir_all(&self.directory)?;
         let target = self.directory.join(file_name);
         let temporary = self.directory.join(format!(
@@ -96,8 +105,6 @@ impl WorkStatusStore {
             std::process::id(),
             Uuid::new_v4()
         ));
-        let bytes = serde_json::to_vec_pretty(status)
-            .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
         fs::write(&temporary, bytes)?;
         // The status is advisory. Replacing it with a tiny gap is preferable
         // to leaving a half-written JSON document for the public API to read.
@@ -145,6 +152,13 @@ impl WorkStatusStore {
             {
                 continue;
             }
+            if entry
+                .metadata()
+                .map(|metadata| metadata.len() > MAX_WORK_STATUS_FILE_BYTES)
+                .unwrap_or(true)
+            {
+                continue;
+            }
             let bytes = match fs::read(entry.path()) {
                 Ok(bytes) => bytes,
                 Err(_) => continue,
@@ -172,6 +186,7 @@ impl WorkStatusStore {
 
 fn status_file_name(id: &str) -> io::Result<String> {
     if id.is_empty()
+        || id.len() > 128
         || !id.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
         })
@@ -258,5 +273,24 @@ mod tests {
                 .is_empty()
         );
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn rejects_oversized_records_before_writing_them() {
+        let directory = test_directory();
+        let store = WorkStatusStore::new(&directory);
+        let status = WorkStatus::new(
+            "oversized",
+            "SCRAPER",
+            "DOWNLOADING",
+            None,
+            None,
+            None,
+            "x".repeat((MAX_WORK_STATUS_FILE_BYTES + 1) as usize),
+            Some(1.0),
+        );
+
+        assert!(store.write(&status).is_err());
+        assert!(!directory.exists());
     }
 }

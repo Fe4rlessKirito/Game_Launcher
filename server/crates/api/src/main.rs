@@ -2,7 +2,7 @@ use anyhow::Context;
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
-    extract::{Path, Query, Request, State},
+    extract::{ConnectInfo, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -36,7 +36,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer, trace::TraceLayer};
 use tracing::{info, warn};
@@ -45,6 +45,10 @@ use uuid::Uuid;
 const MIN_OPERATOR_TOKEN_BYTES: usize = 32;
 const DEFAULT_RATE_LIMIT_REQUESTS: u32 = 600;
 const DEFAULT_RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
+const DEFAULT_RESTORE_RATE_LIMIT_REQUESTS: u32 = 30;
+const DEFAULT_RESTORE_RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
+const DEFAULT_MAX_RESTORE_JOBS_PER_REQUEST: usize = 16;
+const DEFAULT_MAX_PENDING_RESTORE_JOBS: usize = 1_000;
 
 #[derive(Clone)]
 struct RequestRateLimiter {
@@ -88,6 +92,10 @@ impl RequestRateLimiter {
     }
 
     fn client_key(&self, headers: &HeaderMap) -> String {
+        self.client_key_with_peer(headers, None)
+    }
+
+    fn client_key_with_peer(&self, headers: &HeaderMap, peer: Option<SocketAddr>) -> String {
         if self.trust_proxy_headers {
             for name in ["x-forwarded-for", "x-real-ip"] {
                 if let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) {
@@ -97,6 +105,9 @@ impl RequestRateLimiter {
                     }
                 }
             }
+        }
+        if let Some(peer) = peer {
+            return format!("peer:{}", peer.ip());
         }
         "shared".to_owned()
     }
@@ -139,7 +150,11 @@ async fn enforce_rate_limit(
     request: Request,
     next: Next,
 ) -> Response {
-    let client_key = rate_limiter.client_key(request.headers());
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0);
+    let client_key = rate_limiter.client_key_with_peer(request.headers(), peer);
     if let Some(retry_after) = rate_limiter.retry_after_seconds(&client_key) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -182,6 +197,11 @@ struct AppState {
     supabase_auth: Option<SupabaseAuth>,
     steam_web_api_key: Option<Arc<String>>,
     steam_client: reqwest::Client,
+    steam_rate_limiter: RequestRateLimiter,
+    restore_rate_limiter: RequestRateLimiter,
+    restore_admission_lock: Arc<AsyncMutex<()>>,
+    max_restore_jobs_per_request: usize,
+    max_pending_restore_jobs: usize,
     public_status: Arc<RwLock<PublicStatusResponse>>,
     public_status_poll_seconds: u64,
     work_status_store: WorkStatusStore,
@@ -199,8 +219,15 @@ struct HealthResponse {
     status: &'static str,
     database_configured: bool,
     storage_providers: Vec<String>,
-    storage_health: Vec<StorageProviderHealth>,
+    storage_health: Vec<PublicHealthProviderStatus>,
     utc: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+struct PublicHealthProviderStatus {
+    provider: String,
+    tier: StorageTier,
+    healthy: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -276,6 +303,8 @@ impl SupabaseAuth {
                     user_endpoint: format!("{url}/auth/v1/user"),
                     anon_key: Arc::new(anon_key),
                     client: reqwest::Client::builder()
+                        .connect_timeout(Duration::from_secs(10))
+                        .timeout(Duration::from_secs(30))
                         .build()
                         .context("could not create Supabase auth client")?,
                 }))
@@ -396,16 +425,21 @@ struct PublicWorkStatusResponse {
 
 impl From<WorkStatus> for PublicWorkStatusResponse {
     fn from(status: WorkStatus) -> Self {
+        let state =
+            sanitize_public_value(Some(status.state), 32).unwrap_or_else(|| "WORKING".to_owned());
         Self {
-            id: status.id,
-            kind: status.kind,
-            state: status.state,
-            game: status.game,
-            version: status.version,
-            provider: status.provider,
-            source: status.source,
-            detail: status.detail,
-            progress_percent: status.progress_percent,
+            id: sanitize_work_id(&status.id),
+            kind: sanitize_public_value(Some(status.kind), 32).unwrap_or_else(|| "WORK".to_owned()),
+            state: state.clone(),
+            game: sanitize_public_value(status.game, 160),
+            version: sanitize_public_value(status.version, 96),
+            provider: sanitize_public_value(status.provider, 96),
+            source: sanitize_public_value(status.source, 96),
+            detail: sanitize_public_detail(&status.detail, &state),
+            progress_percent: status
+                .progress_percent
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 100.0)),
             bytes_completed: status.bytes_completed,
             bytes_total: status.bytes_total,
             rate_bytes_per_second: status.rate_bytes_per_second,
@@ -413,6 +447,53 @@ impl From<WorkStatus> for PublicWorkStatusResponse {
             updated_at: status.updated_at,
         }
     }
+}
+
+fn sanitize_work_id(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .filter(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+        .take(80)
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "work".to_owned()
+    } else {
+        sanitized
+    }
+}
+
+fn sanitize_public_value(value: Option<String>, max_chars: usize) -> Option<String> {
+    let value = value?;
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 4096
+        || value.contains("://")
+        || value.contains(['/', '\\'])
+        || value.to_ascii_lowercase().contains("bearer ")
+        || value.to_ascii_lowercase().contains("token")
+        || value.to_ascii_lowercase().contains("secret")
+        || value.to_ascii_lowercase().contains("password")
+    {
+        return None;
+    }
+    let sanitized = value
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(max_chars)
+        .collect::<String>();
+    (!sanitized.is_empty()).then_some(sanitized)
+}
+
+fn sanitize_public_detail(value: &str, state: &str) -> String {
+    sanitize_public_value(Some(value.to_owned()), 160).unwrap_or_else(|| {
+        if state == "FAILED" {
+            "Operation failed".to_owned()
+        } else {
+            "Operation in progress".to_owned()
+        }
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -504,22 +585,32 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    let address: SocketAddr = env::var("LAUNCHER_BIND")
+        .or_else(|_| env::var("PORT").map(|port| format!("0.0.0.0:{port}")))
+        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
+        .parse()
+        .context("LAUNCHER_BIND/PORT must be a valid socket address")?;
     let database_required = env::var("DATABASE_URL").is_ok();
     let database = match env::var("DATABASE_URL") {
-        Ok(url) => match Database::connect(&url).await {
-            Ok(database) => {
-                if env::var("LAUNCHER_AUTO_MIGRATE").as_deref() == Ok("1") {
-                    database.migrate().await?;
-                }
-                Some(database)
+        Ok(url) => {
+            let database = Database::connect(&url)
+                .await
+                .with_context(|| "could not connect to DATABASE_URL")?;
+            if env::var("LAUNCHER_AUTO_MIGRATE").as_deref() == Ok("1") {
+                database.migrate().await?;
             }
-            Err(error) => {
-                warn!(%error, "database unavailable; using development catalog");
-                None
-            }
-        },
+            Some(database)
+        }
         Err(_) => None,
     };
+    if !address.ip().is_loopback()
+        && database.is_none()
+        && !env_bool("LAUNCHER_ALLOW_DEVELOPMENT_CATALOG", false)
+    {
+        anyhow::bail!(
+            "DATABASE_URL is required when the API is reachable beyond loopback; set LAUNCHER_ALLOW_DEVELOPMENT_CATALOG=true only for an isolated development instance"
+        );
+    }
     let provisioning_enabled = env_bool("PROVISIONING_ENABLED", false);
     let provisioning_email_domain =
         env::var("PROVISIONING_EMAIL_DOMAIN").unwrap_or_else(|_| "vaultnode.pp.ua".to_owned());
@@ -572,6 +663,7 @@ async fn main() -> anyhow::Result<()> {
         .filter(|value| !value.is_empty())
         .map(Arc::new);
     let cold_stream_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .context("could not create cold stream client")?;
     let operator_token = env::var("LAUNCHER_OPERATOR_TOKEN")
@@ -583,7 +675,23 @@ async fn main() -> anyhow::Result<()> {
     {
         anyhow::bail!("LAUNCHER_OPERATOR_TOKEN must be at least {MIN_OPERATOR_TOKEN_BYTES} bytes");
     }
-    let operator_auth_required = env_bool("LAUNCHER_OPERATOR_AUTH_REQUIRED", false);
+    let operator_auth_required = env_bool(
+        "LAUNCHER_OPERATOR_AUTH_REQUIRED",
+        !address.ip().is_loopback(),
+    );
+    if operator_auth_required && operator_token.is_none() {
+        anyhow::bail!(
+            "LAUNCHER_OPERATOR_TOKEN is required when operator authentication is enabled"
+        );
+    }
+    if !address.ip().is_loopback()
+        && !operator_auth_required
+        && !env_bool("LAUNCHER_ALLOW_INSECURE_OPERATOR_ENDPOINTS", false)
+    {
+        anyhow::bail!(
+            "operator authentication cannot be disabled on a non-loopback bind; set LAUNCHER_ALLOW_INSECURE_OPERATOR_ENDPOINTS=true only for an isolated development instance"
+        );
+    }
     let supabase_auth = SupabaseAuth::from_env()?;
     let steam_web_api_key = env::var("LAUNCHER_STEAM_WEB_API_KEY")
         .ok()
@@ -592,6 +700,8 @@ async fn main() -> anyhow::Result<()> {
         .map(Arc::new);
     let steam_client = reqwest::Client::builder()
         .user_agent("Vaultnode Launcher/1.0")
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()
         .context("could not create Steam API client")?;
     let max_request_bytes = env::var("LAUNCHER_MAX_REQUEST_BYTES")
@@ -605,6 +715,46 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(256)
         .clamp(8, 4096);
     let rate_limiter = RequestRateLimiter::from_env();
+    let restore_rate_limiter = RequestRateLimiter::with_proxy_headers(
+        env::var("LAUNCHER_RESTORE_RATE_LIMIT_REQUESTS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(DEFAULT_RESTORE_RATE_LIMIT_REQUESTS)
+            .clamp(1, 10_000),
+        Duration::from_secs(
+            env::var("LAUNCHER_RESTORE_RATE_LIMIT_WINDOW_SECONDS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_RESTORE_RATE_LIMIT_WINDOW_SECONDS)
+                .clamp(1, 3_600),
+        ),
+        env_bool("LAUNCHER_TRUST_PROXY_HEADERS", false),
+    );
+    let steam_rate_limiter = RequestRateLimiter::with_proxy_headers(
+        env::var("LAUNCHER_STEAM_RATE_LIMIT_REQUESTS")
+            .ok()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(10)
+            .clamp(1, 1_000),
+        Duration::from_secs(
+            env::var("LAUNCHER_STEAM_RATE_LIMIT_WINDOW_SECONDS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(60)
+                .clamp(1, 3_600),
+        ),
+        env_bool("LAUNCHER_TRUST_PROXY_HEADERS", false),
+    );
+    let max_restore_jobs_per_request = env::var("LAUNCHER_MAX_RESTORE_JOBS_PER_REQUEST")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_RESTORE_JOBS_PER_REQUEST)
+        .clamp(1, 128);
+    let max_pending_restore_jobs = env::var("LAUNCHER_MAX_PENDING_RESTORE_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_PENDING_RESTORE_JOBS)
+        .clamp(1, 100_000);
     let cors = match env::var("LAUNCHER_CORS_ALLOW_ORIGIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -677,6 +827,11 @@ async fn main() -> anyhow::Result<()> {
         supabase_auth,
         steam_web_api_key,
         steam_client,
+        steam_rate_limiter,
+        restore_rate_limiter,
+        restore_admission_lock: Arc::new(AsyncMutex::new(())),
+        max_restore_jobs_per_request,
+        max_pending_restore_jobs,
         public_status: public_status_snapshot,
         public_status_poll_seconds,
         work_status_store: WorkStatusStore::new(work_status_dir),
@@ -689,7 +844,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/ready", get(readiness))
         .route("/api/v1/public/status", get(public_status))
         .route("/api/v1/me", get(current_user))
-        .route("/api/v1/steam/connect", post(connect_steam))
+        .route(
+            "/api/v1/steam/connect",
+            post(connect_steam).layer(RequestBodyLimitLayer::new(256 * 1024)),
+        )
         .route("/internal/v1/email-events", post(email_events))
         .route("/metrics", get(storage_metrics))
         .route("/api/v1/storage/status", get(storage_status))
@@ -720,13 +878,13 @@ async fn main() -> anyhow::Result<()> {
             enforce_rate_limit,
         ))
         .with_state(state);
-    let address: SocketAddr = env::var("LAUNCHER_BIND")
-        .or_else(|_| env::var("PORT").map(|port| format!("0.0.0.0:{port}")))
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
-        .parse()?;
     info!(%address, "launcher API listening");
     let listener = tokio::net::TcpListener::bind(address).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -897,7 +1055,9 @@ async fn email_events(
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     let storage_health = state.storage.health().await;
     Json(HealthResponse {
-        status: if storage_health.iter().all(|provider| provider.healthy) {
+        status: if !storage_health.is_empty()
+            && storage_health.iter().all(|provider| provider.healthy)
+        {
             "ok"
         } else {
             "degraded"
@@ -909,7 +1069,14 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
             .iter()
             .map(|provider| provider.provider_id().to_owned())
             .collect(),
-        storage_health,
+        storage_health: storage_health
+            .into_iter()
+            .map(|provider| PublicHealthProviderStatus {
+                provider: provider.provider,
+                tier: provider.tier,
+                healthy: provider.healthy,
+            })
+            .collect(),
         utc: Utc::now(),
     })
 }
@@ -1004,8 +1171,31 @@ async fn current_user(
 
 async fn connect_steam(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<SteamConnectRequest>,
 ) -> Result<Json<SteamLibraryResponse>, ApiResponseError> {
+    let client_key = state.steam_rate_limiter.client_key(&headers);
+    if let Some(retry_after) = state.steam_rate_limiter.retry_after_seconds(&client_key) {
+        return Err(ApiResponseError::rate_limited(retry_after));
+    }
+    if let Some(auth) = &state.supabase_auth {
+        let Some(token) = bearer_token(&headers) else {
+            return Err(ApiResponseError::auth_required());
+        };
+        match auth.authenticate(token).await {
+            Ok(_) => {}
+            Err(SupabaseAuthError::Unauthorized) => {
+                return Err(ApiResponseError::auth_required());
+            }
+            Err(SupabaseAuthError::Unavailable) => {
+                return Err(ApiResponseError::temporary(
+                    "user_auth_unavailable",
+                    "user authentication service is unavailable",
+                    15,
+                ));
+            }
+        }
+    }
     let Some(api_key) = state.steam_web_api_key.as_ref() else {
         return Err(ApiResponseError::temporary(
             "steam_api_unconfigured",
@@ -1231,10 +1421,9 @@ async fn storage_status(
     };
     let pending_restores = if let Some(database) = &state.database {
         database
-            .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
+            .restore_queue_depth()
             .await
             .map_err(ApiResponseError::from)?
-            .len()
     } else {
         0
     };
@@ -1513,11 +1702,8 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
                     .map(|provider| provider.used_bytes)
                     .fold(0_u64, u64::saturating_add);
             }
-            match database
-                .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
-                .await
-            {
-                Ok(jobs) => pending_restores = jobs.len(),
+            match database.restore_queue_depth().await {
+                Ok(depth) => pending_restores = depth,
                 Err(error) => {
                     stale = true;
                     warn!(%error, "public telemetry restore queue probe failed");
@@ -1545,6 +1731,7 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
     let status = if database_ready
         && storage_configured
         && !stale
+        && !providers.is_empty()
         && providers.iter().all(|provider| provider.healthy)
     {
         "operational"
@@ -1618,10 +1805,9 @@ async fn storage_metrics(
     };
     let pending_restores = if let Some(database) = &state.database {
         database
-            .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)
+            .restore_queue_depth()
             .await
             .map_err(ApiResponseError::from)?
-            .len()
     } else {
         0
     };
@@ -1939,16 +2125,69 @@ async fn get_signature(
         .ok_or_else(|| ApiResponseError::not_found("manifest signature"))
 }
 
+fn is_lowercase_content_hash(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn validate_content_hashes(hashes: &[String]) -> Result<(), ApiResponseError> {
+    if hashes.is_empty() || hashes.len() > 512 {
+        return Err(ApiResponseError::bad_request(
+            "resolution requires between 1 and 512 hashes",
+        ));
+    }
+    if hashes.iter().any(|hash| !is_lowercase_content_hash(hash)) {
+        return Err(ApiResponseError::bad_request(
+            "hashes must be 64 lowercase hexadecimal characters",
+        ));
+    }
+    Ok(())
+}
+
+async fn admit_restore_jobs(
+    state: &AppState,
+    headers: &HeaderMap,
+    requested_jobs: usize,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, ApiResponseError> {
+    // Queue-depth checks and inserts must be serialized within this API
+    // process. Without the guard, concurrent public requests could all see
+    // the same free capacity and collectively exceed the restore budget.
+    let admission_guard = state.restore_admission_lock.clone().lock_owned().await;
+    if requested_jobs == 0 {
+        return Ok(admission_guard);
+    }
+    if requested_jobs > state.max_restore_jobs_per_request {
+        return Err(ApiResponseError::rate_limited(60));
+    }
+    let client_key = state.restore_rate_limiter.client_key(headers);
+    if let Some(retry_after) = state.restore_rate_limiter.retry_after_seconds(&client_key) {
+        return Err(ApiResponseError::rate_limited(retry_after));
+    }
+    if let Some(database) = &state.database {
+        let depth = database
+            .restore_queue_depth()
+            .await
+            .map_err(ApiResponseError::from)?;
+        if depth.saturating_add(requested_jobs) > state.max_pending_restore_jobs {
+            return Err(ApiResponseError::temporary(
+                "restore_queue_full",
+                "the restore queue is at capacity; try again later",
+                60,
+            ));
+        }
+    }
+    Ok(admission_guard)
+}
+
 async fn resolve_chunks(
     State(state): State<AppState>,
     Path(build_id): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<ChunkResolutionRequest>,
 ) -> Result<Json<Vec<ResolvedChunk>>, ApiResponseError> {
-    if request.encoded_hashes.len() > 512 {
-        return Err(ApiResponseError::bad_request(
-            "at most 512 chunks per resolution request",
-        ));
-    }
+    validate_content_hashes(&request.encoded_hashes)?;
     let allowed = if let Some(database) = &state.database {
         database
             .get_manifest(&build_id)
@@ -2017,7 +2256,7 @@ async fn resolve_chunks(
         let mirror_urls = state
             .mirrors
             .urls(&hash)
-            .map_err(|error| ApiResponseError::bad_request(&error.to_string()))?;
+            .map_err(|_| ApiResponseError::bad_request("invalid chunk hash"))?;
         let mut urls = locations
             .iter()
             .map(|location| location.url.clone())
@@ -2127,31 +2366,39 @@ async fn resolve_chunks(
             if let Some(database) = &state.database
                 && (has_cold_replica || !cold_pack_hashes.is_empty())
             {
+                let mut restore_targets = HashSet::<(bool, String)>::new();
                 for pack_hash in cold_pack_hashes.values().flatten() {
-                    database
-                        .enqueue_pack_restore_job(
-                            pack_hash,
-                            &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
-                                .unwrap_or_else(|_| "hot".to_owned()),
-                        )
-                        .await
-                        .map_err(ApiResponseError::from)?;
+                    if is_lowercase_content_hash(pack_hash) {
+                        restore_targets.insert((true, pack_hash.clone()));
+                    }
                 }
                 if has_cold_replica {
-                    database
-                        .enqueue_restore_job(
-                            &hash,
-                            &env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
-                                .unwrap_or_else(|_| "hot".to_owned()),
-                        )
-                        .await
-                        .map_err(ApiResponseError::from)?;
+                    restore_targets.insert((false, hash.clone()));
                 }
-                return Err(ApiResponseError::temporary(
-                    "restore_pending",
-                    "the chunk is in cold storage and a hot restore has been queued",
-                    30,
-                ));
+                if !restore_targets.is_empty() {
+                    let _admission_guard =
+                        admit_restore_jobs(&state, &headers, restore_targets.len()).await?;
+                    let restore_target = env::var("LAUNCHER_RESTORE_TARGET_PROVIDER")
+                        .unwrap_or_else(|_| "hot".to_owned());
+                    for (is_pack, target) in restore_targets {
+                        if is_pack {
+                            database
+                                .enqueue_pack_restore_job(&target, &restore_target)
+                                .await
+                                .map_err(ApiResponseError::from)?;
+                        } else {
+                            database
+                                .enqueue_restore_job(&target, &restore_target)
+                                .await
+                                .map_err(ApiResponseError::from)?;
+                        }
+                    }
+                    return Err(ApiResponseError::temporary(
+                        "restore_pending",
+                        "the chunk is in cold storage and a hot restore has been queued",
+                        30,
+                    ));
+                }
             }
             return Err(ApiResponseError {
                 status: StatusCode::SERVICE_UNAVAILABLE,
@@ -2184,11 +2431,7 @@ async fn stream_hot_chunk(
             60,
         ));
     }
-    if encoded_hash.len() != 64
-        || !encoded_hash
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
+    if !is_lowercase_content_hash(&encoded_hash) {
         return Err(ApiResponseError::bad_request(
             "encoded hash must be 64 lowercase hexadecimal characters",
         ));
@@ -2228,7 +2471,6 @@ async fn stream_hot_chunk(
         .get_hot_pack_sources_for_chunks(std::slice::from_ref(&encoded_hash))
         .await
         .map_err(ApiResponseError::from)?;
-    let mut last_error = None;
     for source in sources
         .get(&encoded_hash)
         .into_iter()
@@ -2256,14 +2498,12 @@ async fn stream_hot_chunk(
         let offset = match u64::try_from(chunk.encoded_offset) {
             Ok(value) => value,
             Err(_) => {
-                last_error = Some("pack chunk offset is negative".to_owned());
                 continue;
             }
         };
         let length = match u64::try_from(chunk.encoded_size) {
             Ok(value) => value,
             Err(_) => {
-                last_error = Some("pack chunk size is negative".to_owned());
                 continue;
             }
         };
@@ -2280,32 +2520,31 @@ async fn stream_hot_chunk(
                     .header(header::CONTENT_TYPE, "application/octet-stream")
                     .header(header::CONTENT_LENGTH, bytes.len().to_string())
                     .body(Body::from(bytes))
-                    .map_err(|error| {
-                        ApiResponseError::internal(&format!(
-                            "could not build sparse chunk response: {error}"
-                        ))
+                    .map_err(|_| {
+                        ApiResponseError::internal("could not build sparse chunk response")
                     })?;
                 return Ok(response);
             }
             Ok(bytes) => {
-                last_error = Some(format!(
-                    "provider {} returned an invalid sparse chunk ({} bytes)",
-                    provider.provider_id(),
-                    bytes.len()
-                ));
+                warn!(
+                    provider = provider.provider_id(),
+                    actual_bytes = bytes.len(),
+                    expected_bytes = length,
+                    "provider returned an invalid sparse chunk"
+                );
             }
-            Err(error) => last_error = Some(error.to_string()),
+            Err(error) => {
+                warn!(
+                    provider = provider.provider_id(),
+                    %error,
+                    "provider sparse chunk read failed"
+                );
+            }
         }
     }
     Err(ApiResponseError::temporary(
         "sparse_relay_unavailable",
-        &format!(
-            "no verified HOT pack range is available for sparse chunk relay{}",
-            last_error
-                .as_deref()
-                .map(|error| format!(": {error}"))
-                .unwrap_or_default()
-        ),
+        "no verified HOT pack range is available for sparse chunk relay",
         15,
     ))
 }
@@ -2313,6 +2552,7 @@ async fn stream_hot_chunk(
 async fn resolve_packs(
     State(state): State<AppState>,
     Path(build_id): Path<String>,
+    headers: HeaderMap,
     Json(request): Json<PackResolutionRequest>,
 ) -> Result<Json<Vec<ResolvedPack>>, ApiResponseError> {
     if !state.packs_enabled {
@@ -2322,11 +2562,7 @@ async fn resolve_packs(
             60,
         ));
     }
-    if request.encoded_hashes.is_empty() || request.encoded_hashes.len() > 512 {
-        return Err(ApiResponseError::bad_request(
-            "pack resolution requires between 1 and 512 chunks",
-        ));
-    }
+    validate_content_hashes(&request.encoded_hashes)?;
     let Some(database) = &state.database else {
         return Err(ApiResponseError::temporary(
             "database_unavailable",
@@ -2378,6 +2614,10 @@ async fn resolve_packs(
         .collect::<std::collections::HashSet<_>>();
     let mut grouped = HashMap::<String, ResolvedPack>::new();
     for source in records.values().flatten() {
+        if !is_lowercase_content_hash(&source.pack_hash) {
+            warn!("skipping a pack source with an invalid pack hash");
+            continue;
+        }
         let Some(provider) = state.storage.provider(&source.location.provider) else {
             continue;
         };
@@ -2450,6 +2690,10 @@ async fn resolve_packs(
             .map_err(ApiResponseError::from)?;
         for (encoded_hash, packs) in cold_pack_sources {
             for (pack_hash, encoded_size) in packs {
+                if !is_lowercase_content_hash(&pack_hash) {
+                    warn!("skipping a cold pack source with an invalid pack hash");
+                    continue;
+                }
                 let entry = grouped
                     .entry(pack_hash.clone())
                     .or_insert_with(|| ResolvedPack {
@@ -2491,21 +2735,24 @@ async fn resolve_packs(
             .await
             .map_err(ApiResponseError::from)?
     };
-    let mut queued_restore = false;
     let restore_target =
         env::var("LAUNCHER_RESTORE_TARGET_PROVIDER").unwrap_or_else(|_| "hot".to_owned());
+    let mut restore_packs = HashSet::new();
     for pack_hashes in cold_pack_hashes.values() {
         for pack_hash in pack_hashes {
-            if !grouped.contains_key(pack_hash) {
-                database
-                    .enqueue_pack_restore_job(pack_hash, &restore_target)
-                    .await
-                    .map_err(ApiResponseError::from)?;
-                queued_restore = true;
+            if is_lowercase_content_hash(pack_hash) && !grouped.contains_key(pack_hash) {
+                restore_packs.insert(pack_hash.clone());
             }
         }
     }
-    if queued_restore {
+    if !restore_packs.is_empty() {
+        let _admission_guard = admit_restore_jobs(&state, &headers, restore_packs.len()).await?;
+        for pack_hash in restore_packs {
+            database
+                .enqueue_pack_restore_job(&pack_hash, &restore_target)
+                .await
+                .map_err(ApiResponseError::from)?;
+        }
         return Err(ApiResponseError::temporary(
             "restore_pending",
             "the requested pack is in COLD storage and a HOT restore has been queued",
@@ -2534,6 +2781,11 @@ async fn stream_cold_pack(
     Path((build_id, pack_hash)): Path<(String, String)>,
     request: Request,
 ) -> Result<Response, ApiResponseError> {
+    if !is_lowercase_content_hash(&pack_hash) {
+        return Err(ApiResponseError::bad_request(
+            "pack hash must be 64 lowercase hexadecimal characters",
+        ));
+    }
     let Some(database) = &state.database else {
         return Err(ApiResponseError::temporary(
             "database_unavailable",
@@ -2582,9 +2834,10 @@ async fn stream_cold_pack(
         outbound = outbound.header(header::RANGE, range);
     }
     let upstream = outbound.send().await.map_err(|error| {
+        warn!(%error, "private cold stream worker request failed");
         ApiResponseError::temporary(
             "cold_stream_unavailable",
-            &format!("private cold stream worker unavailable: {error}"),
+            "private cold stream worker unavailable",
             30,
         )
     })?;
@@ -2604,15 +2857,18 @@ async fn stream_cold_pack(
     }
     response
         .body(Body::from_stream(upstream.bytes_stream()))
-        .map_err(|error| {
-            ApiResponseError::internal(&format!("could not build cold stream: {error}"))
-        })
+        .map_err(|_| ApiResponseError::internal("could not build cold stream"))
 }
 
 async fn get_object(
     State(state): State<AppState>,
     Path(encoded_hash): Path<String>,
 ) -> Result<Response, ApiResponseError> {
+    if !is_lowercase_content_hash(&encoded_hash) {
+        return Err(ApiResponseError::bad_request(
+            "encoded hash must be 64 lowercase hexadecimal characters",
+        ));
+    }
     let local_storage = state
         .local_storage
         .as_ref()
@@ -2623,7 +2879,7 @@ async fn get_object(
     let bytes = local_storage
         .read_encoded(&encoded_hash)
         .await
-        .map_err(|error| ApiResponseError::not_found(&error.to_string()))?;
+        .map_err(|_| ApiResponseError::not_found("local object"))?;
     Ok((
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
@@ -2632,10 +2888,56 @@ async fn get_object(
         .into_response())
 }
 
+fn parse_single_byte_range(value: &HeaderValue, size: u64) -> Result<(u64, u64), ApiResponseError> {
+    let value = value
+        .to_str()
+        .map_err(|_| ApiResponseError::range_not_satisfiable())?;
+    let spec = value
+        .strip_prefix("bytes=")
+        .filter(|spec| !spec.contains(','))
+        .ok_or_else(ApiResponseError::range_not_satisfiable)?;
+    if size == 0 {
+        return Err(ApiResponseError::range_not_satisfiable());
+    }
+    let (start, end) = spec
+        .split_once('-')
+        .ok_or_else(ApiResponseError::range_not_satisfiable)?;
+    if start.is_empty() {
+        let suffix = end
+            .parse::<u64>()
+            .ok()
+            .filter(|suffix| *suffix > 0)
+            .ok_or_else(ApiResponseError::range_not_satisfiable)?;
+        let start = size.saturating_sub(suffix);
+        return Ok((start, size - 1));
+    }
+    let start = start
+        .parse::<u64>()
+        .ok()
+        .filter(|start| *start < size)
+        .ok_or_else(ApiResponseError::range_not_satisfiable)?;
+    let end = if end.is_empty() {
+        size - 1
+    } else {
+        end.parse::<u64>()
+            .ok()
+            .filter(|end| *end >= start)
+            .map(|end| end.min(size - 1))
+            .ok_or_else(ApiResponseError::range_not_satisfiable)?
+    };
+    Ok((start, end))
+}
+
 async fn get_pack(
     State(state): State<AppState>,
     Path(pack_hash): Path<String>,
+    request: Request,
 ) -> Result<Response, ApiResponseError> {
+    if !is_lowercase_content_hash(&pack_hash) {
+        return Err(ApiResponseError::bad_request(
+            "pack hash must be 64 lowercase hexadecimal characters",
+        ));
+    }
     let local_storage = state
         .local_storage
         .as_ref()
@@ -2643,19 +2945,43 @@ async fn get_pack(
     if local_storage.tier() != StorageTier::Hot {
         return Err(ApiResponseError::not_found("hot pack proxy"));
     }
-    let bytes = local_storage
-        .read_pack(&pack_hash)
+    let path = local_storage
+        .pack_path(&pack_hash)
+        .map_err(|_| ApiResponseError::not_found("local pack proxy"))?;
+    let metadata = tokio::fs::metadata(path)
         .await
-        .map_err(|error| ApiResponseError::not_found(&error.to_string()))?;
-    Ok((
-        StatusCode::OK,
-        [
-            (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
-            (axum::http::header::ACCEPT_RANGES, "bytes"),
-        ],
-        bytes,
-    )
-        .into_response())
+        .map_err(|_| ApiResponseError::not_found("local pack"))?;
+    if !metadata.is_file() {
+        return Err(ApiResponseError::not_found("local pack"));
+    }
+    let size = metadata.len();
+    let mut response = Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, "application/octet-stream")
+        .header(axum::http::header::ACCEPT_RANGES, "bytes");
+    let stream = if let Some(range_header) = request.headers().get(header::RANGE) {
+        let (start, end) = parse_single_byte_range(range_header, size)?;
+        let length = end - start + 1;
+        let content_range = format!("bytes {start}-{end}/{size}");
+        response = response
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(axum::http::header::CONTENT_LENGTH, length)
+            .header(axum::http::header::CONTENT_RANGE, content_range);
+        local_storage
+            .read_pack_range_stream(&pack_hash, start, length)
+            .await
+            .map_err(|_| ApiResponseError::not_found("local pack"))?
+    } else {
+        response = response
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_LENGTH, size);
+        local_storage
+            .read_pack_stream(&pack_hash)
+            .await
+            .map_err(|_| ApiResponseError::not_found("local pack"))?
+    };
+    response
+        .body(Body::from_stream(stream))
+        .map_err(|_| ApiResponseError::internal("could not build pack stream"))
 }
 
 type DevelopmentCatalog = (
@@ -2799,6 +3125,24 @@ impl ApiResponseError {
         }
     }
 
+    fn range_not_satisfiable() -> Self {
+        Self {
+            status: StatusCode::RANGE_NOT_SATISFIABLE,
+            code: "range_not_satisfiable",
+            message: "the requested byte range is not satisfiable".to_owned(),
+            retry_after_seconds: None,
+        }
+    }
+
+    fn rate_limited(retry_after_seconds: u64) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            code: "rate_limited",
+            message: "request rate limit exceeded".to_owned(),
+            retry_after_seconds: Some(retry_after_seconds.max(1)),
+        }
+    }
+
     fn forbidden(code: &'static str, message: &str) -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
@@ -2879,11 +3223,11 @@ fn map_provisioning_error(error: ProvisioningError, fallback: &str) -> ApiRespon
 }
 
 impl From<launcher_database::DatabaseError> for ApiResponseError {
-    fn from(error: launcher_database::DatabaseError) -> Self {
+    fn from(_error: launcher_database::DatabaseError) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "database_error",
-            message: error.to_string(),
+            message: "database operation failed".to_owned(),
             retry_after_seconds: None,
         }
     }
@@ -2909,7 +3253,7 @@ impl From<launcher_storage::StorageError> for ApiResponseError {
         Self {
             status,
             code: "storage_error",
-            message: error.to_string(),
+            message: "storage operation failed".to_owned(),
             retry_after_seconds: None,
         }
     }
@@ -2995,6 +3339,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn direct_rate_limiter_uses_the_connection_peer_not_forwarded_headers() {
+        let limiter = RequestRateLimiter::with_proxy_headers(1, Duration::from_secs(1), false);
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.24".parse().unwrap());
+        assert_ne!(
+            limiter.client_key_with_peer(&headers, Some("192.0.2.10:443".parse().unwrap())),
+            limiter.client_key_with_peer(&headers, Some("192.0.2.11:443".parse().unwrap()))
+        );
+        assert_eq!(
+            limiter.client_key_with_peer(&headers, Some("192.0.2.10:443".parse().unwrap())),
+            "peer:192.0.2.10"
+        );
+    }
+
+    #[test]
+    fn content_hash_validation_rejects_ambiguous_or_unbounded_inputs() {
+        assert!(is_lowercase_content_hash(&"a".repeat(64)));
+        assert!(!is_lowercase_content_hash(&"A".repeat(64)));
+        assert!(!is_lowercase_content_hash(&"a".repeat(63)));
+        assert!(!is_lowercase_content_hash(&"a".repeat(65)));
+        assert!(validate_content_hashes(&["a".repeat(64)]).is_ok());
+        assert!(validate_content_hashes(&[]).is_err());
+        assert!(validate_content_hashes(&vec!["a".repeat(64); 513]).is_err());
+    }
+
+    #[test]
+    fn byte_range_parser_supports_bounded_single_ranges() {
+        assert_eq!(
+            parse_single_byte_range(&HeaderValue::from_static("bytes=10-19"), 100).unwrap(),
+            (10, 19)
+        );
+        assert_eq!(
+            parse_single_byte_range(&HeaderValue::from_static("bytes=90-"), 100).unwrap(),
+            (90, 99)
+        );
+        assert_eq!(
+            parse_single_byte_range(&HeaderValue::from_static("bytes=-10"), 100).unwrap(),
+            (90, 99)
+        );
+        assert!(parse_single_byte_range(&HeaderValue::from_static("bytes=0-1,4-5"), 100).is_err());
+        assert!(parse_single_byte_range(&HeaderValue::from_static("bytes=100-"), 100).is_err());
+    }
+
     #[tokio::test]
     async fn resolve_chunks_returns_provider_and_independent_mirror_locations() {
         let bytes = b"alternate mirror fixture";
@@ -3058,6 +3446,21 @@ mod tests {
             operator_token: None,
             operator_auth_required: false,
             supabase_auth: None,
+            steam_web_api_key: None,
+            steam_client: reqwest::Client::new(),
+            steam_rate_limiter: RequestRateLimiter::with_proxy_headers(
+                10,
+                Duration::from_secs(60),
+                false,
+            ),
+            restore_rate_limiter: RequestRateLimiter::with_proxy_headers(
+                30,
+                Duration::from_secs(60),
+                false,
+            ),
+            restore_admission_lock: Arc::new(AsyncMutex::new(())),
+            max_restore_jobs_per_request: DEFAULT_MAX_RESTORE_JOBS_PER_REQUEST,
+            max_pending_restore_jobs: DEFAULT_MAX_PENDING_RESTORE_JOBS,
             public_status: Arc::new(RwLock::new(initial_public_status(true, 30))),
             public_status_poll_seconds: 30,
             work_status_store: WorkStatusStore::new("test-work-status"),
@@ -3066,6 +3469,7 @@ mod tests {
         let resolved = resolve_chunks(
             State(state),
             Path("build-1".to_owned()),
+            HeaderMap::new(),
             Json(ChunkResolutionRequest {
                 encoded_hashes: vec![hash.clone()],
             }),

@@ -48,6 +48,34 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: server
 
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Audit Rust dependencies
+        working-directory: server
+        run: |
+          cargo install cargo-audit --locked
+          # RSA PKCS#1 v1.5 remains only for the published legacy manifest
+          # signature format. Vaultnode performs local signing of
+          # server-generated manifests and never exposes RSA decryption or an
+          # attacker-controlled private-key operation. Keep the no-fixed-
+          # upgrade advisory explicit until the format can migrate safely.
+          cargo audit --ignore RUSTSEC-2023-0071
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - name: Audit website dependencies
+        working-directory: website
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
+
   analyzer:
     runs-on: ubuntu-latest
     steps:

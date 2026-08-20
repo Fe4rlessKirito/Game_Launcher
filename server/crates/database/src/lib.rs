@@ -270,6 +270,7 @@ impl Database {
     pub async fn connect(url: &str) -> Result<Self, DatabaseError> {
         let pool = PgPoolOptions::new()
             .max_connections(10)
+            .acquire_timeout(Duration::from_secs(15))
             .connect(url)
             .await?;
         Ok(Self { pool })
@@ -2008,6 +2009,22 @@ impl Database {
             .await?
         };
         rows.iter().map(restore_job_from_row).collect()
+    }
+
+    /// Return the combined active restore depth for logical chunks and
+    /// physical packs. Both queues consume the same worker capacity, so
+    /// callers that apply admission control must count them together.
+    pub async fn restore_queue_depth(&self) -> Result<usize, DatabaseError> {
+        let depth: i64 = sqlx::query_scalar(
+            "SELECT
+                (SELECT COUNT(*) FROM restore_jobs
+                 WHERE state IN ('QUEUED','RUNNING','RETRY'))
+              + (SELECT COUNT(*) FROM pack_restore_jobs
+                 WHERE state IN ('QUEUED','RUNNING','RETRY'))",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(usize::try_from(depth).unwrap_or(usize::MAX))
     }
 
     pub async fn restore_pending(&self, encoded_hash: &str) -> Result<bool, DatabaseError> {
