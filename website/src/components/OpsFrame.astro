@@ -20,6 +20,15 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
 
 <BaseLayout title={`${title} — Vaultnode`} description="Public operations dashboard for the Vaultnode game distribution platform." chrome={false}>
   <main class="ops-shell" data-api-base="https://vaultnode.pp.ua" data-ops-page={active}>
+    <div class="ops-mobile-bar">
+      <div class="ops-mobile-bar-head">
+        <a href="/" class="ops-mobile-brand" aria-label="Back to Vaultnode home"><img src="/assets/vaultnode-mark.png" alt="" /><span>VAULTNODE</span></a>
+        <a href="/" class="ops-mobile-home">← Site</a>
+      </div>
+      <nav class="ops-mobile-nav" aria-label="Mobile operations navigation">
+        {navigation.map((item) => <a class:list={['ops-mobile-nav-link', active === item.key && 'active']} href={item.href} aria-current={active === item.key ? 'page' : undefined}><span class={`nav-mark nav-mark-${item.icon}`} aria-hidden="true"><span></span></span><span>{item.label}</span></a>)}
+      </nav>
+    </div>
     <aside class="ops-sidebar">
       <a href="/" class="ops-brand"><img class="ops-brand-image" src="/assets/vaultnode-mark.png" alt="Vaultnode" /><span><strong>VAULTNODE</strong><small>PUBLIC STATUS</small></span></a>
       <div class="ops-cluster" aria-label="System status"><span class="status-dot status-dot-live"></span><span><small>STATUS</small><strong id="cluster-status">Operational</strong></span><span class="ops-chevron">⌄</span></div>
