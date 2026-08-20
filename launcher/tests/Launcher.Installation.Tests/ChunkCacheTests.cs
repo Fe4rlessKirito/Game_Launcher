@@ -45,4 +45,21 @@ public sealed class ChunkCacheTests
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public async Task ReinitializingDoesNotDoubleCountCachedFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "launcher-cache-reinit-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var cache = new ChunkCache(root, 1024 * 1024);
+            await cache.InitializeAsync();
+            var bytes = new byte[] { 1, 2, 3, 4 };
+            await cache.PutAsync(Hashing.ComputeHash(bytes), bytes);
+            var first = cache.CurrentBytes;
+            await cache.InitializeAsync();
+            Assert.Equal(first, cache.CurrentBytes);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
 }

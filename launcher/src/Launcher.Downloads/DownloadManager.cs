@@ -38,7 +38,6 @@ public sealed class DownloadManager(
     private readonly SemaphoreSlim _concurrency = new(Math.Clamp(maxConcurrency, 1, 32));
     private readonly SemaphoreSlim _resolverGate = new(1, 1);
     private readonly HotSourceScheduler _sourceScheduler = new();
-    private readonly HashSet<string> _packPreparedChunks = new(StringComparer.Ordinal);
 
     public void Pause() { _pauseGate.Wait(0); }
     public void Resume() { if (_pauseGate.CurrentCount == 0) _pauseGate.Release(); }
@@ -62,7 +61,12 @@ public sealed class DownloadManager(
         var reusedChunks = 0;
         var physicalPackNetworkBytes = 0L;
         var physicalPackLogicalBytes = 0L;
+        var packPreparedChunks = new HashSet<string>(StringComparer.Ordinal);
         var stopwatch = Stopwatch.StartNew();
+        using var progressPersistenceGate = new SemaphoreSlim(1, 1);
+        var progressPersistenceLock = new object();
+        var lastPersistedAt = TimeSpan.Zero;
+        var lastPersistedBytes = -1L;
         await SaveJobAsync(new PersistedDownloadJob(jobId, manifest.BuildId, DownloadJobState.Resolving, 0, totalBytes, DateTimeOffset.UtcNow), cancellationToken).ConfigureAwait(false);
         progress?.Report(new DownloadProgress(jobId, DownloadJobState.Resolving, 0, totalBytes, 0, null));
         IReadOnlyDictionary<string, ResolvedChunk> resolved = new Dictionary<string, ResolvedChunk>(StringComparer.Ordinal);
@@ -84,12 +88,13 @@ public sealed class DownloadManager(
                     uncachedChunks,
                     packCache,
                     uncachedChunks.Count < uniqueChunks.Length,
+                    packPreparedChunks,
                     cancellationToken).ConfigureAwait(false);
                 Interlocked.Add(ref networkBytes, packResult.NetworkBytes);
                 Interlocked.Add(ref physicalPackNetworkBytes, packResult.NetworkBytes);
                 Interlocked.Add(ref physicalPackLogicalBytes, packResult.LogicalBytes);
             }
-            catch (Exception error) when (error is HttpRequestException or InvalidDataException or IOException)
+            catch (Exception error) when (error is HttpRequestException or InvalidDataException or IOException or LauncherOperationException)
             {
                 // Pack resolution is an acceleration path. A client can still
                 // complete through the signed logical chunk resolver.
@@ -103,7 +108,7 @@ public sealed class DownloadManager(
         var unresolved = new List<string>();
         foreach (var chunk in uniqueChunks)
         {
-            if (_packPreparedChunks.Contains(chunk.EncodedHash)) continue;
+            if (packPreparedChunks.Contains(chunk.EncodedHash)) continue;
             if (await cache.ReadAsync(chunk.EncodedHash, cancellationToken).ConfigureAwait(false) is null)
             {
                 unresolved.Add(chunk.EncodedHash);
@@ -122,7 +127,7 @@ public sealed class DownloadManager(
             if (cached is not null)
             {
                 Interlocked.Add(ref preparedBytes, chunk.EncodedSize);
-                if (_packPreparedChunks.Contains(chunk.EncodedHash))
+                if (packPreparedChunks.Contains(chunk.EncodedHash))
                 {
                     Interlocked.Increment(ref downloadedChunks);
                 }
@@ -131,7 +136,7 @@ public sealed class DownloadManager(
                     Interlocked.Add(ref reusedBytes, chunk.EncodedSize);
                     Interlocked.Increment(ref reusedChunks);
                 }
-                Report(DownloadJobState.Downloading, chunk.EncodedHash);
+                await ReportAsync(DownloadJobState.Downloading, chunk.EncodedHash).ConfigureAwait(false);
                 return;
             }
             if (!resolved.TryGetValue(chunk.EncodedHash, out var location) || location.Urls.Count == 0) throw new LauncherOperationException($"No storage locations for chunk {chunk.EncodedHash}.");
@@ -151,7 +156,7 @@ public sealed class DownloadManager(
                 Interlocked.Add(ref preparedBytes, chunk.EncodedSize);
                 Interlocked.Add(ref networkBytes, bytes);
                 Interlocked.Increment(ref downloadedChunks);
-                Report(DownloadJobState.Downloading, chunk.EncodedHash);
+                await ReportAsync(DownloadJobState.Downloading, chunk.EncodedHash).ConfigureAwait(false);
             }
             finally { _concurrency.Release(); }
         });
@@ -175,11 +180,36 @@ public sealed class DownloadManager(
             throw;
         }
 
-        void Report(DownloadJobState state, string hash)
+        async Task ReportAsync(DownloadJobState state, string hash)
         {
             var current = Interlocked.Read(ref preparedBytes);
             var rate = Rate();
             progress?.Report(new DownloadProgress(jobId, state, current, totalBytes, rate, rate > 0 ? TimeSpan.FromSeconds(Math.Max(0, totalBytes - current) / rate) : null, hash));
+
+            if (stateStore is null) return;
+            var now = stopwatch.Elapsed;
+            bool persist;
+            lock (progressPersistenceLock)
+            {
+                persist = current == totalBytes
+                    || current - lastPersistedBytes >= 4 * 1024 * 1024
+                    || now - lastPersistedAt >= TimeSpan.FromSeconds(1);
+                if (persist)
+                {
+                    lastPersistedBytes = current;
+                    lastPersistedAt = now;
+                }
+            }
+            if (!persist) return;
+            await progressPersistenceGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                await SaveJobAsync(new PersistedDownloadJob(jobId, manifest.BuildId, state, current, totalBytes, DateTimeOffset.UtcNow), CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                progressPersistenceGate.Release();
+            }
         }
 
         double Rate() => stopwatch.Elapsed.TotalSeconds <= 0 ? 0 : preparedBytes / stopwatch.Elapsed.TotalSeconds;
@@ -295,6 +325,7 @@ public sealed class DownloadManager(
         IReadOnlyList<ChunkReference> chunks,
         PackCache physicalCache,
         bool allowSparseRelay,
+        HashSet<string> packPreparedChunks,
         CancellationToken cancellationToken)
     {
         var missing = chunks.Select(chunk => chunk.EncodedHash).Distinct(StringComparer.Ordinal).ToArray();
@@ -350,7 +381,7 @@ public sealed class DownloadManager(
             var reader = PhysicalPackReader.Parse(bytes, pack.PackHash);
             foreach (var hash in covered)
             {
-                if (!_packPreparedChunks.Add(hash)) continue;
+                if (!packPreparedChunks.Add(hash)) continue;
                 var encoded = reader.ReadEncoded(hash);
                 var chunk = chunks.First(item => item.EncodedHash == hash);
                 if (encoded.Length != chunk.EncodedSize) throw new InvalidDataException($"Pack chunk size mismatch for {hash}.");

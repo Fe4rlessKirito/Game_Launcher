@@ -97,6 +97,25 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
       } else if (progressWrap) progressWrap.hidden = true;
     };
     const formatBytes = (value: number) => { if (!Number.isFinite(value) || value <= 0) return '0 B'; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(2)} GB`; return `${(value / 1024 ** 4).toFixed(2)} TB`; };
+    const setBar = (selector: string, percent?: number) => { const bar = document.querySelector<HTMLElement>(selector); if (bar) bar.style.width = percent == null ? '0%' : `${Math.max(0, Math.min(100, percent))}%`; };
+    const clearTelemetry = () => {
+      ['#latency-value', '#last-probe', '#active-work', '#total-used', '#system-cpu-value', '#system-memory-value', '#system-disk-value'].forEach((selector) => text(selector, '—'));
+      ['#latency-state', '#api-state', '#database-state', '#system-status', '#cluster-status', '#sidebar-health', '#hot-health', '#cold-health'].forEach((selector) => text(selector, 'Unavailable'));
+      ['#system-detail', '#sidebar-sync', '#footer-sync', '#activity-note', '#storage-updated', '#activity-updated'].forEach((selector) => text(selector, 'Latest telemetry unavailable'));
+      text('#queue-count', '—'); text('#work-state', 'Unavailable'); text('#coverage-value', '—'); text('#coverage-state', 'Unavailable'); text('#public-api-signal', 'Unavailable'); text('#public-provider-signal', 'Unavailable'); text('#public-restore-signal', 'Unavailable'); text('#public-snapshot', '—'); text('#snapshot-age', 'Unavailable');
+      setBar('#system-cpu-bar'); setBar('#system-memory-bar'); setBar('#system-disk-bar');
+      const coreSummary = document.querySelector<HTMLElement>('#cpu-core-summary'); if (coreSummary) coreSummary.textContent = 'Unavailable';
+      const coreList = document.querySelector<HTMLElement>('#cpu-core-list'); if (coreList) coreList.replaceChildren(Object.assign(document.createElement('p'), { className: 'core-empty', textContent: 'Per-core readings unavailable.' }));
+      renderActiveWork([]);
+      document.querySelector('#system-orb')?.classList.remove('orb-online');
+      document.querySelectorAll<HTMLElement>('[data-provider]').forEach((card) => {
+        const usage = card.querySelector<HTMLElement>('.provider-usage'); if (usage) usage.textContent = '—';
+        const detail = card.querySelector<HTMLElement>('.provider-detail'); if (detail) detail.textContent = 'Telemetry unavailable';
+        const bar = card.querySelector<HTMLElement>('.provider-bar span'); if (bar) bar.style.width = '0%';
+        const badge = card.querySelector<HTMLElement>('.provider-status'); if (badge) { badge.className = 'provider-status status-unknown'; badge.innerHTML = '<i></i> Unavailable'; }
+        const detailStatus = card.querySelector<HTMLElement>('.provider-detail-status'); if (detailStatus) detailStatus.textContent = 'Telemetry unavailable';
+      });
+    };
 
     async function refreshTelemetry() {
       try {
@@ -115,14 +134,13 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
           ? (pending ? 'Restore queue active' : 'No restore jobs')
           : (activeWorkCount ? `${activeWorkCount} active operation${activeWorkCount === 1 ? '' : 's'}` : 'No active operations');
         renderActiveWork(activeWork);
-        const operational = publicStatus.status === 'operational'; const healthLabel = operational ? 'Operational' : 'Degraded'; text('#live-label', healthLabel); text('#system-status', healthLabel); text('#system-detail', `Updated ${now}`); text('#api-state', 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#cluster-status', healthLabel); text('#sidebar-health', healthLabel); text('#sidebar-sync', `Updated ${now}`); text('#footer-sync', `Updated ${now}`); text('#latency-state', 'Healthy response'); text('#active-work', `${activeMetricCount}`); text('#queue-count', activeWorkCount ? `${activeWorkCount} active` : pending ? `${pending} queued` : 'clear'); text('#work-state', workMetricState); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Provider health'); text('#activity-note', `Updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', now); text('#snapshot-age', 'Updated just now');
+        const operational = publicStatus.status === 'operational'; const healthLabel = publicStatus.stale ? 'Stale' : operational ? 'Operational' : 'Degraded'; text('#live-label', healthLabel); text('#system-status', healthLabel); text('#system-detail', publicStatus.stale ? `Stale snapshot · last probe ${observed}` : `Updated ${now}`); text('#api-state', publicStatus.stale ? 'Stale' : 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#cluster-status', healthLabel); text('#sidebar-health', healthLabel); text('#sidebar-sync', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#footer-sync', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#latency-state', publicStatus.stale ? 'Stale snapshot' : 'Healthy response'); text('#active-work', `${activeMetricCount}`); text('#queue-count', activeWorkCount ? `${activeWorkCount} active` : pending ? `${pending} queued` : 'clear'); text('#work-state', workMetricState); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Provider health'); text('#activity-note', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', observed); text('#snapshot-age', publicStatus.stale ? 'Stale snapshot' : 'Updated just now');
         document.querySelector('#system-orb')?.classList.add('orb-online');
 
         const usageByProvider = new Map<string, number>();
         publicStatus.usage.forEach((account) => { const normalized = account.provider.toLowerCase(); const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => normalized.includes(candidate)); if (key) usageByProvider.set(key, (usageByProvider.get(key) || 0) + (account.used_bytes || 0)); });
         const totalUsed = publicStatus.total_used_bytes || [...usageByProvider.values()].reduce((sum, value) => sum + value, 0);
         text('#total-used', formatBytes(totalUsed)); text('#storage-updated', 'just now'); text('#activity-updated', `Updated ${now}`);
-        const setBar = (selector: string, percent: number | undefined) => { const bar = document.querySelector<HTMLElement>(selector); if (bar) bar.style.width = percent == null ? '0%' : `${Math.max(0, Math.min(100, percent))}%`; };
         const system = publicStatus.system;
         const cpu = system?.cpu_usage_percent;
         text('#system-cpu-value', cpu == null ? '—' : `${cpu.toFixed(1)}%`); text('#system-cpu-detail', cpu == null ? 'Waiting for second sample' : 'Server CPU usage'); setBar('#system-cpu-bar', cpu);
@@ -157,7 +175,7 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
         document.querySelectorAll<HTMLElement>('[data-provider]').forEach((card) => { const key = card.dataset.provider; if (!key || reportedProviders.has(key)) return; const badge = card.querySelector<HTMLElement>('.provider-status'); if (badge) { badge.className = 'provider-status status-unknown'; badge.innerHTML = '<i></i> Not configured'; } const detailStatus = card.querySelector<HTMLElement>('.provider-detail-status'); if (detailStatus) detailStatus.textContent = 'Not configured'; });
         document.querySelectorAll<HTMLElement>('.job-row').forEach((row) => { const jobState = row.querySelector<HTMLElement>('.job-state'); if (jobState) jobState.textContent = row.dataset.job === 'restore' ? (pending ? `${pending} queued` : 'Queue clear') : 'Standing by'; });
       } catch (error) {
-        text('#live-label', 'Unavailable'); text('#system-status', 'Unavailable'); text('#system-detail', 'Could not load the latest status'); text('#cluster-status', 'Unavailable'); text('#sidebar-health', 'Unavailable'); text('#sidebar-sync', 'Update failed'); text('#footer-sync', 'Update failed'); text('#activity-note', 'Update failed');
+        clearTelemetry();
       }
     }
 

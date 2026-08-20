@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +45,13 @@ class IngestionScheduler:
         self.output_root = str(output_root)
         self.diagnostics = diagnostics
         self.status = status
+        try:
+            incomplete_artifact_ttl_seconds = int(
+                os.environ.get("SCRAPER_INCOMPLETE_ARTIFACT_TTL_SECONDS", "86400")
+            )
+        except ValueError:
+            incomplete_artifact_ttl_seconds = 86400
+        self.incomplete_artifact_ttl_seconds = max(3600, incomplete_artifact_ttl_seconds)
 
     def register_source(self, source: SourceDefinition) -> None:
         self.store.add_source(source)
@@ -67,6 +76,7 @@ class IngestionScheduler:
         return jobs
 
     def run_once(self, *, interpreter: PageInterpreter | None = None) -> WorkerResult | None:
+        self._cleanup_stale_incomplete_artifacts()
         self.store.recover_expired()
         self.enqueue_due_sources()
         job = self.store.claim(self.worker_id, self.lease_seconds)
@@ -111,6 +121,11 @@ class IngestionScheduler:
 
                 def publish_download_progress(bytes_completed: int, bytes_total: int | None) -> None:
                     nonlocal last_progress_at, last_progress_bytes
+                    # A release can take much longer than the initial lease.
+                    # Heartbeat on every downloader callback, even when the
+                    # UI update is throttled, so another worker cannot reclaim
+                    # an otherwise healthy long-running acquisition.
+                    self.store.heartbeat(job, self.lease_seconds)
                     now = time.monotonic()
                     is_final = bytes_total is not None and bytes_completed >= bytes_total
                     if (
@@ -178,6 +193,40 @@ class IngestionScheduler:
 
     def _output_root(self) -> str:
         return self.output_root
+
+    def _cleanup_stale_incomplete_artifacts(self) -> None:
+        root = Path(self.output_root)
+        if not root.is_dir():
+            return
+
+        cutoff = time.time() - self.incomplete_artifact_ttl_seconds
+        try:
+            for partial in root.rglob("*.part"):
+                if partial.is_symlink() or not partial.is_file():
+                    continue
+                if partial.stat().st_mtime < cutoff:
+                    partial.unlink()
+
+            for source_root in root.iterdir():
+                if source_root.is_symlink() or not source_root.is_dir():
+                    continue
+                for artifact_root in source_root.iterdir():
+                    if artifact_root.is_symlink() or not artifact_root.is_dir():
+                        continue
+                    if (artifact_root / "handoff.json").is_file():
+                        continue
+                    newest = max(
+                        (path.stat().st_mtime for path in artifact_root.rglob("*") if path.is_file()),
+                        default=artifact_root.stat().st_mtime,
+                    )
+                    if newest < cutoff:
+                        shutil.rmtree(artifact_root)
+                try:
+                    source_root.rmdir()
+                except OSError:
+                    pass
+        except OSError:
+            logger.exception("could not clean stale incomplete scraper artifacts")
 
     def _record(self, job: ScrapeJob, outcome: ScrapeOutcome) -> None:
         job.visited_urls = list(dict.fromkeys(outcome.visited_urls))

@@ -2,9 +2,11 @@ use anyhow::{Context, Result};
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
 const SOURCE_MARKER: &str = ".launcher-source-path";
+const IN_PROGRESS_MARKER: &str = ".launcher-package-in-progress";
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CleanupReport {
@@ -22,6 +24,83 @@ pub fn enabled() -> bool {
                 "1" | "true" | "yes" | "on"
             )
         })
+}
+
+/// Remove abandoned package directories that never reached a ready report.
+/// Ready packages and scraper handoffs are intentionally left alone; this is
+/// only for failed/interrupted staging attempts that would otherwise consume
+/// disk forever.
+pub fn cleanup_stale_incomplete(storage_root: &Path) -> Result<usize> {
+    let root = canonical_root(storage_root)?;
+    let ttl_seconds = env::var("LAUNCHER_STAGING_INCOMPLETE_TTL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(7 * 24 * 60 * 60)
+        .max(60 * 60);
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(ttl_seconds))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    cleanup_stale_incomplete_before(&root, cutoff)
+}
+
+fn cleanup_stale_incomplete_before(root: &Path, cutoff: SystemTime) -> Result<usize> {
+    let mut removed = 0;
+
+    for entry in walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .max_depth(6)
+        .contents_first(true)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        let path = entry.path();
+        if !entry.file_type().is_dir()
+            || path.join("report.json").is_file()
+            || !path.join(IN_PROGRESS_MARKER).is_file()
+        {
+            continue;
+        }
+
+        let newest = walkdir::WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|child| child.ok())
+            .filter_map(|child| child.metadata().ok())
+            .filter_map(|metadata| metadata.modified().ok())
+            .max()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if newest < cutoff {
+            fs::remove_dir_all(path).with_context(|| {
+                format!("could not remove stale staging package {}", path.display())
+            })?;
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
+}
+
+pub fn mark_in_progress(output: &Path, storage_root: &Path) -> Result<()> {
+    let root = canonical_root(storage_root)?;
+    let package = validate_staging_path(output, &root, "package output")?;
+    if package == root {
+        anyhow::bail!("refusing to mark the storage root as an in-progress package");
+    }
+    fs::write(package.join(IN_PROGRESS_MARKER), b"in-progress\n")
+        .with_context(|| format!("could not mark package in progress {}", package.display()))?;
+    Ok(())
+}
+
+pub fn clear_in_progress(output: &Path, storage_root: &Path) -> Result<()> {
+    let root = canonical_root(storage_root)?;
+    let package = validate_staging_path(output, &root, "package output")?;
+    let marker = package.join(IN_PROGRESS_MARKER);
+    match fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn record_source(output: &Path, input: &Path, storage_root: &Path) -> Result<()> {
@@ -89,11 +168,11 @@ pub fn cleanup_after_publish(
 
     if let Some(source) = source {
         report.source_removed = remove_staging_path(&source, &root)?;
-        if report.source_removed {
-            if let Some(parent) = source.parent() {
-                remove_generated_handoff(parent, &source)?;
-                remove_empty_parent_dirs(parent, &root)?;
-            }
+        if report.source_removed
+            && let Some(parent) = source.parent()
+        {
+            remove_generated_handoff(parent, &source)?;
+            remove_empty_parent_dirs(parent, &root)?;
         }
     }
     Ok(report)
@@ -321,5 +400,31 @@ mod tests {
         assert!(package.exists());
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn stale_incomplete_packages_are_removed_but_ready_packages_are_kept() {
+        let root = test_root("ttl");
+        let incomplete = root.join("packages/incomplete");
+        fs::create_dir_all(incomplete.join("chunks/encoded")).unwrap();
+        fs::write(incomplete.join("analysis.json"), b"{}\n").unwrap();
+        fs::write(incomplete.join(IN_PROGRESS_MARKER), b"in-progress\n").unwrap();
+        let unmarked = root.join("packages/unmarked");
+        fs::create_dir_all(unmarked.join("chunks/encoded")).unwrap();
+        fs::write(unmarked.join("analysis.json"), b"{}\n").unwrap();
+        let ready = root.join("packages/ready");
+        fs::create_dir_all(ready.join("chunks/encoded")).unwrap();
+        fs::write(ready.join("report.json"), b"{}\n").unwrap();
+        let removed = cleanup_stale_incomplete_before(
+            &fs::canonicalize(&root).unwrap(),
+            SystemTime::now() + Duration::from_secs(1),
+        )
+        .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!incomplete.exists());
+        assert!(unmarked.exists());
+        assert!(ready.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

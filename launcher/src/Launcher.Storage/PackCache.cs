@@ -22,6 +22,11 @@ public sealed class PackCache(string root, long maxBytes)
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         Directory.CreateDirectory(_root);
+        lock (_gate)
+        {
+            _entries.Clear();
+            _currentBytes = 0;
+        }
         foreach (var file in Directory.EnumerateFiles(_root, "*.pack"))
         {
             cancellationToken.ThrowIfCancellationRequested();

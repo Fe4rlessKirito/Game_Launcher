@@ -117,4 +117,32 @@ public sealed class LocalStateStoreTests
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
+
+    [Fact]
+    public async Task LibraryCategoriesPersistExpansionOrderAndMembership()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "launcher-state-categories-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var dbPath = Path.Combine(root, "launcher.db");
+            var store = new LocalStateStore(dbPath);
+            await store.InitializeAsync();
+            await store.SaveLibraryCategoriesAsync(
+            [
+                new LibraryCategoryState("Co-op", 1, false, ["game-b", "game-a"]),
+                new LibraryCategoryState("Favorites-ish", 0, true, ["game-c"]),
+            ]);
+
+            var categories = await new LocalStateStore(dbPath).GetLibraryCategoriesAsync();
+            Assert.Equal(["Favorites-ish", "Co-op"], categories.Select(category => category.Name));
+            Assert.False(categories[1].IsExpanded);
+            Assert.Equal(["game-b", "game-a"], categories[1].GameIds);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
 }

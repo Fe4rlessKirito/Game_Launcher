@@ -147,14 +147,15 @@
             <ItemsControl ItemsSource="{Binding VisibleSidebarCategories}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <StackPanel Spacing="2" Margin="0,10,0,0">
+                  <StackPanel Spacing="2"
+                              Margin="0,10,0,0"
+                              DragDrop.AllowDrop="True"
+                              DragDrop.DragOver="OnCategoryDragOver"
+                              DragDrop.DragLeave="OnCategoryDragLeave"
+                              DragDrop.Drop="OnCategoryDrop">
                     <Grid ColumnDefinitions="Auto,*,Auto,Auto"
                           Margin="7,0,4,2"
-                          Background="Transparent"
-                          DragDrop.AllowDrop="True"
-                          DragDrop.DragOver="OnCategoryDragOver"
-                          DragDrop.DragLeave="OnCategoryDragLeave"
-                          DragDrop.Drop="OnCategoryDrop">
+                          Background="Transparent">
                       <Border Grid.ColumnSpan="4"
                               IsVisible="{Binding IsDropTarget}"
                               Background="{DynamicResource AccentSoft}"

@@ -100,7 +100,7 @@
         </StackPanel>
         <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
           <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="14">
-            <TextBlock Text="Download directory" Classes="Caption" VerticalAlignment="Center" />
+            <TextBlock Text="Download cache directory" Classes="Caption" VerticalAlignment="Center" />
             <TextBox Grid.Column="1" Text="{Binding DownloadDirectory}" />
             <TextBlock Grid.Row="1" Text="Game directory" Classes="Caption" VerticalAlignment="Center" />
             <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding InstallDirectory}" />
@@ -151,7 +151,7 @@
           <TextBlock Text="Adjust how the launcher feels while you use it." Classes="Caption" />
         </StackPanel>
         <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
-          <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="16">
+          <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="16">
             <TextBlock Text="Theme" Classes="BodyStrong" VerticalAlignment="Center" />
             <ComboBox Grid.Column="1" ItemsSource="{Binding ThemeOptions}" SelectedItem="{Binding ThemePreset}" />
 
@@ -173,11 +173,6 @@
             </StackPanel>
             <ToggleSwitch Grid.Row="2" Grid.Column="1" IsChecked="{Binding CompactMode}" HorizontalAlignment="Left" />
 
-            <StackPanel Grid.Row="3" Spacing="3" VerticalAlignment="Center">
-              <TextBlock Text="Reduced motion" Classes="BodyStrong" />
-              <TextBlock Text="Use shorter transitions and remove decorative movement." Classes="Caption" />
-            </StackPanel>
-            <ToggleSwitch Grid.Row="3" Grid.Column="1" IsChecked="{Binding ReducedMotion}" HorizontalAlignment="Left" />
           </Grid>
         </Border>
       </StackPanel>

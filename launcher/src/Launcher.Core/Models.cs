@@ -75,6 +75,12 @@ public sealed record PersistedDownloadJob(
     DateTimeOffset UpdatedAt,
     string? LastError = null);
 
+public sealed record LibraryCategoryState(
+    string Name,
+    int Position,
+    bool IsExpanded,
+    IReadOnlyList<string> GameIds);
+
 public enum InstallationFailurePoint
 {
     None,

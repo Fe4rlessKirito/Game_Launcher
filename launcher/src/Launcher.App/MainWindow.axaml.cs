@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Closing += OnWindowClosing;
         AddHandler(InputElement.PointerPressedEvent, OnSidebarGamePointerPressed, RoutingStrategies.Bubble, handledEventsToo: true);
         AddHandler(InputElement.PointerMovedEvent, OnSidebarGamePointerMoved, RoutingStrategies.Bubble, handledEventsToo: true);
         AddHandler(InputElement.PointerReleasedEvent, OnSidebarGamePointerReleased, RoutingStrategies.Bubble, handledEventsToo: true);
@@ -275,7 +276,9 @@ public partial class MainWindow : Window
         }
 
         menu.Items.Clear();
-        foreach (var category in viewModel.SidebarCategories.Where(category => category.IsUserCreated))
+        foreach (var category in viewModel.SidebarCategories.Where(category =>
+            category.IsUserCreated
+            || string.Equals(category.Name, "UNCATEGORIZED", StringComparison.OrdinalIgnoreCase)))
         {
             var item = new MenuItem { Header = $"Add to {category.Name}" };
             item.Click += (_, _) => viewModel.AddGameToCategory(game, category);
@@ -310,7 +313,25 @@ public partial class MainWindow : Window
 
     private void OnMaximizeClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => ToggleWindowState();
 
-    private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => Close();
+    private void OnCloseClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (DataContext is ViewModels.ShellViewModel viewModel && viewModel.Settings.MinimizeOnClose)
+        {
+            Hide();
+            return;
+        }
+
+        Close();
+    }
+
+    private void OnWindowClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (DataContext is ViewModels.ShellViewModel viewModel && viewModel.Settings.MinimizeOnClose)
+        {
+            e.Cancel = true;
+            Hide();
+        }
+    }
 
     private void ToggleWindowState() => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 

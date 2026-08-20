@@ -69,7 +69,8 @@ public sealed record LauncherRuntimeSnapshot(
     string? Error,
     LauncherUserProfile? User,
     SteamLibrarySnapshot? Steam = null,
-    IReadOnlySet<string>? ExcludedGameIds = null);
+    IReadOnlySet<string>? ExcludedGameIds = null,
+    IReadOnlyList<LibraryCategoryState>? LibraryCategories = null);
 
 public sealed class LauncherRuntime : IAsyncDisposable
 {
@@ -101,8 +102,10 @@ public sealed class LauncherRuntime : IAsyncDisposable
     private readonly PackCache _packCache;
     private readonly Func<SteamLibrarySnapshot> _steamDiscovery;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly CancellationTokenSource _catalogRefreshCancellation = new();
     private readonly object _downloaderGate = new();
     private DownloadManager? _activeDownloader;
+    private Task? _catalogRefreshTask;
     private IReadOnlyList<GameCatalogItem> _catalog = [];
     private LauncherRuntimeSnapshot _snapshot = new([], [], false, "Offline-ready", null, null);
     private bool _initialized;
@@ -129,9 +132,18 @@ public sealed class LauncherRuntime : IAsyncDisposable
         SetAccessToken(accessToken);
         _apiClient = new LauncherApiClient(_apiHttpClient, ParseBaseUri(settings.ApiBaseUrl));
         _stateStore = new LocalStateStore(_paths.DatabasePath);
-        _chunkCache = new ChunkCache(_paths.CachePath, Math.Max(1, settings.CacheSizeBytes));
+        var configuredDownloadRoot = string.IsNullOrWhiteSpace(settings.DownloadDirectory)
+            ? _paths.DownloadsPath
+            : Path.GetFullPath(settings.DownloadDirectory);
+        var chunkCacheRoot = string.IsNullOrWhiteSpace(settings.DownloadDirectory)
+            ? _paths.CachePath
+            : Path.Combine(configuredDownloadRoot, "cache");
+        var packCacheRoot = string.IsNullOrWhiteSpace(settings.DownloadDirectory)
+            ? Path.Combine(_paths.Root, "pack-cache")
+            : Path.Combine(configuredDownloadRoot, "pack-cache");
+        _chunkCache = new ChunkCache(chunkCacheRoot, Math.Max(1, settings.CacheSizeBytes));
         var packCacheBytes = Math.Clamp(settings.CacheSizeBytes / 2, 512L * 1024 * 1024, 2L * 1024 * 1024 * 1024);
-        _packCache = new PackCache(Path.Combine(_paths.Root, "pack-cache"), packCacheBytes);
+        _packCache = new PackCache(packCacheRoot, packCacheBytes);
         _steamDiscovery = steamDiscovery ?? (() => SteamLibraryDiscovery.Discover());
     }
 
@@ -249,8 +261,10 @@ public sealed class LauncherRuntime : IAsyncDisposable
         {
             await _stateStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await _chunkCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await RecoverInstallationsAsync(cancellationToken).ConfigureAwait(false);
             await _stateStore.FailInterruptedDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
             _initialized = true;
+            StartCatalogRefreshLoop();
         }
 
         return await RefreshAsync(cancellationToken).ConfigureAwait(false);
@@ -262,13 +276,16 @@ public sealed class LauncherRuntime : IAsyncDisposable
         {
             await _stateStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
             await _chunkCache.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await RecoverInstallationsAsync(cancellationToken).ConfigureAwait(false);
             await _stateStore.FailInterruptedDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
             _initialized = true;
+            StartCatalogRefreshLoop();
         }
 
         var installed = await _stateStore.GetInstalledGamesAsync(cancellationToken).ConfigureAwait(false);
         var jobs = await _stateStore.GetDownloadJobsAsync(cancellationToken).ConfigureAwait(false);
         var excludedGameIds = await _stateStore.GetExcludedGameIdsAsync(cancellationToken).ConfigureAwait(false);
+        var libraryCategories = await _stateStore.GetLibraryCategoriesAsync(cancellationToken).ConfigureAwait(false);
         var online = false;
         string? error = null;
         try
@@ -302,10 +319,13 @@ public sealed class LauncherRuntime : IAsyncDisposable
             }
         }
 
-        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds);
+        _snapshot = new LauncherRuntimeSnapshot(games, jobs, online, connectionStatus, error, user, steam, excludedGameIds, libraryCategories);
         SnapshotChanged?.Invoke(_snapshot);
         return _snapshot;
     }
+
+    public Task SaveLibraryCategoriesAsync(IReadOnlyList<LibraryCategoryState> categories, CancellationToken cancellationToken = default) =>
+        _stateStore.SaveLibraryCategoriesAsync(categories, cancellationToken);
 
     public RuntimeGame? FindGame(string? idOrTitle)
     {
@@ -378,7 +398,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
             });
             await downloader.DownloadAsync(signedManifest.Manifest, $"install-{game.Id}-{signedManifest.Manifest.BuildId}", trackedProgress, cancellationToken).ConfigureAwait(false);
 
-            var installer = new Installer(_chunkCache, _stateStore);
+            var installer = new Installer(_chunkCache, _stateStore, availableSpaceProvider: GetAvailableFreeSpace);
             var installRoot = game.Installed?.InstallRoot ?? BuildInstallRoot(game);
             if (game.Installed is not null)
             {
@@ -407,7 +427,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
             var game = FindGame(gameId) ?? throw new LauncherOperationException($"Game was not found: {gameId}");
             if (game.Installed is null) throw new LauncherOperationException($"{game.Title} is not installed.");
             var manifest = ManifestJson.Deserialize(game.Installed.ManifestJson);
-            await new Installer(_chunkCache, _stateStore).RepairAsync(manifest, game.Installed.InstallRoot, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await new Installer(_chunkCache, _stateStore, availableSpaceProvider: GetAvailableFreeSpace).RepairAsync(manifest, game.Installed.InstallRoot, cancellationToken: cancellationToken).ConfigureAwait(false);
             await RefreshAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -429,7 +449,7 @@ public sealed class LauncherRuntime : IAsyncDisposable
         {
             var game = FindGame(gameId) ?? throw new LauncherOperationException($"Game was not found: {gameId}");
             if (game.Installed is null) return;
-            await new Installer(_chunkCache, _stateStore).UninstallAsync(game.Installed, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await new Installer(_chunkCache, _stateStore, availableSpaceProvider: GetAvailableFreeSpace).UninstallAsync(game.Installed, cancellationToken: cancellationToken).ConfigureAwait(false);
             await RefreshAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -455,10 +475,52 @@ public sealed class LauncherRuntime : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _catalogRefreshCancellation.Cancel();
+        if (_catalogRefreshTask is not null)
+        {
+            try
+            {
+                await _catalogRefreshTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Normal shutdown.
+            }
+        }
+
+        _catalogRefreshCancellation.Dispose();
         _operationGate.Dispose();
         _downloadHttpClient.Dispose();
         if (_ownsApiHttpClient) _apiHttpClient.Dispose();
-        await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    private void StartCatalogRefreshLoop()
+    {
+        if (_catalogRefreshTask is not null)
+        {
+            return;
+        }
+
+        _catalogRefreshTask = Task.Run(async () =>
+        {
+            while (!_catalogRefreshCancellation.IsCancellationRequested)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(1), _catalogRefreshCancellation.Token).ConfigureAwait(false);
+                    await RefreshAsync(_catalogRefreshCancellation.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (_catalogRefreshCancellation.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception) when (!_catalogRefreshCancellation.IsCancellationRequested)
+                {
+                    // A transient refresh failure should not permanently stop
+                    // the periodic catalog hydration loop.
+                }
+            }
+        });
     }
 
     private static List<RuntimeGame> BuildGames(
@@ -539,6 +601,36 @@ public sealed class LauncherRuntime : IAsyncDisposable
         }
 
         return games;
+    }
+
+    private async Task RecoverInstallationsAsync(CancellationToken cancellationToken)
+    {
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var installed in await _stateStore.GetInstalledGamesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!string.IsNullOrWhiteSpace(installed.InstallRoot)) roots.Add(Path.GetFullPath(installed.InstallRoot));
+        }
+
+        AddImmediateDirectories(_paths.GamesPath, roots);
+        if (!string.IsNullOrWhiteSpace(_settings.DefaultGameDirectory)) AddImmediateDirectories(_settings.DefaultGameDirectory, roots);
+        foreach (var root in roots) await Installer.RecoverAsync(root, _stateStore, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void AddImmediateDirectories(string root, HashSet<string> destinations)
+    {
+        try
+        {
+            if (!Directory.Exists(root)) return;
+            foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.TopDirectoryOnly)) destinations.Add(Path.GetFullPath(directory));
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private static long GetAvailableFreeSpace(string path)
+    {
+        var root = Path.GetPathRoot(Path.GetFullPath(path));
+        return string.IsNullOrWhiteSpace(root) ? long.MaxValue : new DriveInfo(root).AvailableFreeSpace;
     }
 
     private string BuildInstallRoot(RuntimeGame game)

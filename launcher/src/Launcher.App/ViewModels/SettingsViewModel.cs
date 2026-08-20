@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using Launcher.App.Runtime;
 using Launcher.Core;
 using Launcher.Networking;
+using Launcher.App;
 
 namespace Launcher.App.ViewModels;
 
@@ -275,6 +276,12 @@ public partial class SettingsViewModel : ObservableObject
         ApiBaseUrl = string.IsNullOrWhiteSpace(ApiBaseUrl)
             ? DefaultApiBaseUrl
             : ApiBaseUrl.Trim().TrimEnd('/');
+
+        if (!StartupRegistration.TrySetEnabled(LaunchOnStartup, out var startupError))
+        {
+            SaveStatus = $"Could not update startup setting: {startupError}";
+            return;
+        }
 
         try
         {

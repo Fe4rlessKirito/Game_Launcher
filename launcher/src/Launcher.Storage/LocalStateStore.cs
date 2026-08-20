@@ -42,6 +42,18 @@ public sealed class LocalStateStore(string databasePath)
                 updated_at TEXT NOT NULL,
                 last_error TEXT
             );
+            CREATE TABLE IF NOT EXISTS library_categories (
+                name TEXT PRIMARY KEY,
+                position INTEGER NOT NULL,
+                is_expanded INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS library_category_games (
+                category_name TEXT NOT NULL,
+                game_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY(category_name, game_id),
+                FOREIGN KEY(category_name) REFERENCES library_categories(name) ON DELETE CASCADE
+            );
             """;
         command.Parameters.AddWithValue("$applied_at", DateTimeOffset.UtcNow.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -97,6 +109,84 @@ public sealed class LocalStateStore(string databasePath)
         var result = new List<InstalledGame>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(new InstalledGame(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture)));
         return result;
+    }
+
+    public async Task<IReadOnlyList<LibraryCategoryState>> GetLibraryCategoriesAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT c.name, c.position, c.is_expanded, g.game_id
+            FROM library_categories c
+            LEFT JOIN library_category_games g ON g.category_name = c.name
+            ORDER BY c.position, g.position
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var categories = new Dictionary<string, (int Position, bool IsExpanded, List<string> GameIds)>(StringComparer.Ordinal);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var name = reader.GetString(0);
+            if (!categories.TryGetValue(name, out var category))
+            {
+                category = (reader.GetInt32(1), reader.GetInt32(2) != 0, []);
+            }
+
+            if (!reader.IsDBNull(3)) category.GameIds.Add(reader.GetString(3));
+            categories[name] = category;
+        }
+
+        return categories
+            .Select(category => new LibraryCategoryState(category.Key, category.Value.Position, category.Value.IsExpanded, category.Value.GameIds))
+            .OrderBy(category => category.Position)
+            .ToArray();
+    }
+
+    public async Task SaveLibraryCategoriesAsync(IReadOnlyList<LibraryCategoryState> categories, CancellationToken cancellationToken = default)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using (var clearGames = connection.CreateCommand())
+        {
+            clearGames.Transaction = transaction;
+            clearGames.CommandText = "DELETE FROM library_category_games";
+            await clearGames.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await using (var clearCategories = connection.CreateCommand())
+        {
+            clearCategories.Transaction = transaction;
+            clearCategories.CommandText = "DELETE FROM library_categories";
+            await clearCategories.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        foreach (var category in categories.Where(category => !string.IsNullOrWhiteSpace(category.Name)))
+        {
+            await using var categoryCommand = connection.CreateCommand();
+            categoryCommand.Transaction = transaction;
+            categoryCommand.CommandText = "INSERT INTO library_categories(name, position, is_expanded) VALUES($name, $position, $is_expanded)";
+            categoryCommand.Parameters.AddWithValue("$name", category.Name.Trim());
+            categoryCommand.Parameters.AddWithValue("$position", category.Position);
+            categoryCommand.Parameters.AddWithValue("$is_expanded", category.IsExpanded ? 1 : 0);
+            await categoryCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+            for (var index = 0; index < category.GameIds.Count; index++)
+            {
+                var gameId = category.GameIds[index];
+                if (string.IsNullOrWhiteSpace(gameId)) continue;
+                await using var gameCommand = connection.CreateCommand();
+                gameCommand.Transaction = transaction;
+                gameCommand.CommandText = "INSERT INTO library_category_games(category_name, game_id, position) VALUES($category_name, $game_id, $position)";
+                gameCommand.Parameters.AddWithValue("$category_name", category.Name.Trim());
+                gameCommand.Parameters.AddWithValue("$game_id", gameId);
+                gameCommand.Parameters.AddWithValue("$position", index);
+                await gameCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task SaveInstalledGameAsync(InstalledGame game, CancellationToken cancellationToken = default)

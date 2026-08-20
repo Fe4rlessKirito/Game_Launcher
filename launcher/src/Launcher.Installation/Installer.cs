@@ -71,6 +71,15 @@ public sealed class Installer(
         if (!string.Equals(previous.GameId, next.GameId, StringComparison.Ordinal)) throw new InvalidDataException("Cannot update different games in one installation.");
         PathGuard.EnsureSafeRoot(installationRoot);
         var root = Path.GetFullPath(installationRoot);
+        var oldFiles = previous.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
+        var newFiles = next.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
+        var requiredBytes = next.Files
+            .Where(file => !oldFiles.TryGetValue(file.Path, out var old) || old.Blake3 != file.Blake3)
+            .Sum(file => file.Size)
+            + previous.Files
+                .Where(file => !newFiles.TryGetValue(file.Path, out var nextFile) || nextFile.Blake3 != file.Blake3)
+                .Sum(file => file.Size);
+        EnsureCapacity(root, requiredBytes);
         var transactionId = Guid.NewGuid().ToString("N");
         var stageRoot = Path.Combine(Path.GetDirectoryName(root)!, $".launcher-update-{transactionId}.staging");
         var backupRoot = Path.Combine(Path.GetDirectoryName(root)!, $".launcher-update-{transactionId}.backup");
@@ -79,8 +88,6 @@ public sealed class Installer(
         Directory.CreateDirectory(backupRoot);
         var journal = NewJournal(transactionId, "update", next.GameId, previous.BuildId, next.BuildId, backupRoot);
         await WriteJournalAsync(journalPath, journal, cancellationToken).ConfigureAwait(false);
-        var oldFiles = previous.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
-        var newFiles = next.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
         var unchangedPaths = new HashSet<string>(StringComparer.Ordinal);
         long reusedInstalledBytes = 0;
         long reconstructedBytes = 0;
@@ -200,7 +207,10 @@ public sealed class Installer(
         await stateStore.RemoveInstalledGameAsync(installed.GameId, cancellationToken).ConfigureAwait(false);
     }
 
-    public static async Task RecoverAsync(string installationRoot, CancellationToken cancellationToken = default)
+    public static Task RecoverAsync(string installationRoot, CancellationToken cancellationToken = default) =>
+        RecoverAsync(installationRoot, (LocalStateStore)null!, cancellationToken);
+
+    public static async Task RecoverAsync(string installationRoot, LocalStateStore stateStore, CancellationToken cancellationToken = default)
     {
         if (!Directory.Exists(installationRoot)) return;
         PathGuard.EnsureSafeRoot(installationRoot);
@@ -210,7 +220,10 @@ public sealed class Installer(
             cancellationToken.ThrowIfCancellationRequested();
             TransactionJournal? journal = null;
             try { journal = JsonSerializer.Deserialize<TransactionJournal>(await File.ReadAllTextAsync(journalPath, cancellationToken).ConfigureAwait(false)); } catch (JsonException) { }
-            if (journal is not null && journal.State != "committed") RestoreTransaction(root, journal);
+            var databaseCommitted = journal is not null
+                && stateStore is not null
+                && await IsDatabaseCommittedAsync(stateStore, root, journal, cancellationToken).ConfigureAwait(false);
+            if (journal is not null && journal.State != "committed" && !databaseCommitted) RestoreTransaction(root, journal);
             if (journal is not null && Directory.Exists(journal.BackupRoot)) Directory.Delete(journal.BackupRoot, true);
             File.Delete(journalPath);
         }
@@ -234,6 +247,15 @@ public sealed class Installer(
             }
         }
         await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    private static async Task<bool> IsDatabaseCommittedAsync(LocalStateStore stateStore, string root, TransactionJournal journal, CancellationToken cancellationToken)
+    {
+        var installed = await stateStore.GetInstalledGamesAsync(cancellationToken).ConfigureAwait(false);
+        return installed.Any(game =>
+            string.Equals(game.GameId, journal.GameId, StringComparison.Ordinal)
+            && string.Equals(game.BuildId, journal.NewBuildId, StringComparison.Ordinal)
+            && string.Equals(Path.GetFullPath(game.InstallRoot), root, StringComparison.OrdinalIgnoreCase));
     }
 
     public static Process Launch(Manifest manifest, string installationRoot)

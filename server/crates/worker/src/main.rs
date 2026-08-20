@@ -666,7 +666,28 @@ async fn main() -> Result<()> {
             }
             let mut progress = IngestionProgress::new();
             println!("stage={:?}", progress.state);
+            if let Some(storage_root) = env::var_os("LAUNCHER_STORAGE_ROOT") {
+                match staging_cleanup::cleanup_stale_incomplete(&PathBuf::from(storage_root)) {
+                    Ok(removed) if removed > 0 => {
+                        println!("staging_cleanup=INCOMPLETE_REMOVED count={removed}");
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("staging_cleanup=INCOMPLETE_FAILED error={error:#}");
+                    }
+                }
+            }
             std::fs::create_dir_all(&output)?;
+            let staging_storage_root = env::var_os("LAUNCHER_STORAGE_ROOT").map(PathBuf::from);
+            let package_marked_in_progress = if staging_cleanup::enabled() {
+                let storage_root = staging_storage_root
+                    .as_deref()
+                    .context("LAUNCHER_STORAGE_ROOT is required when staging cleanup is enabled")?;
+                staging_cleanup::mark_in_progress(&output, storage_root)?;
+                true
+            } else {
+                false
+            };
             let normalized = normalize_input(&input, &NormalizationLimits::from_env()?)?;
             if let Some(telemetry) = &telemetry {
                 telemetry.update(
@@ -735,6 +756,12 @@ async fn main() -> Result<()> {
                         ..PackageOptions::default()
                     },
                 )?;
+                if package_marked_in_progress {
+                    let storage_root = staging_storage_root.as_deref().expect(
+                        "staging storage root is present when package is marked in progress",
+                    );
+                    staging_cleanup::clear_in_progress(&output, storage_root)?;
+                }
                 progress.advance(BuildState::Packaged)?;
                 progress.advance(BuildState::Uploaded)?;
                 progress.advance(BuildState::Verified)?;
@@ -2975,6 +3002,7 @@ struct WorkTelemetry {
 }
 
 impl WorkTelemetry {
+    #[allow(clippy::too_many_arguments)]
     fn update(
         &self,
         state: &str,
@@ -3026,10 +3054,10 @@ impl WorkStatusGuard {
 
 impl Drop for WorkStatusGuard {
     fn drop(&mut self) {
-        if !self.preserve {
-            if let Some(store) = &self.store {
-                remove_work_status(store, &self.id);
-            }
+        if !self.preserve
+            && let Some(store) = &self.store
+        {
+            remove_work_status(store, &self.id);
         }
     }
 }
@@ -3125,11 +3153,19 @@ async fn renew_hot_pack_location(
                 target_provider.provider_id()
             )
         })?;
+    read_verified_pack_with_retry(&target_provider, &location.pack_hash)
+        .await
+        .with_context(|| {
+            format!(
+                "renewed HOT physical pack {} could not be read back and verified",
+                location.pack_hash
+            )
+        })?;
     let runtime_location = target_provider
         .download_pack_location(&location.pack_hash)
         .await
         .context("renewed HOT pack did not produce a direct download location")?;
-    if runtime_location.url.is_empty() {
+    if runtime_location.url.trim().is_empty() {
         anyhow::bail!("renewed HOT pack returned an empty direct download location");
     }
     let hot_pool = storage
@@ -3286,12 +3322,10 @@ async fn process_pack_restore_job(
     let location = hot_provider
         .download_pack_location(&job.pack_hash)
         .await
-        .ok();
-    let direct_url = location
-        .as_ref()
-        .map(|value| value.url.clone())
-        .unwrap_or_default();
-    let expires_at = location.and_then(|value| value.expires_at);
+        .context("restored HOT physical pack did not produce a direct download location")?;
+    if location.url.trim().is_empty() {
+        anyhow::bail!("restored HOT physical pack returned an empty direct download location");
+    }
     database
         .add_pack_location(
             &job.pack_hash,
@@ -3300,9 +3334,9 @@ async fn process_pack_restore_job(
             &hot_pool.failure_domain,
             StorageTier::Hot,
             &object_key,
-            &direct_url,
+            &location.url,
             hot_pool.priority,
-            expires_at,
+            location.expires_at,
         )
         .await?;
     println!(
@@ -3944,12 +3978,37 @@ async fn publish_physical_packs(
                         provider.provider_id()
                     )
                 })?;
-            let location = provider.download_pack_location(pack_hash).await.ok();
-            let direct_url = location
-                .as_ref()
-                .map(|value| value.url.clone())
-                .unwrap_or_default();
-            let expires_at = location.and_then(|value| value.expires_at);
+            read_verified_pack_with_retry(&provider, pack_hash)
+                .await
+                .with_context(|| {
+                    format!(
+                        "uploaded physical pack {pack_hash} could not be read back and verified from {}",
+                        provider.provider_id()
+                    )
+                })?;
+            let (direct_url, expires_at) = if action.tier == StorageClass::Hot {
+                let location = provider
+                    .download_pack_location(pack_hash)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "HOT provider {} did not produce a direct download location for pack {pack_hash}",
+                            provider.provider_id()
+                        )
+                    })?;
+                if location.url.trim().is_empty() {
+                    anyhow::bail!(
+                        "HOT provider {} returned an empty direct download location for pack {pack_hash}",
+                        provider.provider_id()
+                    );
+                }
+                (location.url, location.expires_at)
+            } else {
+                match provider.download_pack_location(pack_hash).await {
+                    Ok(location) => (location.url, location.expires_at),
+                    Err(_) => (String::new(), None),
+                }
+            };
             database
                 .add_pack_location(
                     pack_hash,

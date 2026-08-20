@@ -131,6 +131,22 @@ pub fn package_directory(
         anyhow::bail!("input is not a directory: {}", input.display());
     }
     let output = output.as_ref();
+    // A package directory is a disposable build artifact. Remove generated
+    // state from an earlier attempt before writing this build so stale packs,
+    // chunks, indexes, or reports can never be published with the new
+    // manifest. Leave operator metadata files untouched.
+    for generated_directory in ["chunks", "packs"] {
+        let path = output.join(generated_directory);
+        if path.exists() {
+            fs::remove_dir_all(path)?;
+        }
+    }
+    for generated_file in ["manifest.json", "pack-index.json", "report.json"] {
+        let path = output.join(generated_file);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+    }
     fs::create_dir_all(output.join("chunks/encoded"))?;
 
     let mut files = Vec::new();
@@ -514,6 +530,60 @@ mod tests {
         let reader = launcher_packs::PackReader::parse(&bytes).unwrap();
         reader.verify_pack_hash(&hash).unwrap();
         assert_eq!(reader.entries().len(), report.unique_chunks as usize);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repackaging_clears_stale_physical_packs_and_indexes() {
+        let root =
+            std::env::temp_dir().join(format!("launcher-package-repack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let input = root.join("input");
+        let output = root.join("output");
+        fs::create_dir_all(&input).unwrap();
+        fs::write(input.join("game.exe"), seeded_bytes(128 * 1024)).unwrap();
+        let options = PackageOptions {
+            game_id: "game".into(),
+            build_id: "build-a".into(),
+            display_version: "A".into(),
+            executable: Some("game.exe".into()),
+            chunking: test_config(),
+            pack_config: Some(launcher_packs::PackConfig {
+                target_bytes: 1024 * 1024,
+                min_bytes: 1,
+                max_bytes: 2 * 1024 * 1024,
+            }),
+            ..PackageOptions::default()
+        };
+        let first = package_directory(&input, &output, &options).unwrap();
+        let first_packs = fs::read_dir(output.join("packs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(first.packs, 1);
+
+        let mut replacement = seeded_bytes(128 * 1024);
+        replacement[0] ^= 0xFF;
+        fs::write(input.join("game.exe"), replacement).unwrap();
+        let second = package_directory(
+            &input,
+            &output,
+            &PackageOptions {
+                build_id: "build-b".into(),
+                display_version: "B".into(),
+                ..options
+            },
+        )
+        .unwrap();
+        let second_packs = fs::read_dir(output.join("packs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(second.packs as usize, second_packs.len());
+        assert!(first_packs.iter().any(|path| !path.exists()));
+        let index: Vec<serde_json::Value> =
+            serde_json::from_slice(&fs::read(output.join("pack-index.json")).unwrap()).unwrap();
+        assert_eq!(index.len(), second.packs as usize);
         let _ = fs::remove_dir_all(root);
     }
 

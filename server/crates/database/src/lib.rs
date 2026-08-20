@@ -802,6 +802,11 @@ impl Database {
         priority: i32,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<(), DatabaseError> {
+        if storage_class == StorageClass::Hot && direct_url.trim().is_empty() {
+            return Err(DatabaseError::Manifest(format!(
+                "HOT physical pack location for {pack_hash} has no direct URL"
+            )));
+        }
         sqlx::query(
             "INSERT INTO pack_locations(
                 pack_hash, provider, pool_id, failure_domain, storage_class,
@@ -845,6 +850,7 @@ impl Database {
                AND pp.state='VERIFIED'
                AND pp.verified_at IS NOT NULL
                AND pl.storage_class='HOT'
+               AND NULLIF(BTRIM(pl.direct_url), '') IS NOT NULL
                AND pl.verified_at IS NOT NULL
              ORDER BY pp.pack_hash, pl.priority, pl.provider, pl.direct_url, pc.encoded_hash",
         )
@@ -1153,6 +1159,7 @@ impl Database {
                   AND pp.state='VERIFIED'
                   AND pp.verified_at IS NOT NULL
                   AND pl.verified_at IS NOT NULL
+                  AND (pl.storage_class <> 'HOT' OR NULLIF(BTRIM(pl.direct_url), '') IS NOT NULL)
             )
             SELECT COUNT(*) AS missing
             FROM build_packs bp
@@ -1680,6 +1687,7 @@ impl Database {
              WHERE provider=$1
                AND storage_class='HOT'
                AND verified_at IS NOT NULL
+               AND NULLIF(BTRIM(direct_url), '') IS NOT NULL
                AND last_uploaded_at <= $2
                AND renewal_attempt_after <= now()
              ORDER BY last_uploaded_at, pack_hash

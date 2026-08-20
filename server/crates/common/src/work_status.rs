@@ -144,7 +144,7 @@ impl WorkStatusStore {
                 statuses.push(status);
             }
         }
-        statuses.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
+        statuses.sort_by_key(|status| status.updated_at);
         Ok(statuses)
     }
 
