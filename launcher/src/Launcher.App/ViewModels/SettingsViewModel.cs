@@ -267,6 +267,7 @@ public partial class SettingsViewModel : ObservableObject
     private void Save()
     {
         ConcurrentDownloads = Math.Clamp(ConcurrentDownloads, 1, 32);
+        CacheSizeGigabytes = Math.Clamp(CacheSizeGigabytes, 1, 256);
         DownloadDirectory = string.IsNullOrWhiteSpace(DownloadDirectory)
             ? @"C:\Games\Launcher\Downloads"
             : DownloadDirectory.Trim();
@@ -329,6 +330,8 @@ public partial class SettingsViewModel : ObservableObject
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
         ProfileImagePath = string.Empty;
+        _trustedManifestKeysPem = null;
+        _requireTrustedManifestKeys = false;
         SaveStatus = "Defaults restored. Save to keep them.";
     }
 
@@ -438,6 +441,10 @@ public partial class SettingsViewModel : ObservableObject
         {
             SaveStatus = "Using default settings.";
         }
+        catch (UnauthorizedAccessException)
+        {
+            SaveStatus = "Using default settings.";
+        }
     }
 
     partial void OnProfileImagePathChanged(string value)
@@ -458,6 +465,10 @@ public partial class SettingsViewModel : ObservableObject
             SaveStatus = "That profile picture could not be loaded.";
         }
         catch (IOException)
+        {
+            SaveStatus = "That profile picture could not be loaded.";
+        }
+        catch (UnauthorizedAccessException)
         {
             SaveStatus = "That profile picture could not be loaded.";
         }

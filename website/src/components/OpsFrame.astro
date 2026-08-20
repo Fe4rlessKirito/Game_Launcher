@@ -68,7 +68,12 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
       });
     };
     const renderActiveWork = (items: PublicWorkStatus[]) => {
-      const current = items[items.length - 1];
+      const current = items.reduce<PublicWorkStatus | undefined>((latest, item) => {
+        if (!latest) return item;
+        const latestTime = latest.updated_at ? Date.parse(latest.updated_at) : Number.NEGATIVE_INFINITY;
+        const itemTime = item.updated_at ? Date.parse(item.updated_at) : Number.NEGATIVE_INFINITY;
+        return Number.isFinite(itemTime) && (!Number.isFinite(latestTime) || itemTime > latestTime) ? item : latest;
+      }, undefined);
       if (!current) {
         text('#live-work-kind', 'Standing by'); text('#live-work-game', 'Queue clear'); text('#live-work-version', ''); text('#live-work-state', 'No active operation'); text('#live-work-detail', 'Waiting for the next authorized operation.'); text('#live-work-provider', ''); text('#live-work-source', ''); text('#live-work-count', 'clear'); text('#public-work-signal', 'Clear');
         const icon = document.querySelector<HTMLElement>('#live-work-icon'); if (icon) { icon.className = 'job-icon job-scraper'; icon.textContent = '↓'; }
@@ -97,10 +102,11 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
       } else if (progressWrap) progressWrap.hidden = true;
     };
     const formatBytes = (value: number) => { if (!Number.isFinite(value) || value <= 0) return '0 B'; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value < 1024 ** 4) return `${(value / 1024 ** 3).toFixed(2)} GB`; return `${(value / 1024 ** 4).toFixed(2)} TB`; };
-    const setBar = (selector: string, percent?: number) => { const bar = document.querySelector<HTMLElement>(selector); if (bar) bar.style.width = percent == null ? '0%' : `${Math.max(0, Math.min(100, percent))}%`; };
+    const setBar = (selector: string, percent?: number) => { const bar = document.querySelector<HTMLElement>(selector); if (bar) bar.style.width = percent == null || !Number.isFinite(percent) ? '0%' : `${Math.max(0, Math.min(100, percent))}%`; };
     const clearTelemetry = () => {
       ['#latency-value', '#last-probe', '#active-work', '#total-used', '#system-cpu-value', '#system-memory-value', '#system-disk-value'].forEach((selector) => text(selector, '—'));
       ['#latency-state', '#api-state', '#database-state', '#system-status', '#cluster-status', '#sidebar-health', '#hot-health', '#cold-health'].forEach((selector) => text(selector, 'Unavailable'));
+      text('#live-label', 'Unavailable');
       ['#system-detail', '#sidebar-sync', '#footer-sync', '#activity-note', '#storage-updated', '#activity-updated'].forEach((selector) => text(selector, 'Latest telemetry unavailable'));
       text('#queue-count', '—'); text('#work-state', 'Unavailable'); text('#coverage-value', '—'); text('#coverage-state', 'Unavailable'); text('#public-api-signal', 'Unavailable'); text('#public-provider-signal', 'Unavailable'); text('#public-restore-signal', 'Unavailable'); text('#public-snapshot', '—'); text('#snapshot-age', 'Unavailable');
       setBar('#system-cpu-bar'); setBar('#system-memory-bar'); setBar('#system-disk-bar');
@@ -117,7 +123,10 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
       });
     };
 
+    let refreshInFlight = false;
     async function refreshTelemetry() {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
       try {
         const publicResponse = await fetch(`${apiBase.replace(/\/$/, '')}/api/v1/public/status`, { cache: 'no-store' });
         if (!publicResponse.ok) throw new Error(`Public status returned ${publicResponse.status}`);
@@ -128,18 +137,27 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
         const healthyProviders = publicStatus.providers.filter((provider) => provider.healthy).length;
         const pending = publicStatus.pending_restores || 0;
         const activeWork = publicStatus.active_work || [];
-        const activeWorkCount = activeWork.length || pending;
+        const activeWorkCount = activeWork.length;
         const activeMetricCount = opsPage === 'storage' || opsPage === 'providers' ? pending : activeWorkCount;
         const workMetricState = opsPage === 'storage' || opsPage === 'providers'
           ? (pending ? 'Restore queue active' : 'No restore jobs')
           : (activeWorkCount ? `${activeWorkCount} active operation${activeWorkCount === 1 ? '' : 's'}` : 'No active operations');
         renderActiveWork(activeWork);
-        const operational = publicStatus.status === 'operational'; const healthLabel = publicStatus.stale ? 'Stale' : operational ? 'Operational' : 'Degraded'; text('#live-label', healthLabel); text('#system-status', healthLabel); text('#system-detail', publicStatus.stale ? `Stale snapshot · last probe ${observed}` : `Updated ${now}`); text('#api-state', publicStatus.stale ? 'Stale' : 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#cluster-status', healthLabel); text('#sidebar-health', healthLabel); text('#sidebar-sync', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#footer-sync', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#latency-state', publicStatus.stale ? 'Stale snapshot' : 'Healthy response'); text('#active-work', `${activeMetricCount}`); text('#queue-count', activeWorkCount ? `${activeWorkCount} active` : pending ? `${pending} queued` : 'clear'); text('#work-state', workMetricState); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Provider health'); text('#activity-note', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', observed); text('#snapshot-age', publicStatus.stale ? 'Stale snapshot' : 'Updated just now');
+        const queueLabel = activeWorkCount && pending
+          ? `${activeWorkCount} active · ${pending} queued`
+          : activeWorkCount
+            ? `${activeWorkCount} active`
+            : pending
+              ? `${pending} queued`
+              : 'clear';
+        const operational = publicStatus.status === 'operational'; const healthLabel = publicStatus.stale ? 'Stale' : operational ? 'Operational' : 'Degraded'; text('#live-label', healthLabel); text('#system-status', healthLabel); text('#system-detail', publicStatus.stale ? `Stale snapshot · last probe ${observed}` : `Updated ${now}`); text('#api-state', publicStatus.stale ? 'Stale' : 'Online'); text('#database-state', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#cluster-status', healthLabel); text('#sidebar-health', healthLabel); text('#sidebar-sync', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#footer-sync', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#latency-state', publicStatus.stale ? 'Stale snapshot' : 'Healthy response'); text('#active-work', `${activeMetricCount}`); text('#queue-count', queueLabel); text('#work-state', workMetricState); text('#coverage-value', `${healthyProviders}/${publicStatus.providers.length || 0}`); text('#coverage-state', 'Provider health'); text('#activity-note', publicStatus.stale ? `Last probe ${observed}` : `Updated ${now}`); text('#public-api-signal', publicStatus.database_ready ? 'Ready' : 'Degraded'); text('#public-provider-signal', `${healthyProviders}/${publicStatus.providers.length || 0} healthy`); text('#public-restore-signal', pending ? `${pending} queued` : 'Clear'); text('#public-snapshot', observed); text('#snapshot-age', publicStatus.stale ? 'Stale snapshot' : 'Updated just now');
         document.querySelector('#system-orb')?.classList.add('orb-online');
 
         const usageByProvider = new Map<string, number>();
         publicStatus.usage.forEach((account) => { const normalized = account.provider.toLowerCase(); const key = ['filemirage', 'telegram', 'buzzheavier'].find((candidate) => normalized.includes(candidate)); if (key) usageByProvider.set(key, (usageByProvider.get(key) || 0) + (account.used_bytes || 0)); });
-        const totalUsed = publicStatus.total_used_bytes || [...usageByProvider.values()].reduce((sum, value) => sum + value, 0);
+        const totalUsed = Number.isFinite(publicStatus.total_used_bytes) && publicStatus.total_used_bytes >= 0
+          ? publicStatus.total_used_bytes
+          : [...usageByProvider.values()].reduce((sum, value) => sum + value, 0);
         text('#total-used', formatBytes(totalUsed)); text('#storage-updated', 'just now'); text('#activity-updated', `Updated ${now}`);
         const system = publicStatus.system;
         const cpu = system?.cpu_usage_percent;
@@ -154,11 +172,12 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
           } else {
             const fragment = document.createDocumentFragment();
             coreUsage.forEach((value, index) => {
+              const safeValue = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
               const row = document.createElement('div'); row.className = 'core-row';
               const label = document.createElement('span'); label.className = 'core-label'; label.textContent = `Core ${index + 1}`;
               const track = document.createElement('span'); track.className = 'core-track';
-              const fill = document.createElement('span'); fill.style.width = `${Math.max(0, Math.min(100, value))}%`; track.append(fill);
-              const reading = document.createElement('strong'); reading.textContent = `${value.toFixed(1)}%`;
+              const fill = document.createElement('span'); fill.style.width = `${safeValue}%`; track.append(fill);
+              const reading = document.createElement('strong'); reading.textContent = Number.isFinite(value) ? `${safeValue.toFixed(1)}%` : '—';
               row.append(label, track, reading); fragment.append(row);
             });
             coreList.replaceChildren(fragment);
@@ -176,6 +195,8 @@ const navigation: Array<{ key: PageKey; label: string; icon: PageKey; href: stri
         document.querySelectorAll<HTMLElement>('.job-row').forEach((row) => { const jobState = row.querySelector<HTMLElement>('.job-state'); if (jobState) jobState.textContent = row.dataset.job === 'restore' ? (pending ? `${pending} queued` : 'Queue clear') : 'Standing by'; });
       } catch (error) {
         clearTelemetry();
+      } finally {
+        refreshInFlight = false;
       }
     }
 

@@ -43,6 +43,22 @@ public sealed class PhysicalPackReader
 
     public static PhysicalPackReader Parse(byte[] bytes, string? expectedPackHash = null)
     {
+        try
+        {
+            return ParseCore(bytes, expectedPackHash);
+        }
+        catch (OverflowException error)
+        {
+            throw new InvalidDataException("Pack numeric fields overflowed.", error);
+        }
+        catch (ArgumentOutOfRangeException error)
+        {
+            throw new InvalidDataException("Pack bounds are invalid.", error);
+        }
+    }
+
+    private static PhysicalPackReader ParseCore(byte[] bytes, string? expectedPackHash = null)
+    {
         ArgumentNullException.ThrowIfNull(bytes);
         if (bytes.Length < HeaderSize + FooterSize) throw new InvalidDataException("Pack is truncated.");
         if ((ulong)bytes.Length > MaxPackBytes) throw new InvalidDataException("Pack exceeds the format size limit.");

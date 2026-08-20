@@ -208,7 +208,7 @@
             </ItemsControl>
             <Border IsVisible="{Binding IsAddingGame}" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="4" Padding="4" Margin="7,8,7,0">
               <Grid ColumnDefinitions="*,Auto,Auto" RowDefinitions="Auto,Auto">
-                <TextBox Text="{Binding NewGameName}" PlaceholderText="Game name" Classes="CategoryInput" KeyDown="OnAddGameInputKeyDown" />
+                <TextBox Text="{Binding NewGameName}" PlaceholderText="Catalog game name" Classes="CategoryInput" KeyDown="OnAddGameInputKeyDown" />
                 <Button Grid.Column="1" Content="OK" Classes="CategoryAction" Command="{Binding CommitAddGameCommand}" />
                 <Button Grid.Column="2" Content="&#x00D7;" Classes="CategoryAction" Command="{Binding CancelAddGameCommand}" />
                 <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding GameError}" Classes="Caption" Foreground="#E06C75" Margin="6,4,4,1" />

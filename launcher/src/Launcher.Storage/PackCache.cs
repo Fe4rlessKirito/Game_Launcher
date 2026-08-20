@@ -9,6 +9,7 @@ namespace Launcher.Storage;
 public sealed class PackCache(string root, long maxBytes)
 {
     private readonly string _root = Path.GetFullPath(root);
+    private readonly long _maxBytes = maxBytes >= 0 ? maxBytes : throw new ArgumentOutOfRangeException(nameof(maxBytes));
     private readonly object _gate = new();
     private readonly Dictionary<string, CacheEntry> _entries = new(StringComparer.Ordinal);
     private readonly HashSet<string> _pinned = new(StringComparer.Ordinal);
@@ -55,8 +56,16 @@ public sealed class PackCache(string root, long maxBytes)
         Directory.CreateDirectory(_root);
         var path = GetPath(packHash);
         var temporary = path + $".{Guid.NewGuid():N}.part";
-        await File.WriteAllBytesAsync(temporary, bytes.ToArray(), cancellationToken).ConfigureAwait(false);
-        File.Move(temporary, path, true);
+        try
+        {
+            await File.WriteAllBytesAsync(temporary, bytes.ToArray(), cancellationToken).ConfigureAwait(false);
+            File.Move(temporary, path, true);
+        }
+        catch
+        {
+            try { if (File.Exists(temporary)) File.Delete(temporary); } catch (IOException) { }
+            throw;
+        }
         lock (_gate)
         {
             if (_entries.TryGetValue(packHash, out var existing)) _currentBytes -= existing.Size;
@@ -78,7 +87,7 @@ public sealed class PackCache(string root, long maxBytes)
         while (true)
         {
             string? candidate;
-            lock (_gate) candidate = _currentBytes <= maxBytes ? null : _entries.Where(pair => !_pinned.Contains(pair.Key)).OrderBy(pair => pair.Value.LastAccess).Select(pair => pair.Key).FirstOrDefault();
+            lock (_gate) candidate = _currentBytes <= _maxBytes ? null : _entries.Where(pair => !_pinned.Contains(pair.Key)).OrderBy(pair => pair.Value.LastAccess).Select(pair => pair.Key).FirstOrDefault();
             if (candidate is null) return;
             cancellationToken.ThrowIfCancellationRequested();
             await DeleteAsync(candidate).ConfigureAwait(false);

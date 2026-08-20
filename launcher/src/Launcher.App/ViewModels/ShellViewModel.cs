@@ -355,7 +355,7 @@ public partial class ShellViewModel : ObservableObject
             {
                 await runtime.SaveLibraryCategoriesAsync(state).ConfigureAwait(false);
             }
-            catch (Exception error) when (error is IOException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
             {
                 Dispatcher.UIThread.Post(() => RuntimeError = $"Could not save library categories: {error.Message}");
             }
@@ -636,7 +636,18 @@ public partial class ShellViewModel : ObservableObject
             return;
         }
 
-        if (SidebarGames.Any(game => string.Equals(game.Title, name, StringComparison.OrdinalIgnoreCase)))
+        var runtimeGame = _runtimeGames.FirstOrDefault(game =>
+            string.Equals(game.Title, name, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(game.Id, name, StringComparison.OrdinalIgnoreCase));
+        if (runtimeGame is null)
+        {
+            GameError = _runtime is null
+                ? "Connect to the catalog before adding a game."
+                : "Choose a game from the catalog.";
+            return;
+        }
+
+        if (SidebarGames.Any(game => string.Equals(game.OpenKey, runtimeGame.Id, StringComparison.OrdinalIgnoreCase)))
         {
             GameError = "That game is already in your library.";
             return;
@@ -644,8 +655,9 @@ public partial class ShellViewModel : ObservableObject
 
         var uncategorized = FindSystemCategory(UncategorizedCategoryName)
             ?? SidebarCategories.First();
-        uncategorized.Games.Add(new SidebarGame(name, BuildMonogram(name), "Not installed"));
+        uncategorized.Games.Add(CreateSidebarGame(runtimeGame));
         uncategorized.ApplyFilter(SearchQuery, readyToPlayOnly: ShowOnlyReadyToPlay);
+        QueueCategoryPersistence();
         OnPropertyChanged(nameof(SidebarGames));
         OnPropertyChanged(nameof(GamesFilterLabel));
         CancelAddGame();
@@ -653,7 +665,7 @@ public partial class ShellViewModel : ObservableObject
 
     public void AddGameToCategory(SidebarGame game, SidebarCategory category)
     {
-        if (!IsMovableCategory(category))
+        if (!IsMovableCategory(category) || !CanMoveGameToCategory(game.OpenKey, category))
         {
             return;
         }
@@ -772,7 +784,7 @@ public partial class ShellViewModel : ObservableObject
         {
             await _runtime.RemoveFromLibraryAsync(gameId).ConfigureAwait(true);
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException or Microsoft.Data.Sqlite.SqliteException)
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException or Microsoft.Data.Sqlite.SqliteException)
         {
             _excludedGameIds.Remove(gameId);
             foreach (var entry in removedSidebarGames)

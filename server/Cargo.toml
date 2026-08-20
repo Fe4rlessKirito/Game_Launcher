@@ -53,6 +53,7 @@ tower-http = { version = "0.6.6", features = ["cors", "limit", "trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt"] }
 uuid = { version = "1.18.0", features = ["v4", "serde"] }
+unicode-normalization = "0.1.25"
 walkdir = "2.5.0"
 unrar = "0.5.8"
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }

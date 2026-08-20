@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use unicode_normalization::UnicodeNormalization;
 
 pub mod work_status;
 
@@ -106,6 +107,8 @@ pub enum ManifestValidationError {
     Chunking(String),
     #[error("invalid encoding configuration")]
     Encoding,
+    #[error("manifest identity fields are required")]
+    Identity,
     #[error("invalid manifest path: {0}")]
     Path(String),
     #[error("duplicate manifest path: {0}")]
@@ -114,14 +117,27 @@ pub enum ManifestValidationError {
     Hash { field: &'static str, value: String },
     #[error("file size does not equal sum of chunks for {path}")]
     FileSize { path: String },
+    #[error("invalid chunk size in {path}")]
+    ChunkSize { path: String },
+    #[error("conflicting duplicate chunk metadata: {hash}")]
+    ConflictingChunk { hash: String },
     #[error("launch executable must be an owned file path")]
     LaunchExecutable,
+    #[error("launch working directory is invalid")]
+    LaunchWorkingDirectory,
 }
 
 impl Manifest {
     pub fn validate(&self) -> Result<(), ManifestValidationError> {
         if self.schema_version != MANIFEST_SCHEMA_VERSION {
             return Err(ManifestValidationError::SchemaVersion(self.schema_version));
+        }
+        if self.manifest_id.trim().is_empty()
+            || self.game_id.trim().is_empty()
+            || self.build_id.trim().is_empty()
+            || self.display_version.trim().is_empty()
+        {
+            return Err(ManifestValidationError::Identity);
         }
         let c = &self.chunking;
         if c.algorithm != "fastcdc"
@@ -140,6 +156,7 @@ impl Manifest {
         }
 
         let mut paths = std::collections::BTreeSet::new();
+        let mut chunks_by_encoded_hash = std::collections::BTreeMap::new();
         for file in &self.files {
             let normalized = normalize_manifest_path(&file.path)?;
             if normalized != file.path {
@@ -149,18 +166,40 @@ impl Manifest {
                 return Err(ManifestValidationError::DuplicatePath(file.path.clone()));
             }
             validate_hash("file", &file.blake3)?;
-            let chunk_size: u64 = file.chunks.iter().map(|chunk| chunk.raw_size).sum();
+            let chunk_size = file
+                .chunks
+                .iter()
+                .try_fold(0_u64, |total, chunk| total.checked_add(chunk.raw_size));
+            let Some(chunk_size) = chunk_size else {
+                return Err(ManifestValidationError::FileSize {
+                    path: file.path.clone(),
+                });
+            };
             if chunk_size != file.size {
                 return Err(ManifestValidationError::FileSize {
                     path: file.path.clone(),
                 });
             }
             for chunk in &file.chunks {
+                if chunk.raw_size == 0 || chunk.encoded_size == 0 {
+                    return Err(ManifestValidationError::ChunkSize {
+                        path: file.path.clone(),
+                    });
+                }
                 validate_hash("raw", &chunk.raw_hash)?;
                 validate_hash("encoded", &chunk.encoded_hash)?;
                 let expected_key = format!("chunks/encoded/{}.bin", chunk.encoded_hash);
                 if chunk.object_key != expected_key {
                     return Err(ManifestValidationError::Path(chunk.object_key.clone()));
+                }
+                if let Some(existing) = chunks_by_encoded_hash.get(&chunk.encoded_hash) {
+                    if *existing != chunk {
+                        return Err(ManifestValidationError::ConflictingChunk {
+                            hash: chunk.encoded_hash.clone(),
+                        });
+                    }
+                } else {
+                    chunks_by_encoded_hash.insert(chunk.encoded_hash.clone(), chunk);
                 }
             }
         }
@@ -172,6 +211,13 @@ impl Manifest {
         if !self.files.iter().any(|file| file.path == executable) {
             return Err(ManifestValidationError::LaunchExecutable);
         }
+        if self.launch.working_directory != "." {
+            let working_directory = normalize_manifest_path(&self.launch.working_directory)
+                .map_err(|_| ManifestValidationError::LaunchWorkingDirectory)?;
+            if working_directory != self.launch.working_directory {
+                return Err(ManifestValidationError::LaunchWorkingDirectory);
+            }
+        }
         Ok(())
     }
 }
@@ -180,14 +226,38 @@ pub fn normalize_manifest_path(path: &str) -> Result<String, ManifestValidationE
     if path.is_empty() || path.contains('\\') || path.starts_with('/') || path.contains(':') {
         return Err(ManifestValidationError::Path(path.to_owned()));
     }
+    if path.nfc().collect::<String>() != path {
+        return Err(ManifestValidationError::Path(path.to_owned()));
+    }
     let mut parts = Vec::new();
     for part in path.split('/') {
         if part.is_empty() || part == "." || part == ".." {
             return Err(ManifestValidationError::Path(path.to_owned()));
         }
+        if part.chars().any(|character| character <= '\u{001f}')
+            || part.ends_with(' ')
+            || part.ends_with('.')
+            || is_reserved_windows_name(part)
+        {
+            return Err(ManifestValidationError::Path(path.to_owned()));
+        }
         parts.push(part);
     }
     Ok(parts.join("/"))
+}
+
+fn is_reserved_windows_name(part: &str) -> bool {
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] >= b'1'
+            && stem.as_bytes()[3] <= b'9')
 }
 
 fn validate_hash(field: &'static str, value: &str) -> Result<(), ManifestValidationError> {
@@ -290,6 +360,9 @@ mod tests {
             "C:/windows.txt",
             "a\\b.txt",
             "a/../b",
+            "CON/file.bin",
+            "folder/trailing. ",
+            "folder/control\u{001f}.bin",
         ] {
             assert!(normalize_manifest_path(path).is_err(), "{path}");
         }
@@ -301,5 +374,60 @@ mod tests {
             normalize_manifest_path("Game/Binaries/Game.exe").unwrap(),
             "Game/Binaries/Game.exe"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_chunk_metadata_and_working_directory() {
+        let raw_hash = "a".repeat(64);
+        let encoded_hash = "b".repeat(64);
+        let chunk = ChunkRef {
+            raw_hash: raw_hash.clone(),
+            raw_size: 1,
+            encoded_hash: encoded_hash.clone(),
+            encoded_size: 1,
+            object_key: format!("chunks/encoded/{encoded_hash}.bin"),
+        };
+        let manifest = || Manifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            manifest_id: "manifest".to_owned(),
+            game_id: "game".to_owned(),
+            build_id: "build".to_owned(),
+            display_version: "A".to_owned(),
+            generated_at: Utc::now(),
+            chunking: ChunkingConfig::default(),
+            encoding: EncodingConfig::default(),
+            files: vec![FileRecipe {
+                path: "game.exe".to_owned(),
+                size: 1,
+                blake3: raw_hash.clone(),
+                chunks: vec![chunk.clone()],
+            }],
+            launch: LaunchProfile {
+                executable: "game.exe".to_owned(),
+                working_directory: ".".to_owned(),
+                arguments: vec![],
+                environment: std::collections::BTreeMap::new(),
+            },
+        };
+
+        let mut zero_sized = manifest();
+        zero_sized.files[0].chunks[0].raw_size = 0;
+        zero_sized.files[0].size = 0;
+        assert!(zero_sized.validate().is_err());
+
+        let mut conflicting = manifest();
+        conflicting.files[0].size = 2;
+        conflicting.files[0].chunks.push(ChunkRef {
+            raw_hash: "c".repeat(64),
+            raw_size: 1,
+            encoded_hash: chunk.encoded_hash.clone(),
+            encoded_size: chunk.encoded_size,
+            object_key: chunk.object_key.clone(),
+        });
+        assert!(conflicting.validate().is_err());
+
+        let mut invalid_working_directory = manifest();
+        invalid_working_directory.launch.working_directory = "game/./data".to_owned();
+        assert!(invalid_working_directory.validate().is_err());
     }
 }

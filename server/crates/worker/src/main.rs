@@ -757,9 +757,9 @@ async fn main() -> Result<()> {
                     },
                 )?;
                 if package_marked_in_progress {
-                    let storage_root = staging_storage_root.as_deref().expect(
-                        "staging storage root is present when package is marked in progress",
-                    );
+                    let storage_root = staging_storage_root.as_deref().context(
+                        "LAUNCHER_STORAGE_ROOT is required when staging cleanup is enabled",
+                    )?;
                     staging_cleanup::clear_in_progress(&output, storage_root)?;
                 }
                 progress.advance(BuildState::Packaged)?;
@@ -3265,7 +3265,13 @@ async fn process_pack_restore_job(
             .await?;
         anyhow::bail!(error);
     };
-    let bytes = bytes.expect("source bytes exist when source provider exists");
+    let Some(bytes) = bytes else {
+        let error = format!("COLD source {} returned no pack bytes", source_provider_id);
+        database
+            .fail_pack_restore_job(job.id, &error, job.attempts < job.max_attempts)
+            .await?;
+        anyhow::bail!(error);
+    };
     if blake3::hash(&bytes).to_hex().as_str() != job.pack_hash {
         let error = format!(
             "pack restore integrity verification failed for {}",

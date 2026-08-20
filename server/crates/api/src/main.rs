@@ -103,7 +103,15 @@ impl RequestRateLimiter {
 
     fn retry_after_seconds(&self, client_key: &str) -> Option<u64> {
         const MAX_TRACKED_CLIENTS: usize = 10_000;
-        let mut state = self.state.lock().expect("rate limiter mutex poisoned");
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                warn!("rate limiter state lock was poisoned; resetting its in-memory windows");
+                let mut state = poisoned.into_inner();
+                state.clear();
+                state
+            }
+        };
         let now = Instant::now();
         state.retain(|_, window| now.saturating_duration_since(window.started) < self.duration);
         if state.len() >= MAX_TRACKED_CLIENTS && !state.contains_key(client_key) {
@@ -1089,9 +1097,12 @@ fn parse_cpu_counters(line: &str) -> Option<CpuCounters> {
         .map(str::parse::<u64>)
         .collect::<Result<Vec<_>, _>>()
         .ok()?;
-    let total = values.iter().copied().sum();
-    let idle =
-        values.get(3).copied().unwrap_or_default() + values.get(4).copied().unwrap_or_default();
+    let total = values.iter().copied().fold(0_u64, u64::saturating_add);
+    let idle = values
+        .get(3)
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(values.get(4).copied().unwrap_or_default());
     Some(CpuCounters { total, idle })
 }
 
@@ -1256,7 +1267,10 @@ async fn refresh_public_status(state: &AppState, system_probe_state: &mut System
             if usage_probe_ok {
                 usage = usage_by_provider.into_values().collect();
                 usage.sort_by(|left, right| left.provider.cmp(&right.provider));
-                total_used_bytes = usage.iter().map(|provider| provider.used_bytes).sum();
+                total_used_bytes = usage
+                    .iter()
+                    .map(|provider| provider.used_bytes)
+                    .fold(0_u64, u64::saturating_add);
             }
             match database
                 .list_restore_jobs(Some(&["QUEUED", "RUNNING", "RETRY"]), 500)

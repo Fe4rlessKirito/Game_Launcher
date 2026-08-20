@@ -5,6 +5,7 @@ namespace Launcher.Storage;
 public sealed class ChunkCache(string root, long maxBytes)
 {
     private readonly string _root = Path.GetFullPath(root);
+    private readonly long _maxBytes = maxBytes >= 0 ? maxBytes : throw new ArgumentOutOfRangeException(nameof(maxBytes));
     private readonly object _gate = new();
     private readonly Dictionary<string, CacheEntry> _entries = new(StringComparer.Ordinal);
     private readonly HashSet<string> _pinned = new(StringComparer.Ordinal);
@@ -26,7 +27,7 @@ public sealed class ChunkCache(string root, long maxBytes)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var hash = Path.GetFileNameWithoutExtension(file);
-            if (hash.Length != 64) continue;
+            if (!IsHash(hash)) continue;
             var info = new FileInfo(file);
             lock (_gate) { _entries[hash] = new CacheEntry(info.Length, info.LastAccessTimeUtc); _currentBytes += info.Length; }
         }
@@ -50,8 +51,16 @@ public sealed class ChunkCache(string root, long maxBytes)
         Directory.CreateDirectory(_root);
         var path = GetPath(encodedHash);
         var temp = path + $".{Guid.NewGuid():N}.part";
-        await File.WriteAllBytesAsync(temp, bytes.ToArray(), cancellationToken).ConfigureAwait(false);
-        File.Move(temp, path, true);
+        try
+        {
+            await File.WriteAllBytesAsync(temp, bytes.ToArray(), cancellationToken).ConfigureAwait(false);
+            File.Move(temp, path, true);
+        }
+        catch
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch (IOException) { }
+            throw;
+        }
         lock (_gate)
         {
             if (_entries.TryGetValue(encodedHash, out var existing)) _currentBytes -= existing.Size;
@@ -71,8 +80,20 @@ public sealed class ChunkCache(string root, long maxBytes)
         Directory.CreateDirectory(_root);
         var destination = GetPath(encodedHash);
         var temporary = destination + $".{Guid.NewGuid():N}.part";
-        File.Move(sourcePath, temporary, true);
-        File.Move(temporary, destination, true);
+        try
+        {
+            File.Move(sourcePath, temporary, true);
+            File.Move(temporary, destination, true);
+        }
+        catch
+        {
+            try
+            {
+                if (File.Exists(temporary)) File.Move(temporary, sourcePath, true);
+            }
+            catch (IOException) { }
+            throw;
+        }
         lock (_gate)
         {
             if (_entries.TryGetValue(encodedHash, out var existing)) _currentBytes -= existing.Size;
@@ -101,7 +122,7 @@ public sealed class ChunkCache(string root, long maxBytes)
         while (true)
         {
             string? candidate;
-            lock (_gate) candidate = _currentBytes <= maxBytes ? null : _entries.Where(pair => !_pinned.Contains(pair.Key)).OrderBy(pair => pair.Value.LastAccess).Select(pair => pair.Key).FirstOrDefault();
+            lock (_gate) candidate = _currentBytes <= _maxBytes ? null : _entries.Where(pair => !_pinned.Contains(pair.Key)).OrderBy(pair => pair.Value.LastAccess).Select(pair => pair.Key).FirstOrDefault();
             if (candidate is null) return;
             cancellationToken.ThrowIfCancellationRequested();
             await DeleteAsync(candidate).ConfigureAwait(false);
@@ -115,7 +136,8 @@ public sealed class ChunkCache(string root, long maxBytes)
         return Task.CompletedTask;
     }
 
-    private static void ValidateHash(string hash) { if (hash.Length != 64 || hash.Any(character => !Uri.IsHexDigit(character) || char.IsUpper(character))) throw new ArgumentException("Expected a lowercase BLAKE3 hash.", nameof(hash)); }
+    private static bool IsHash(string value) => value.Length == 64 && value.All(character => Uri.IsHexDigit(character) && !char.IsUpper(character));
+    private static void ValidateHash(string hash) { if (!IsHash(hash)) throw new ArgumentException("Expected a lowercase BLAKE3 hash.", nameof(hash)); }
     private sealed record CacheEntry(long Size, DateTime LastAccess);
     private sealed class PinLease(Action release) : IDisposable { private Action? _release = release; public void Dispose() => Interlocked.Exchange(ref _release, null)?.Invoke(); }
 }

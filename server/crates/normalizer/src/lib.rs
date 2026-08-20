@@ -110,7 +110,10 @@ struct ExtractionState {
 
 impl ExtractionState {
     fn entry(&mut self, limits: &NormalizationLimits, path: &Path) -> Result<()> {
-        self.entries = self.entries.saturating_add(1);
+        self.entries = self
+            .entries
+            .checked_add(1)
+            .context("archive entry count overflow")?;
         if self.entries > limits.max_entries {
             bail!("archive contains more than {} entries", limits.max_entries);
         }
@@ -143,14 +146,18 @@ impl ExtractionState {
 }
 
 pub fn normalize_input(input: &Path, limits: &NormalizationLimits) -> Result<NormalizedInput> {
-    if input.is_dir() {
+    let input_type = fs::symlink_metadata(input)?.file_type();
+    if input_type.is_symlink() {
+        bail!("normalizer input must not be a symlink");
+    }
+    if input_type.is_dir() {
         return Ok(NormalizedInput {
             root: input.to_path_buf(),
             format: InputFormat::Directory,
             cleanup_root: None,
         });
     }
-    if !input.is_file() {
+    if !input_type.is_file() {
         bail!(
             "ingest input {} is not a directory or regular file",
             input.display()
@@ -187,7 +194,13 @@ pub fn normalize_input(input: &Path, limits: &NormalizationLimits) -> Result<Nor
         return Err(error);
     }
 
-    let root = collapse_single_root(&extraction_root)?;
+    let root = match collapse_single_root(&extraction_root) {
+        Ok(root) => root,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&extraction_root);
+            return Err(error);
+        }
+    };
     Ok(NormalizedInput {
         root,
         format,
@@ -392,7 +405,8 @@ fn extract_reader(reader: &mut dyn Read, target: &Path, declared_size: u64) -> R
         .create_new(true)
         .open(target)
         .with_context(|| format!("could not create extracted file {}", target.display()))?;
-    let copied = io::copy(reader, &mut output)?;
+    let mut bounded_reader = reader.take(declared_size.saturating_add(1));
+    let copied = io::copy(&mut bounded_reader, &mut output)?;
     if copied != declared_size {
         bail!(
             "extracted {} bytes for {}, expected {}",
@@ -407,7 +421,10 @@ fn extract_reader(reader: &mut dyn Read, target: &Path, declared_size: u64) -> R
 
 fn safe_relative_path(raw: impl AsRef<Path>) -> Result<PathBuf> {
     let raw = raw.as_ref();
-    let normalized = raw.to_string_lossy().replace('\\', "/");
+    let raw_text = raw
+        .to_str()
+        .context("archive entry contains a non-UTF-8 path")?;
+    let normalized = raw_text.replace('\\', "/");
     if normalized.is_empty() || normalized.contains('\0') {
         bail!("archive entry has an empty or invalid name");
     }
@@ -422,7 +439,19 @@ fn safe_relative_path(raw: impl AsRef<Path>) -> Result<PathBuf> {
     let mut safe = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Normal(value) => safe.push(value),
+            Component::Normal(value) => {
+                let value = value
+                    .to_str()
+                    .context("archive entry contains a non-UTF-8 path component")?;
+                if value.chars().any(|character| character <= '\u{001f}')
+                    || value.ends_with(' ')
+                    || value.ends_with('.')
+                    || is_reserved_windows_name(value)
+                {
+                    bail!("archive entry {normalized:?} is not a portable file name");
+                }
+                safe.push(value);
+            }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 bail!("archive entry {normalized:?} escapes the extraction root")
@@ -437,10 +466,28 @@ fn safe_relative_path(raw: impl AsRef<Path>) -> Result<PathBuf> {
 
 fn collapse_single_root(extraction_root: &Path) -> Result<PathBuf> {
     let mut entries = fs::read_dir(extraction_root)?.collect::<Result<Vec<_>, _>>()?;
-    if entries.len() == 1 && entries[0].path().is_dir() {
+    if entries.len() == 1
+        && fs::symlink_metadata(entries[0].path())?
+            .file_type()
+            .is_dir()
+    {
         return Ok(entries.remove(0).path());
     }
     Ok(extraction_root.to_path_buf())
+}
+
+fn is_reserved_windows_name(part: &str) -> bool {
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] >= b'1'
+            && stem.as_bytes()[3] <= b'9')
 }
 
 fn to_sevenz_error(error: anyhow::Error) -> sevenz_rust::Error {

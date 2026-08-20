@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use uuid::Uuid;
 
 pub const WORK_STATUS_SCHEMA_VERSION: u32 = 1;
 
@@ -89,9 +90,12 @@ impl WorkStatusStore {
         let file_name = status_file_name(&status.id)?;
         fs::create_dir_all(&self.directory)?;
         let target = self.directory.join(file_name);
-        let temporary = self
-            .directory
-            .join(format!(".{}.{}.tmp", status.id, std::process::id()));
+        let temporary = self.directory.join(format!(
+            ".{}.{}.{}.tmp",
+            status.id,
+            std::process::id(),
+            Uuid::new_v4()
+        ));
         let bytes = serde_json::to_vec_pretty(status)
             .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
         fs::write(&temporary, bytes)?;
@@ -102,7 +106,13 @@ impl WorkStatusStore {
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        fs::rename(temporary, target)
+        match fs::rename(&temporary, target) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = fs::remove_file(temporary);
+                Err(error)
+            }
+        }
     }
 
     pub fn remove(&self, id: &str) -> io::Result<()> {
@@ -125,7 +135,14 @@ impl WorkStatusStore {
         let mut statuses = Vec::new();
         for entry in entries {
             let entry = entry?;
-            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            if !file_type.is_file()
+                || file_type.is_symlink()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+            {
                 continue;
             }
             let bytes = match fs::read(entry.path()) {

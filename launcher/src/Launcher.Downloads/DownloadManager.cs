@@ -53,7 +53,7 @@ public sealed class DownloadManager(
     {
         ManifestValidator.Validate(manifest);
         var uniqueChunks = manifest.Files.SelectMany(file => file.Chunks).GroupBy(chunk => chunk.EncodedHash, StringComparer.Ordinal).Select(group => group.First()).ToArray();
-        var totalBytes = uniqueChunks.Sum(chunk => chunk.EncodedSize);
+        var totalBytes = SumEncodedSizes(uniqueChunks);
         var preparedBytes = 0L;
         var networkBytes = 0L;
         var reusedBytes = 0L;
@@ -285,6 +285,11 @@ public sealed class DownloadManager(
         }
         var append = offset > 0 && response.StatusCode == System.Net.HttpStatusCode.PartialContent && response.Content.Headers.ContentRange?.From == offset;
         if (offset > 0 && !append) { TryDeletePartial(chunk.EncodedHash); offset = 0; }
+        var expectedRemaining = chunk.EncodedSize - (append ? offset : 0);
+        if (response.Content.Headers.ContentLength is { } contentLength && contentLength > expectedRemaining)
+        {
+            throw new InvalidDataException($"Chunk response is larger than expected for {chunk.EncodedHash}.");
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
         long received = 0;
         await using (var output = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
@@ -294,6 +299,10 @@ public sealed class DownloadManager(
             int read;
             while ((read = await input.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
             {
+                if (read > expectedRemaining - received)
+                {
+                    throw new InvalidDataException($"Chunk response exceeded the expected size for {chunk.EncodedHash}.");
+                }
                 var writable = read;
                 var injectedFailure = failureInjection is not null && failureInjection.TryLimitWrite(received, read, out writable);
                 await output.WriteAsync(buffer.AsMemory(0, writable), cancellationToken).ConfigureAwait(false);
@@ -342,7 +351,7 @@ public sealed class DownloadManager(
             cancellationToken.ThrowIfCancellationRequested();
             var covered = pack.ChunkHashes.Where(requested.Contains).ToArray();
             if (covered.Length == 0 || pack.Sources.Count == 0) continue;
-            var coveredLogicalBytes = covered.Sum(hash => chunks.First(chunk => chunk.EncodedHash == hash).EncodedSize);
+            var coveredLogicalBytes = SumEncodedSizes(covered.Select(hash => chunks.First(chunk => chunk.EncodedHash == hash)));
             var canRelaySparse = pack.Sources.Any(source => source.RangeSupported);
             if (allowSparseRelay
                 && sparseThreshold > 0
@@ -381,11 +390,15 @@ public sealed class DownloadManager(
             var reader = PhysicalPackReader.Parse(bytes, pack.PackHash);
             foreach (var hash in covered)
             {
-                if (!packPreparedChunks.Add(hash)) continue;
+                if (packPreparedChunks.Contains(hash)) continue;
                 var encoded = reader.ReadEncoded(hash);
                 var chunk = chunks.First(item => item.EncodedHash == hash);
                 if (encoded.Length != chunk.EncodedSize) throw new InvalidDataException($"Pack chunk size mismatch for {hash}.");
                 await cache.PutAsync(chunk.EncodedHash, encoded, cancellationToken).ConfigureAwait(false);
+                // Only mark the chunk as prepared after it is safely in the
+                // verified logical cache. If cache persistence fails, the
+                // caller must fall back to the logical resolver for this hash.
+                packPreparedChunks.Add(hash);
                 requested.Remove(hash);
                 logicalBytes += chunk.EncodedSize;
             }
@@ -481,6 +494,11 @@ public sealed class DownloadManager(
             return await DownloadPackFromSourceAsync(pack, source with { Url = redirectUrl }, cache, cancellationToken, redirectDepth + 1).ConfigureAwait(false);
         }
         Directory.CreateDirectory(Path.GetDirectoryName(partial)!);
+        var expectedRemaining = pack.EncodedSize - (append ? offset : 0);
+        if (response.Content.Headers.ContentLength is { } contentLength && contentLength > expectedRemaining)
+        {
+            throw new InvalidDataException($"Pack response is larger than expected for {pack.PackHash}.");
+        }
         long received = 0;
         await using (var output = new FileStream(partial, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.Read, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
@@ -489,6 +507,10 @@ public sealed class DownloadManager(
             int read;
             while ((read = await input.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
             {
+                if (read > expectedRemaining - received)
+                {
+                    throw new InvalidDataException($"Pack response exceeded the expected size for {pack.PackHash}.");
+                }
                 await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
                 received += read;
             }
@@ -506,6 +528,18 @@ public sealed class DownloadManager(
     {
         var value = Environment.GetEnvironmentVariable("LAUNCHER_PACK_DOWNLOAD_ENABLED")?.Trim().ToLowerInvariant();
         return value is not ("0" or "false" or "no" or "off");
+    }
+
+    private static long SumEncodedSizes(IEnumerable<ChunkReference> chunks)
+    {
+        try
+        {
+            return chunks.Aggregate(0L, (total, chunk) => checked(total + chunk.EncodedSize));
+        }
+        catch (OverflowException error)
+        {
+            throw new InvalidDataException("Encoded chunk sizes exceed the supported download range.", error);
+        }
     }
 
     private static bool IsHtmlResponse(HttpResponseMessage response)
@@ -527,7 +561,9 @@ public sealed class DownloadManager(
             throw new InvalidDataException("The storage provider returned too many HTML download redirects.");
         }
 
-        var html = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        const int maxRedirectBodyBytes = 64 * 1024;
+        var htmlBytes = await ReadLimitedAsync(response.Content, maxRedirectBodyBytes, cancellationToken).ConfigureAwait(false);
+        var html = System.Text.Encoding.UTF8.GetString(htmlBytes);
         var marker = html.IndexOf("location.href", StringComparison.OrdinalIgnoreCase);
         if (marker < 0)
         {
@@ -563,5 +599,30 @@ public sealed class DownloadManager(
         }
 
         return nextUri.AbsoluteUri;
+    }
+
+    private static async Task<byte[]> ReadLimitedAsync(HttpContent content, int maximumBytes, CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength is { } contentLength && contentLength > maximumBytes)
+        {
+            throw new InvalidDataException("The storage provider returned an oversized HTML redirect page.");
+        }
+
+        await using var input = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using var output = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var read = await input.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            if (read == 0) break;
+            if (output.Length > maximumBytes - read)
+            {
+                throw new InvalidDataException("The storage provider returned an oversized HTML redirect page.");
+            }
+
+            await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+        }
+
+        return output.ToArray();
     }
 }

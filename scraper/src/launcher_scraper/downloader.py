@@ -71,11 +71,14 @@ class ScratchBudget:
     def reserve(self, amount: int) -> ScratchReservation:
         if amount < 0:
             raise ValueError("scratch reservation cannot be negative")
+        self._reserve(amount)
+        return ScratchReservation(self, amount)
+
+    def _reserve(self, amount: int) -> None:
         with self._lock:
             if self._used + amount > self.max_bytes:
                 raise DownloadError("temporary storage budget exhausted", retryable=True)
             self._used += amount
-        return ScratchReservation(self, amount)
 
     def _release(self, amount: int) -> None:
         with self._lock:
@@ -92,6 +95,22 @@ class ScratchReservation:
         if not self.released:
             self.released = True
             self.budget._release(self.amount)
+            self.amount = 0
+
+    def resize(self, amount: int) -> None:
+        if self.released:
+            raise RuntimeError("scratch reservation has already been released")
+        if amount < 0:
+            raise ValueError("scratch reservation cannot be negative")
+        if amount > self.amount:
+            self.budget._reserve(amount - self.amount)
+        elif amount < self.amount:
+            self.budget._release(self.amount - amount)
+        self.amount = amount
+
+    def grow(self, amount: int) -> None:
+        if amount > self.amount:
+            self.resize(amount)
 
     def __enter__(self) -> ScratchReservation:
         return self
@@ -154,6 +173,8 @@ class HttpDownloader:
         self.chunk_bytes = max(16 * 1024, chunk_bytes)
         self.timeout_seconds = timeout_seconds
         self.max_artifact_bytes = max_artifact_bytes
+        if self.max_artifact_bytes < 1:
+            raise ValueError("max_artifact_bytes must be positive")
         self._opener = urllib.request.build_opener(_NoRedirect())
 
     def download(
@@ -179,7 +200,12 @@ class HttpDownloader:
         filename = safe_filename(candidate.filename or urlparse(candidate.url).path.rsplit("/", 1)[-1])
         final_path = destination / filename
         part_path = destination / f".{filename}.part"
-        reservation = self.scratch_budget.reserve(expected_size or 0) if self.scratch_budget and expected_size else None
+        # A missing Content-Length is normal for redirectors and chunked responses.
+        # Reserve those artifacts as they arrive instead of reserving the entire
+        # configured maximum up front, which would reject every small unknown-size
+        # download when the scratch pool is smaller than the global safety limit.
+        reservation_amount = expected_size if expected_size is not None else 0
+        reservation = self.scratch_budget.reserve(reservation_amount) if self.scratch_budget else None
         last_error: DownloadError | None = None
         try:
             for attempt in range(1, policy.max_attempts + 1):
@@ -194,6 +220,7 @@ class HttpDownloader:
                         max_concurrent_requests=max_concurrent_requests,
                         extra_headers=extra_headers,
                         progress=progress,
+                        reservation=reservation,
                     )
                 except DownloadError as error:
                     last_error = error
@@ -220,13 +247,16 @@ class HttpDownloader:
         max_concurrent_requests: int,
         extra_headers: dict[str, str] | None,
         progress: DownloadProgressCallback | None,
+        reservation: ScratchReservation | None,
     ) -> DownloadResult:
         url = self.policy.validate(candidate.url)
         domain = urlparse(url).hostname or ""
         offset = part_path.stat().st_size if part_path.exists() else 0
-        if expected_size is not None and offset > expected_size:
+        if offset > self.max_artifact_bytes or (expected_size is not None and offset > expected_size):
             part_path.unlink(missing_ok=True)
             offset = 0
+        if reservation is not None and expected_size is None:
+            reservation.resize(offset)
         headers = {"User-Agent": self.user_agent, "Accept": "*/*"}
         if extra_headers:
             headers.update(extra_headers)
@@ -243,6 +273,7 @@ class HttpDownloader:
                 expected_checksum=expected_checksum,
                 offset=offset,
                 progress=progress,
+                reservation=reservation,
             )
         finally:
             permit.release()
@@ -258,6 +289,7 @@ class HttpDownloader:
         expected_checksum: str | None,
         offset: int,
         progress: DownloadProgressCallback | None,
+        reservation: ScratchReservation | None,
     ) -> DownloadResult:
         response, final_url, redirects = self._open_with_redirects(url, headers)
         status = int(getattr(response, "status", 200))
@@ -277,6 +309,8 @@ class HttpDownloader:
         append = bool(offset and status == 206 and content_range and content_range[0] == offset)
         if offset and not append:
             offset = 0
+            if reservation is not None and expected_size is None:
+                reservation.resize(0)
         mode = "ab" if append else "wb"
         written = offset
         max_bytes = self.max_artifact_bytes
@@ -295,6 +329,12 @@ class HttpDownloader:
                 if advertised > max_bytes or (expected_size is not None and advertised > expected_size):
                     response.close()
                     raise DownloadError("download exceeds the configured artifact size", status=status)
+                if reservation is not None and expected_size is None:
+                    try:
+                        reservation.grow(advertised)
+                    except (DownloadError, ValueError, RuntimeError):
+                        response.close()
+                        raise
             except ValueError:
                 pass
         if progress is not None:
@@ -308,6 +348,8 @@ class HttpDownloader:
                     written += len(chunk)
                     if written > max_bytes or (expected_size is not None and written > expected_size):
                         raise DownloadError("download exceeded the configured artifact size", status=status)
+                    if reservation is not None and expected_size is None:
+                        reservation.grow(written)
                     output.write(chunk)
                     if progress is not None:
                         progress(written, total_size)

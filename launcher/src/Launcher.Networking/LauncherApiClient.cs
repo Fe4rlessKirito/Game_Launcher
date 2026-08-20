@@ -132,9 +132,14 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
                 ? "api/v1/games?limit=100"
                 : $"api/v1/games?limit=100&cursor={Uri.EscapeDataString(cursor)}";
             var response = await httpClient.GetFromJsonAsync<CatalogResponse>(new Uri(baseUri, query), JsonOptions, cancellationToken).ConfigureAwait(false);
-            if (response?.Items is not null) games.AddRange(response.Items);
+            if (response is null) throw new InvalidDataException("API returned an empty catalog page.");
+            foreach (var item in response.Items ?? [])
+            {
+                ValidateCatalogItem(item);
+                games.Add(item);
+            }
 
-            cursor = response?.NextCursor;
+            cursor = response.NextCursor;
             if (cursor is not null && !seenCursors.Add(cursor))
             {
                 throw new HttpRequestException("The catalog returned a repeated pagination cursor.");
@@ -184,6 +189,13 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
             {
                 response.EnsureSuccessStatusCode();
                 var resolved = await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedChunk>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+                foreach (var item in resolved)
+                {
+                    if (item is null || !IsHash(item.EncodedHash) || item.Urls is null || item.Urls.Count == 0 || item.Urls.Any(url => !IsHttpUrl(url)))
+                    {
+                        throw new InvalidDataException("API returned an invalid chunk location.");
+                    }
+                }
                 return resolved.ToDictionary(item => item.EncodedHash, StringComparer.Ordinal);
             }
 
@@ -201,7 +213,44 @@ public sealed class LauncherApiClient(HttpClient httpClient, Uri baseUri)
         // failure and immediately falls back to logical chunk resolution.
         using var response = await httpClient.PostAsJsonAsync(endpoint, new PackResolutionRequest(encodedHashes), JsonOptions, cancellationToken).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+        var packs = await response.Content.ReadFromJsonAsync<IReadOnlyList<ResolvedPack>>(JsonOptions, cancellationToken).ConfigureAwait(false) ?? [];
+        foreach (var pack in packs)
+        {
+            if (pack is null || !IsHash(pack.PackHash) || pack.EncodedSize <= 0 || pack.ChunkHashes is null || pack.ChunkHashes.Count == 0 || pack.ChunkHashes.Any(hash => !IsHash(hash)) || pack.Sources is null)
+            {
+                throw new InvalidDataException("API returned an invalid physical pack location.");
+            }
+
+            foreach (var source in pack.Sources)
+            {
+                if (source is null || !IsHttpUrl(source.Url) || string.IsNullOrWhiteSpace(source.Provider))
+                {
+                    throw new InvalidDataException("API returned an invalid physical pack source.");
+                }
+            }
+        }
+        return packs;
+    }
+
+    private static bool IsHash(string? value) => value is { Length: 64 } && value.All(character => Uri.IsHexDigit(character) && !char.IsUpper(character));
+
+    private static bool IsHttpUrl(string? value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri)
+        && uri.Scheme is "http" or "https";
+
+    private static void ValidateCatalogItem(GameCatalogItem? item)
+    {
+        if (item is null
+            || string.IsNullOrWhiteSpace(item.Id)
+            || string.IsNullOrWhiteSpace(item.Title)
+            || item.LatestBuild is { } build && (string.IsNullOrWhiteSpace(build.Id)
+                || string.IsNullOrWhiteSpace(build.GameId)
+                || !string.Equals(build.GameId, item.Id, StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(build.DisplayVersion)
+                || build.SizeBytes < 0))
+        {
+            throw new InvalidDataException("API returned an invalid catalog item.");
+        }
     }
 
     private sealed record CatalogResponse([property: JsonPropertyName("items")] IReadOnlyList<GameCatalogItem>? Items, [property: JsonPropertyName("next_cursor")] string? NextCursor);

@@ -138,6 +138,19 @@ public sealed class InstallerRecoveryTests
         Assert.Empty(await fixture.State.GetInstalledGamesAsync());
     }
 
+    [Fact]
+    public async Task UnsupportedUserDataRemovalFailsBeforeChangingInstallation()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Installer.InstallAsync(fixture.BuildB, fixture.InstallRoot);
+        var installed = (await fixture.State.GetInstalledGamesAsync()).Single();
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => fixture.Installer.UninstallAsync(installed, removeUserData: true));
+
+        Assert.True(File.Exists(Path.Combine(fixture.InstallRoot, "changed.bin")));
+        Assert.Single(await fixture.State.GetInstalledGamesAsync());
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required string Root { get; init; }

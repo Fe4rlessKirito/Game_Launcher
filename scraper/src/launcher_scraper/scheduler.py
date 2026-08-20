@@ -46,9 +46,7 @@ class IngestionScheduler:
         self.diagnostics = diagnostics
         self.status = status
         try:
-            incomplete_artifact_ttl_seconds = int(
-                os.environ.get("SCRAPER_INCOMPLETE_ARTIFACT_TTL_SECONDS", "86400")
-            )
+            incomplete_artifact_ttl_seconds = int(os.environ.get("SCRAPER_INCOMPLETE_ARTIFACT_TTL_SECONDS", "86400"))
         except ValueError:
             incomplete_artifact_ttl_seconds = 86400
         self.incomplete_artifact_ttl_seconds = max(3600, incomplete_artifact_ttl_seconds)
@@ -135,9 +133,7 @@ class IngestionScheduler:
                     ):
                         return
                     progress_percent = (
-                        None
-                        if bytes_total is None or bytes_total <= 0
-                        else (bytes_completed / bytes_total) * 100
+                        None if bytes_total is None or bytes_total <= 0 else (bytes_completed / bytes_total) * 100
                     )
                     elapsed = now - last_progress_at
                     rate = (

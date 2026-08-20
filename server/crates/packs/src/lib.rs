@@ -540,18 +540,19 @@ fn build_artifact(inputs: Vec<PackInput>) -> Result<PackArtifact, PackError> {
     let mut entries = Vec::with_capacity(inputs.len());
     let mut offset = HEADER_SIZE as u64;
     for input in inputs {
+        let encoded_length = input.encoded_bytes.len() as u64;
         bytes.extend_from_slice(&input.encoded_bytes);
         entries.push(PackEntry {
             encoded_hash: input.encoded_hash,
             raw_hash: input.raw_hash,
             offset,
-            encoded_length: input.encoded_bytes.len() as u64,
+            encoded_length,
             raw_length: input.raw_size,
             compression: COMPRESSION_ZSTD,
             flags: 0,
         });
         offset = offset
-            .checked_add(entries.last().expect("entry inserted").encoded_length)
+            .checked_add(encoded_length)
             .ok_or_else(|| PackError::InvalidHeader("chunk offset overflows".to_owned()))?;
     }
 

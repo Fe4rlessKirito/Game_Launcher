@@ -1482,16 +1482,10 @@ impl CapacityReservationStore for InMemoryCapacityReservationStore {
                 + chrono::Duration::from_std(ttl)
                     .map_err(|error| StorageError::Configuration(error.to_string()))?,
         };
-        let reserved_bytes = state
-            .accounts
-            .get(account_id)
-            .expect("account checked above")
-            .reserved_bytes;
-        state
-            .accounts
-            .get_mut(account_id)
-            .expect("account checked above")
-            .reserved_bytes = reserved_bytes.saturating_add(bytes);
+        let account = state.accounts.get_mut(account_id).ok_or_else(|| {
+            StorageError::Configuration(format!("unknown storage account {account_id}"))
+        })?;
+        account.reserved_bytes = account.reserved_bytes.saturating_add(bytes);
         state.reservations.insert(
             reservation.reservation_id.clone(),
             InMemoryReservation {

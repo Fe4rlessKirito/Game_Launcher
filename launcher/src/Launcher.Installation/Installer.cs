@@ -22,7 +22,7 @@ public sealed class Installer(
     {
         ManifestValidator.Validate(manifest);
         PathGuard.EnsureSafeRoot(installationRoot);
-        EnsureCapacity(installationRoot, manifest.Files.Sum(file => file.Size));
+        EnsureCapacity(installationRoot, SumFileSizes(manifest.Files));
         var root = Path.GetFullPath(installationRoot);
         var transactionId = Guid.NewGuid().ToString("N");
         var backupRoot = Path.Combine(Path.GetDirectoryName(root)!, $".launcher-install-{transactionId}.backup");
@@ -39,10 +39,17 @@ public sealed class Installer(
                 var destination = PathGuard.ResolveUnderRoot(root, file.Path);
                 Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
                 var temporary = destination + $".launcher-{transactionId}.part";
-                await ReconstructFileAsync(file, temporary, cancellationToken).ConfigureAwait(false);
-                if (index == 0) failureInjection?.ThrowIf(InstallationFailurePoint.AfterStagingFirstFile);
-                BackupExistingFile(root, destination, backupRoot);
-                File.Move(temporary, destination, true);
+                try
+                {
+                    await ReconstructFileAsync(file, temporary, cancellationToken).ConfigureAwait(false);
+                    if (index == 0) failureInjection?.ThrowIf(InstallationFailurePoint.AfterStagingFirstFile);
+                    BackupExistingFile(root, destination, backupRoot);
+                    File.Move(temporary, destination, true);
+                }
+                finally
+                {
+                    TryDeleteFile(temporary);
+                }
                 journal = journal with { CommittedPaths = [.. journal.CommittedPaths, file.Path] };
                 await WriteJournalAsync(journalPath, journal, cancellationToken).ConfigureAwait(false);
             }
@@ -73,21 +80,46 @@ public sealed class Installer(
         var root = Path.GetFullPath(installationRoot);
         var oldFiles = previous.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
         var newFiles = next.Files.ToDictionary(file => file.Path, StringComparer.Ordinal);
-        var requiredBytes = next.Files
-            .Where(file => !oldFiles.TryGetValue(file.Path, out var old) || old.Blake3 != file.Blake3)
-            .Sum(file => file.Size)
-            + previous.Files
-                .Where(file => !newFiles.TryGetValue(file.Path, out var nextFile) || nextFile.Blake3 != file.Blake3)
-                .Sum(file => file.Size);
+        long requiredBytes;
+        try
+        {
+            requiredBytes = checked(
+                SumFileSizes(next.Files.Where(file => !oldFiles.TryGetValue(file.Path, out var old) || old.Blake3 != file.Blake3))
+                + SumFileSizes(previous.Files.Where(file => !newFiles.TryGetValue(file.Path, out var nextFile) || nextFile.Blake3 != file.Blake3)));
+        }
+        catch (OverflowException error)
+        {
+            throw new InvalidDataException("Manifest update size exceeds the supported range.", error);
+        }
         EnsureCapacity(root, requiredBytes);
         var transactionId = Guid.NewGuid().ToString("N");
         var stageRoot = Path.Combine(Path.GetDirectoryName(root)!, $".launcher-update-{transactionId}.staging");
         var backupRoot = Path.Combine(Path.GetDirectoryName(root)!, $".launcher-update-{transactionId}.backup");
         var journalPath = Path.Combine(root, $".launcher-update-{transactionId}.json");
-        Directory.CreateDirectory(stageRoot);
-        Directory.CreateDirectory(backupRoot);
+        try
+        {
+            Directory.CreateDirectory(stageRoot);
+            Directory.CreateDirectory(backupRoot);
+        }
+        catch
+        {
+            TryDeleteDirectory(stageRoot);
+            TryDeleteDirectory(backupRoot);
+            throw;
+        }
         var journal = NewJournal(transactionId, "update", next.GameId, previous.BuildId, next.BuildId, backupRoot);
-        await WriteJournalAsync(journalPath, journal, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await WriteJournalAsync(journalPath, journal, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            TryDeleteDirectory(stageRoot);
+            TryDeleteDirectory(backupRoot);
+            TryDeleteFile(journalPath);
+            TryDeleteFile(journalPath + ".part");
+            throw;
+        }
         var unchangedPaths = new HashSet<string>(StringComparer.Ordinal);
         long reusedInstalledBytes = 0;
         long reconstructedBytes = 0;
@@ -111,8 +143,16 @@ public sealed class Installer(
                 {
                     changedFiles++;
                     reconstructedBytes += file.Size;
-                    await ReconstructFileAsync(file, staged + $".launcher-{transactionId}.part", cancellationToken).ConfigureAwait(false);
-                    File.Move(staged + $".launcher-{transactionId}.part", staged, true);
+                    var stagedTemporary = staged + $".launcher-{transactionId}.part";
+                    try
+                    {
+                        await ReconstructFileAsync(file, stagedTemporary, cancellationToken).ConfigureAwait(false);
+                        File.Move(stagedTemporary, staged, true);
+                    }
+                    finally
+                    {
+                        TryDeleteFile(stagedTemporary);
+                    }
                 }
             }
             failureInjection?.ThrowIf(InstallationFailurePoint.AfterStagingAllFiles);
@@ -184,13 +224,21 @@ public sealed class Installer(
             var destination = PathGuard.ResolveUnderRoot(installationRoot, portablePath);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             var temporary = destination + $".launcher-{transactionId}.part";
-            await ReconstructFileAsync(file, temporary, cancellationToken).ConfigureAwait(false);
-            File.Move(temporary, destination, true);
+            try
+            {
+                await ReconstructFileAsync(file, temporary, cancellationToken).ConfigureAwait(false);
+                File.Move(temporary, destination, true);
+            }
+            finally
+            {
+                TryDeleteFile(temporary);
+            }
         }
     }
 
     public async Task UninstallAsync(InstalledGame installed, bool removeUserData = false, CancellationToken cancellationToken = default)
     {
+        if (removeUserData) throw new NotSupportedException("User-data removal requires an explicit provider-owned save path in a future release.");
         var manifest = ManifestJson.Deserialize(installed.ManifestJson);
         ManifestValidator.Validate(manifest);
         foreach (var file in manifest.Files)
@@ -203,7 +251,6 @@ public sealed class Installer(
         {
             try { if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any()) Directory.Delete(directory); } catch (IOException) { }
         }
-        if (removeUserData) throw new NotSupportedException("User-data removal requires an explicit provider-owned save path in a future release.");
         await stateStore.RemoveInstalledGameAsync(installed.GameId, cancellationToken).ConfigureAwait(false);
     }
 
@@ -264,14 +311,14 @@ public sealed class Installer(
         var executable = PathGuard.ResolveUnderRoot(installationRoot, manifest.Launch.Executable);
         var workingDirectory = manifest.Launch.WorkingDirectory == "." ? Path.GetFullPath(installationRoot) : PathGuard.ResolveUnderRoot(installationRoot, manifest.Launch.WorkingDirectory);
         var startInfo = new ProcessStartInfo(executable) { WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Path.GetDirectoryName(executable)!, UseShellExecute = false };
-        foreach (var argument in manifest.Launch.Arguments) startInfo.ArgumentList.Add(argument);
-        foreach (var pair in manifest.Launch.Environment) startInfo.Environment[pair.Key] = pair.Value;
+        foreach (var argument in manifest.Launch.Arguments ?? Array.Empty<string>()) startInfo.ArgumentList.Add(argument);
+        foreach (var pair in manifest.Launch.Environment ?? new Dictionary<string, string>()) startInfo.Environment[pair.Key] = pair.Value;
         return Process.Start(startInfo) ?? throw new LauncherOperationException("The game process could not be started.");
     }
 
     private async Task ReconstructFileAsync(FileRecipe file, string temporary, CancellationToken cancellationToken)
     {
-        await using (var output = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+        await using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
             foreach (var chunk in file.Chunks)
             {
@@ -288,6 +335,18 @@ public sealed class Installer(
     private void EnsureCapacity(string root, long requiredBytes)
     {
         if (availableSpaceProvider is not null && availableSpaceProvider(root) < requiredBytes) throw new IOException($"Insufficient disk space for {requiredBytes} bytes.");
+    }
+
+    private static long SumFileSizes(IEnumerable<FileRecipe> files)
+    {
+        try
+        {
+            return files.Aggregate(0L, (total, file) => checked(total + file.Size));
+        }
+        catch (OverflowException error)
+        {
+            throw new InvalidDataException("Manifest file sizes exceed the supported range.", error);
+        }
     }
 
     private static TransactionJournal NewJournal(string id, string operation, string gameId, string oldBuild, string newBuild, string backupRoot) => new(id, operation, gameId, oldBuild, newBuild, "started", backupRoot, [], [], DateTimeOffset.UtcNow);
@@ -328,13 +387,31 @@ public sealed class Installer(
     private static async Task WriteJournalAsync(string path, TransactionJournal journal, CancellationToken cancellationToken)
     {
         var temporary = path + ".part";
-        await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(journal), cancellationToken).ConfigureAwait(false);
-        File.Move(temporary, path, true);
+        try
+        {
+            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(journal), cancellationToken).ConfigureAwait(false);
+            File.Move(temporary, path, true);
+        }
+        catch
+        {
+            TryDeleteFile(temporary);
+            throw;
+        }
     }
 
     private static async Task TryWriteFailedJournalAsync(string path, TransactionJournal journal)
     {
-        try { await WriteJournalAsync(path, journal with { State = "recoverable-failure" }, CancellationToken.None).ConfigureAwait(false); } catch (IOException) { }
+        try { await WriteJournalAsync(path, journal with { State = "recoverable-failure" }, CancellationToken.None).ConfigureAwait(false); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     private sealed record TransactionJournal(string TransactionId, string Operation, string GameId, string OldBuildId, string NewBuildId, string State, string BackupRoot, IReadOnlyList<string> CommittedPaths, IReadOnlyList<string> RemovedPaths, DateTimeOffset StartedAt);

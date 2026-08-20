@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -225,6 +226,7 @@ class ScraperService:
                         destination,
                         expected_size=candidate.reported_size or release.reported_size,
                         expected_checksum=candidate.reported_checksum or release.reported_checksum,
+                        max_artifact_bytes=self.downloader.max_artifact_bytes,
                     )
                 else:
                     extra_headers = None
@@ -307,6 +309,7 @@ class ScraperService:
         *,
         expected_size: int | None,
         expected_checksum: str | None,
+        max_artifact_bytes: int,
     ) -> DownloadResult:
         if session is None or not candidate.browser_target_id:
             raise BrowserError("candidate does not have a browser target")
@@ -316,12 +319,21 @@ class ScraperService:
         actual_path = Path(browser_download.path)
         if actual_path.resolve() != requested_path.resolve() or not actual_path.is_file() or actual_path.is_symlink():
             raise BrowserError("browser download did not stay at the requested artifact path")
-        blake3_value, sha256_value = _hash_file(actual_path)
-        actual_size = actual_path.stat().st_size
-        if expected_size is not None and actual_size != expected_size:
-            raise DownloadError(f"browser download size mismatch: expected {expected_size}, got {actual_size}")
-        if expected_checksum and not _checksum_matches(expected_checksum, blake3_value, sha256_value):
-            raise DownloadError("browser download checksum does not match")
+        if max_artifact_bytes < 1:
+            actual_path.unlink(missing_ok=True)
+            raise DownloadError("browser download size limit is invalid")
+        try:
+            actual_size = actual_path.stat().st_size
+            if actual_size > max_artifact_bytes:
+                raise DownloadError(f"browser download exceeds the configured artifact size: {actual_size}")
+            if expected_size is not None and actual_size != expected_size:
+                raise DownloadError(f"browser download size mismatch: expected {expected_size}, got {actual_size}")
+            blake3_value, sha256_value = _hash_file(actual_path)
+            if expected_checksum and not _checksum_matches(expected_checksum, blake3_value, sha256_value):
+                raise DownloadError("browser download checksum does not match")
+        except (DownloadError, OSError):
+            actual_path.unlink(missing_ok=True)
+            raise
         return DownloadResult(
             path=str(actual_path),
             filename=filename,
@@ -442,8 +454,12 @@ class ScraperService:
     def _write_handoff(path: Path, artifact: ValidatedArtifact) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temp = path.with_suffix(path.suffix + ".tmp")
-        temp.write_text(json.dumps(artifact.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        temp.replace(path)
+        try:
+            temp.write_text(json.dumps(artifact.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temp.replace(path)
+        finally:
+            with contextlib.suppress(OSError):
+                temp.unlink(missing_ok=True)
 
     @staticmethod
     def _log(event: str, source: SourceDefinition, adapter: str, page: PageSnapshot | None, **fields: Any) -> None:
@@ -457,7 +473,7 @@ def _version_key(value: str) -> tuple[Any, ...]:
     if value == "unknown":
         return (0,)
     parts = re.split(r"[.+-]", value.lstrip("vV"))
-    result: list[Any] = []
+    result: list[tuple[int, int | str]] = []
     for part in parts:
-        result.append(int(part) if part.isdigit() else part.casefold())
+        result.append((0, int(part)) if part.isdigit() else (1, part.casefold()))
     return (1, *result)

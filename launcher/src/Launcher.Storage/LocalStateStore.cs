@@ -107,7 +107,7 @@ public sealed class LocalStateStore(string databasePath)
         command.CommandText = "SELECT game_id, build_id, display_version, install_root, manifest_json, installed_at FROM installed_games ORDER BY installed_at DESC";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<InstalledGame>();
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(new InstalledGame(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture)));
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(new InstalledGame(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4), ParseTimestamp(reader.GetString(5))));
         return result;
     }
 
@@ -132,7 +132,14 @@ public sealed class LocalStateStore(string databasePath)
                 category = (reader.GetInt32(1), reader.GetInt32(2) != 0, []);
             }
 
-            if (!reader.IsDBNull(3)) category.GameIds.Add(reader.GetString(3));
+            if (!reader.IsDBNull(3))
+            {
+                var gameId = reader.GetString(3);
+                if (!category.GameIds.Any(existing => string.Equals(existing, gameId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    category.GameIds.Add(gameId);
+                }
+            }
             categories[name] = category;
         }
 
@@ -162,24 +169,28 @@ public sealed class LocalStateStore(string databasePath)
             await clearCategories.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        var categoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var category in categories.Where(category => !string.IsNullOrWhiteSpace(category.Name)))
         {
+            var categoryName = category.Name.Trim();
+            if (!categoryNames.Add(categoryName)) continue;
             await using var categoryCommand = connection.CreateCommand();
             categoryCommand.Transaction = transaction;
             categoryCommand.CommandText = "INSERT INTO library_categories(name, position, is_expanded) VALUES($name, $position, $is_expanded)";
-            categoryCommand.Parameters.AddWithValue("$name", category.Name.Trim());
+            categoryCommand.Parameters.AddWithValue("$name", categoryName);
             categoryCommand.Parameters.AddWithValue("$position", category.Position);
             categoryCommand.Parameters.AddWithValue("$is_expanded", category.IsExpanded ? 1 : 0);
             await categoryCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
 
+            var gameIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (var index = 0; index < category.GameIds.Count; index++)
             {
-                var gameId = category.GameIds[index];
-                if (string.IsNullOrWhiteSpace(gameId)) continue;
+                var gameId = category.GameIds[index]?.Trim();
+                if (string.IsNullOrWhiteSpace(gameId) || !gameIds.Add(gameId)) continue;
                 await using var gameCommand = connection.CreateCommand();
                 gameCommand.Transaction = transaction;
                 gameCommand.CommandText = "INSERT INTO library_category_games(category_name, game_id, position) VALUES($category_name, $game_id, $position)";
-                gameCommand.Parameters.AddWithValue("$category_name", category.Name.Trim());
+                gameCommand.Parameters.AddWithValue("$category_name", categoryName);
                 gameCommand.Parameters.AddWithValue("$game_id", gameId);
                 gameCommand.Parameters.AddWithValue("$position", index);
                 await gameCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -242,7 +253,7 @@ public sealed class LocalStateStore(string databasePath)
         command.Parameters.AddWithValue("$job_id", jobId);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
-        return new PersistedDownloadJob(reader.GetString(0), reader.GetString(1), Enum.Parse<DownloadJobState>(reader.GetString(2)), reader.GetInt64(3), reader.GetInt64(4), DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(6) ? null : reader.GetString(6));
+        return ReadDownloadJob(reader);
     }
 
     public async Task<IReadOnlyList<PersistedDownloadJob>> GetDownloadJobsAsync(CancellationToken cancellationToken = default)
@@ -253,9 +264,37 @@ public sealed class LocalStateStore(string databasePath)
         command.CommandText = "SELECT job_id, build_id, state, downloaded_bytes, total_bytes, updated_at, last_error FROM download_jobs ORDER BY updated_at DESC";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var jobs = new List<PersistedDownloadJob>();
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) jobs.Add(new PersistedDownloadJob(reader.GetString(0), reader.GetString(1), Enum.Parse<DownloadJobState>(reader.GetString(2)), reader.GetInt64(3), reader.GetInt64(4), DateTimeOffset.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture), reader.IsDBNull(6) ? null : reader.GetString(6)));
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) jobs.Add(ReadDownloadJob(reader));
         return jobs;
     }
+
+    private static PersistedDownloadJob ReadDownloadJob(SqliteDataReader reader)
+    {
+        var rawState = reader.GetString(2);
+        var validState = Enum.TryParse<DownloadJobState>(rawState, ignoreCase: false, out var parsedState)
+            && Enum.IsDefined(parsedState)
+            && string.Equals(parsedState.ToString(), rawState, StringComparison.Ordinal);
+        var state = validState ? parsedState : DownloadJobState.Failed;
+        var lastError = reader.IsDBNull(6) ? null : reader.GetString(6);
+        if (!validState)
+        {
+            lastError ??= "Local download state was invalid; choose Install to retry.";
+        }
+
+        return new PersistedDownloadJob(
+            reader.GetString(0),
+            reader.GetString(1),
+            state,
+            Math.Max(0, reader.GetInt64(3)),
+            Math.Max(0, reader.GetInt64(4)),
+            ParseTimestamp(reader.GetString(5)),
+            lastError);
+    }
+
+    private static DateTimeOffset ParseTimestamp(string value) =>
+        DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var parsed)
+            ? parsed
+            : DateTimeOffset.UnixEpoch;
 
     public async Task<int> FailInterruptedDownloadJobsAsync(CancellationToken cancellationToken = default)
     {

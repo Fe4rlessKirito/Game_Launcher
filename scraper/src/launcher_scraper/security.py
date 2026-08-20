@@ -82,6 +82,11 @@ def safe_filename(value: str | None, fallback: str = "download.bin") -> str:
     name = re.sub(r"[\x00-\x1f\x7f<>:\"/|?*]", "_", name).strip(" .")
     if name in {"", ".", ".."}:
         name = fallback
+    stem = name.split(".", 1)[0].casefold()
+    if stem in {"con", "prn", "aux", "nul"} or (
+        len(stem) == 4 and stem[:3] in {"com", "lpt"} and stem[3] in "123456789"
+    ):
+        name = fallback
     if len(name) > 180:
         stem, dot, suffix = name.rpartition(".")
         name = stem[: max(1, 180 - len(suffix) - (1 if dot else 0))] + (dot + suffix if dot else "")

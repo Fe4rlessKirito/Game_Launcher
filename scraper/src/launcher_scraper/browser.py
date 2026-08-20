@@ -7,7 +7,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from .models import PageAction, PageActionType, PageSnapshot
 from .security import URLPolicy
@@ -102,12 +102,15 @@ class HttpPageFetcher:
                 if error.code in {301, 302, 303, 307, 308}:
                     location = error.headers.get("Location")
                     if not location:
+                        error.close()
                         raise BrowserError(f"redirect {error.code} did not include Location") from error
                     next_url = urljoin(current, location)
+                    error.close()
                     self.policy.validate_redirect(current, next_url)
                     redirects.append(next_url)
                     current = next_url
                     continue
+                error.close()
                 raise BrowserError(f"page returned HTTP {error.code}") from error
             except urllib.error.URLError as error:
                 raise BrowserError(f"page request failed: {error.reason}") from error
@@ -123,6 +126,7 @@ class HttpBrowserExecutor:
         self._sessions: list[HttpBrowserSession] = []
 
     def open(self, url: str) -> HttpBrowserSession:
+        self._sessions = [session for session in self._sessions if not getattr(session, "_closed", False)]
         session = HttpBrowserSession(self.fetcher, self.dom, self.fetcher.fetch(url))
         self._sessions.append(session)
         return session
@@ -210,6 +214,7 @@ class PlaywrightBrowserExecutor:
         self.policy = policy or URLPolicy()
         self.navigation_timeout_ms = navigation_timeout_ms
         self._playwright: Any = None
+        self._browser: Any = None
         self._context: Any = None
         self._sessions: list[PlaywrightBrowserSession] = []
 
@@ -228,14 +233,29 @@ class PlaywrightBrowserExecutor:
         if self.profile_dir:
             self._context = browser_type.launch_persistent_context(self.profile_dir, **launch_kwargs)
         else:
-            browser = browser_type.launch(**launch_kwargs)
-            self._context = browser.new_context()
+            self._browser = browser_type.launch(**launch_kwargs)
+            self._context = self._browser.new_context()
+        self._context.route("**/*", self._guard_request)
         self._context.set_default_navigation_timeout(self.navigation_timeout_ms)
         return self._context
+
+    def _guard_request(self, route: Any) -> None:
+        request_url = route.request.url
+        scheme = urlparse(request_url).scheme.casefold()
+        if scheme in {"about", "blob", "data"}:
+            route.continue_()
+            return
+        try:
+            self.policy.validate(request_url)
+        except ValueError:
+            route.abort(error_code="blockedbyclient")
+            return
+        route.continue_()
 
     def open(self, url: str) -> PlaywrightBrowserSession:
         self.policy.validate(url)
         context = self._ensure_context()
+        self._sessions = [session for session in self._sessions if not getattr(session, "_closed", False)]
         page = context.new_page()
         page.goto(url, wait_until="domcontentloaded")
         session = PlaywrightBrowserSession(page, self.dom, self.policy)
@@ -247,10 +267,16 @@ class PlaywrightBrowserExecutor:
             session.close()
         self._sessions.clear()
         if self._context is not None:
-            self._context.close()
+            with contextlib.suppress(Exception):
+                self._context.close()
             self._context = None
+        if self._browser is not None:
+            with contextlib.suppress(Exception):
+                self._browser.close()
+            self._browser = None
         if self._playwright is not None:
-            self._playwright.stop()
+            with contextlib.suppress(Exception):
+                self._playwright.stop()
             self._playwright = None
 
 

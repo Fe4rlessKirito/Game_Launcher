@@ -78,6 +78,18 @@ public class DownloadTests
     }
 
     [Fact]
+    public async Task OversizedResponseIsRejectedBeforeItCanGrowThePartialFile()
+    {
+        await using var fixture = await DownloadFixture.CreateAsync(oversizeResponse: true);
+
+        await Assert.ThrowsAsync<LauncherOperationException>(() => fixture.Manager.DownloadAsync(fixture.Manifest, "job-oversize"));
+
+        Assert.False(File.Exists(fixture.Cache.GetPath(fixture.EncodedHash)));
+        var partial = fixture.Cache.GetPartialPath(fixture.EncodedHash);
+        Assert.False(File.Exists(partial));
+    }
+
+    [Fact]
     public async Task HttpFailuresTimeoutsAndExpiredUrlsRecoverThroughResolver()
     {
         await using var notFound = await DownloadFixture.CreateAsync();
@@ -215,7 +227,8 @@ public class DownloadTests
             bool connectionResetOnce = false,
             bool expiredFirstResolution = false,
             DownloadFailureInjection? failureInjection = null,
-            bool injectAtThirtyPercent = false)
+            bool injectAtThirtyPercent = false,
+            bool oversizeResponse = false)
         {
             var root = Path.Combine(Path.GetTempPath(), "launcher-download-" + Guid.NewGuid().ToString("N"));
             var cache = new ChunkCache(Path.Combine(root, "cache"), 32 * 1024 * 1024);
@@ -228,7 +241,7 @@ public class DownloadTests
             var rawHash = Hashing.ComputeHash(raw);
             var chunk = new ChunkReference(rawHash, raw.Length, encodedHash, encoded.Length, $"chunks/encoded/{encodedHash}.bin");
             var manifest = new Manifest(1, "manifest", "synthetic-game", "build", "A", DateTimeOffset.UnixEpoch, ChunkingConfig.Default, EncodingConfig.Default, [new FileRecipe("SyntheticGame.exe", raw.Length, Hashing.ComputeHash(raw), [chunk])], new LaunchProfile("SyntheticGame.exe", ".", [], new Dictionary<string, string>()));
-            var handler = new FixtureHandler(encoded, encodedHash, corruptResponse, ignoreRange, slowResponse, rateLimitOnce, timeoutOnce, connectionResetOnce, expiredFirstResolution);
+            var handler = new FixtureHandler(encoded, encodedHash, corruptResponse, ignoreRange, slowResponse, rateLimitOnce, timeoutOnce, connectionResetOnce, expiredFirstResolution, oversizeResponse);
             var client = new HttpClient(handler) { Timeout = timeoutOnce ? TimeSpan.FromMilliseconds(250) : TimeSpan.FromSeconds(2) };
             var api = new LauncherApiClient(client, new Uri("http://launcher/"));
             LocalStateStore? state = null;
@@ -352,7 +365,8 @@ public class DownloadTests
         bool rateLimitOnce,
         bool timeoutOnce,
         bool connectionResetOnce,
-        bool expiredFirstResolution) : HttpMessageHandler
+        bool expiredFirstResolution,
+        bool oversizeResponse) : HttpMessageHandler
     {
         public Dictionary<string, HttpStatusCode> FailStatus { get; } = new(StringComparer.Ordinal);
         public List<string> RequestedUrls { get; } = [];
@@ -398,6 +412,7 @@ public class DownloadTests
             }
             if (corruptResponse) payload = payload.ToArray();
             if (corruptResponse && payload.Length > 0) payload[0] ^= 0xFF;
+            if (oversizeResponse) payload = [.. payload, 0xA5];
             if (slowResponse)
             {
                 await Task.Delay(100, cancellationToken);

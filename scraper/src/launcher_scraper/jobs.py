@@ -88,7 +88,8 @@ class SQLiteJobStore:
             )
 
     def get_source(self, name: str) -> SourceDefinition | None:
-        row = self._connection.execute("SELECT config_json FROM scraper_sources WHERE name=?", (name,)).fetchone()
+        with self._lock:
+            row = self._connection.execute("SELECT config_json FROM scraper_sources WHERE name=?", (name,)).fetchone()
         if row is None:
             return None
         return SourceDefinition(**json.loads(row["config_json"]))
@@ -98,7 +99,9 @@ class SQLiteJobStore:
         if enabled_only:
             query += " WHERE enabled=1"
         query += " ORDER BY name"
-        return [SourceDefinition(**json.loads(row["config_json"])) for row in self._connection.execute(query)]
+        with self._lock:
+            rows = self._connection.execute(query).fetchall()
+        return [SourceDefinition(**json.loads(row["config_json"])) for row in rows]
 
     def set_source_enabled(self, name: str, enabled: bool) -> None:
         now = time.time()
@@ -112,9 +115,10 @@ class SQLiteJobStore:
 
     def due_sources(self, now: float | None = None) -> list[SourceDefinition]:
         now = time.time() if now is None else now
-        rows = self._connection.execute(
-            "SELECT config_json FROM scraper_sources WHERE enabled=1 AND next_check_at <= ? ORDER BY name", (now,)
-        )
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT config_json FROM scraper_sources WHERE enabled=1 AND next_check_at <= ? ORDER BY name", (now,)
+            ).fetchall()
         return [SourceDefinition(**json.loads(row["config_json"])) for row in rows]
 
     def mark_source_checked(self, name: str, next_check_at: float) -> None:
@@ -235,19 +239,21 @@ class SQLiteJobStore:
             return len(rows)
 
     def get_job(self, job_id: str) -> ScrapeJob | None:
-        row = self._connection.execute("SELECT * FROM scraper_jobs WHERE id=?", (job_id,)).fetchone()
+        with self._lock:
+            row = self._connection.execute("SELECT * FROM scraper_jobs WHERE id=?", (job_id,)).fetchone()
         return self._row_to_job(row) if row is not None else None
 
     def list_jobs(self, status: JobStatus | None = None, limit: int = 100) -> list[ScrapeJob]:
-        if status is None:
-            rows = self._connection.execute(
-                "SELECT * FROM scraper_jobs ORDER BY updated_at DESC LIMIT ?", (min(500, max(1, limit)),)
-            )
-        else:
-            rows = self._connection.execute(
-                "SELECT * FROM scraper_jobs WHERE status=? ORDER BY updated_at DESC LIMIT ?",
-                (status.value, min(500, max(1, limit))),
-            )
+        with self._lock:
+            if status is None:
+                rows = self._connection.execute(
+                    "SELECT * FROM scraper_jobs ORDER BY updated_at DESC LIMIT ?", (min(500, max(1, limit)),)
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT * FROM scraper_jobs WHERE status=? ORDER BY updated_at DESC LIMIT ?",
+                    (status.value, min(500, max(1, limit))),
+                ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
     def _insert_job(self, job: ScrapeJob) -> None:

@@ -14,6 +14,10 @@ public static partial class ManifestValidator
         if (manifest.Chunking.Algorithm != "fastcdc" || manifest.Chunking.FormatVersion != 1 || manifest.Chunking.MinimumBytes <= 0 || manifest.Chunking.MinimumBytes > manifest.Chunking.AverageBytes || manifest.Chunking.AverageBytes > manifest.Chunking.MaximumBytes)
             throw new InvalidDataException("Invalid FastCDC parameters.");
         if (manifest.Encoding.Id != "zstd-v1-level-3" || manifest.Encoding.Level != 3) throw new InvalidDataException("Unsupported chunk encoding.");
+        var arguments = manifest.Launch.Arguments ?? Array.Empty<string>();
+        if (arguments.Any(argument => argument is null)) throw new InvalidDataException("Launch arguments cannot be null.");
+        var environment = manifest.Launch.Environment ?? new Dictionary<string, string>();
+        if (environment.Any(pair => pair.Key is null || pair.Value is null)) throw new InvalidDataException("Launch environment cannot contain null entries.");
         var paths = new HashSet<string>(StringComparer.Ordinal);
         var chunksByEncodedHash = new Dictionary<string, ChunkReference>(StringComparer.Ordinal);
         foreach (var file in manifest.Files)
@@ -23,19 +27,22 @@ public static partial class ManifestValidator
             if (!paths.Add(file.Path)) throw new InvalidDataException($"Duplicate manifest path: {file.Path}");
             if (file.Size < 0) throw new InvalidDataException($"Negative file size: {file.Path}");
             ValidateHash(file.Blake3, "file");
-            if (file.Chunks.Any(chunk => chunk is null || chunk.RawSize <= 0 || chunk.EncodedSize <= 0)) throw new InvalidDataException($"Impossible chunk size in {file.Path}.");
-            if (file.Size != file.Chunks.Sum(chunk => chunk.RawSize)) throw new InvalidDataException($"Chunk sizes do not match {file.Path}.");
+            long chunkSize = 0;
             foreach (var chunk in file.Chunks)
             {
+                if (chunk is null || chunk.RawSize <= 0 || chunk.EncodedSize <= 0) throw new InvalidDataException($"Impossible chunk size in {file.Path}.");
+                try { chunkSize = checked(chunkSize + chunk.RawSize); }
+                catch (OverflowException) { throw new InvalidDataException($"Chunk sizes overflow {file.Path}."); }
                 ValidateHash(chunk.RawHash, "raw");
                 ValidateHash(chunk.EncodedHash, "encoded");
                 if (!string.Equals(chunk.ObjectKey, $"chunks/encoded/{chunk.EncodedHash}.bin", StringComparison.Ordinal)) throw new InvalidDataException("Chunk object key does not match encoded hash.");
                 if (chunksByEncodedHash.TryGetValue(chunk.EncodedHash, out var existing) && !Equals(existing, chunk))
                 {
-                    if (!string.Equals(existing.RawHash, chunk.RawHash, StringComparison.Ordinal) || existing.RawSize != chunk.RawSize || existing.EncodedSize != chunk.EncodedSize || !string.Equals(existing.ObjectKey, chunk.ObjectKey, StringComparison.Ordinal)) throw new InvalidDataException($"Conflicting duplicate chunk metadata: {chunk.EncodedHash}");
+                    throw new InvalidDataException($"Conflicting duplicate chunk metadata: {chunk.EncodedHash}");
                 }
-                else chunksByEncodedHash[chunk.EncodedHash] = chunk;
+                chunksByEncodedHash.TryAdd(chunk.EncodedHash, chunk);
             }
+            if (file.Size != chunkSize) throw new InvalidDataException($"Chunk sizes do not match {file.Path}.");
         }
         ValidatePortablePath(manifest.Launch.Executable);
         if (manifest.Launch.WorkingDirectory != ".") ValidatePortablePath(manifest.Launch.WorkingDirectory);
@@ -60,7 +67,7 @@ public static partial class ManifestValidator
 
     private static void ValidateHash(string value, string kind)
     {
-        if (value.Length != 64 || value.Any(character => !Uri.IsHexDigit(character) || char.IsUpper(character))) throw new InvalidDataException($"Invalid {kind} BLAKE3 hash.");
+        if (string.IsNullOrEmpty(value) || value.Length != 64 || value.Any(character => !Uri.IsHexDigit(character) || char.IsUpper(character))) throw new InvalidDataException($"Invalid {kind} BLAKE3 hash.");
     }
 
     [GeneratedRegex("^[^\\u0000-\\u001f]+$")]
