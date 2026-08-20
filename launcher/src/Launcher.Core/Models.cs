@@ -162,6 +162,8 @@ public sealed record LauncherSettings(
     bool XboxIntegrationEnabled = false,
     bool ItchIntegrationEnabled = false,
     string BackgroundImagePath = "",
-    bool AutomaticUpdatesEnabled = true);
+    bool AutomaticUpdatesEnabled = true,
+    double InterfaceTransparency = 0,
+    double BackgroundImageOpacity = 0.30);
 
 public sealed class LauncherOperationException(string message, Exception? inner = null) : Exception(message, inner);

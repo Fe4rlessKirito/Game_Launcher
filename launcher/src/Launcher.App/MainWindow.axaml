@@ -16,8 +16,8 @@
     <Image Source="{Binding Settings.BackgroundImage}"
            IsVisible="{Binding Settings.HasBackgroundImage}"
            Stretch="UniformToFill"
-           Opacity="0.30" />
-    <Border Background="#C70B111B"
+           Opacity="{Binding Settings.BackgroundImageOpacity}" />
+    <Border Background="{DynamicResource BackgroundImageOverlay}"
             IsVisible="{Binding Settings.HasBackgroundImage}" />
     <Grid RowDefinitions="78,Auto,*,38">
     <Border x:Name="TitleBar"

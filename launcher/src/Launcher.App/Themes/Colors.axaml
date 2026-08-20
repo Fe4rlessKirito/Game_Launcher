@@ -16,6 +16,7 @@
   <Color x:Key="ArtworkTertiaryColor">#64483D</Color>
   <Color x:Key="DownloadChartColor">#0E141B</Color>
   <Color x:Key="DownloadPanelColor">#2A2F3A</Color>
+  <Color x:Key="BackgroundImageOverlayColor">#C70B111B</Color>
   <x:Double x:Key="SidebarWidth">244</x:Double>
   <Thickness x:Key="NavButtonPadding">12,11</Thickness>
   <Thickness x:Key="HomeButtonPadding">10,7</Thickness>
@@ -37,4 +38,5 @@
   <SolidColorBrush x:Key="ArtworkTertiary" Color="{DynamicResource ArtworkTertiaryColor}" />
   <SolidColorBrush x:Key="DownloadChart" Color="{DynamicResource DownloadChartColor}" />
   <SolidColorBrush x:Key="DownloadPanel" Color="{DynamicResource DownloadPanelColor}" />
+  <SolidColorBrush x:Key="BackgroundImageOverlay" Color="{DynamicResource BackgroundImageOverlayColor}" />
 </ResourceDictionary>

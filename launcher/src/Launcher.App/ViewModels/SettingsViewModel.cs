@@ -72,6 +72,12 @@ public partial class SettingsViewModel : ObservableObject
     private bool _automaticUpdatesEnabled = true;
 
     [ObservableProperty]
+    private double _interfaceTransparency;
+
+    [ObservableProperty]
+    private double _backgroundImageOpacity = 0.30;
+
+    [ObservableProperty]
     private string _downloadDirectory = @"C:\Games\Launcher\Downloads";
 
     [ObservableProperty]
@@ -138,6 +144,18 @@ public partial class SettingsViewModel : ObservableObject
     public bool HasProfileImage => ProfileImage is not null;
     public bool ShowDefaultProfile => !HasProfileImage;
     public bool HasBackgroundImage => BackgroundImage is not null;
+    public double InterfaceTransparencyPercent
+    {
+        get => InterfaceTransparency * 100;
+        set => InterfaceTransparency = Math.Clamp(value, 0, 70) / 100;
+    }
+    public double BackgroundImageOpacityPercent
+    {
+        get => BackgroundImageOpacity * 100;
+        set => BackgroundImageOpacity = Math.Clamp(value, 0, 100) / 100;
+    }
+    public string InterfaceTransparencyDisplay => $"{Math.Round(InterfaceTransparencyPercent):0}%";
+    public string BackgroundImageOpacityDisplay => $"{Math.Round(BackgroundImageOpacityPercent):0}%";
     public bool IsProfileSelected => SelectedSection == "Profile";
     public bool IsGeneralSelected => SelectedSection == "General";
     public bool IsDownloadsSelected => SelectedSection == "Downloads";
@@ -520,6 +538,8 @@ public partial class SettingsViewModel : ObservableObject
                 CompactMode: CompactMode,
                 BackgroundImagePath: BackgroundImagePath,
                 AutomaticUpdatesEnabled: AutomaticUpdatesEnabled,
+                InterfaceTransparency: InterfaceTransparency,
+                BackgroundImageOpacity: BackgroundImageOpacity,
                 SteamId64: SteamId64,
                 SteamPersonaName: SteamPersonaName,
                 SteamOwnedGames: _cachedSteamOwnedGames,
@@ -583,6 +603,8 @@ public partial class SettingsViewModel : ObservableObject
         AccentColor = "#1A9FFF";
         CompactMode = false;
         AutomaticUpdatesEnabled = true;
+        InterfaceTransparency = 0;
+        BackgroundImageOpacity = 0.30;
         DownloadDirectory = @"C:\Games\Launcher\Downloads";
         InstallDirectory = @"C:\Games";
         ApiBaseUrl = DefaultApiBaseUrl;
@@ -748,6 +770,8 @@ public partial class SettingsViewModel : ObservableObject
             AccentColor = string.IsNullOrWhiteSpace(snapshot.AccentColor) ? "#1A9FFF" : snapshot.AccentColor;
             CompactMode = snapshot.CompactMode;
             AutomaticUpdatesEnabled = snapshot.AutomaticUpdatesEnabled;
+            InterfaceTransparency = Math.Clamp(snapshot.InterfaceTransparency, 0, 0.70);
+            BackgroundImageOpacity = Math.Clamp(snapshot.BackgroundImageOpacity, 0, 1);
             DownloadDirectory = string.IsNullOrWhiteSpace(snapshot.DownloadDirectory)
                 ? @"C:\Games\Launcher\Downloads"
                 : snapshot.DownloadDirectory;
@@ -881,6 +905,33 @@ public partial class SettingsViewModel : ObservableObject
 
     partial void OnAutomaticUpdatesEnabledChanged(bool value) => AutomaticUpdatesPreferenceChanged?.Invoke();
 
+    partial void OnInterfaceTransparencyChanged(double value)
+    {
+        var clamped = Math.Clamp(value, 0, 0.70);
+        if (Math.Abs(clamped - value) > 0.0001)
+        {
+            InterfaceTransparency = clamped;
+            return;
+        }
+
+        OnPropertyChanged(nameof(InterfaceTransparencyPercent));
+        OnPropertyChanged(nameof(InterfaceTransparencyDisplay));
+        ApplyAppearance();
+    }
+
+    partial void OnBackgroundImageOpacityChanged(double value)
+    {
+        var clamped = Math.Clamp(value, 0, 1);
+        if (Math.Abs(clamped - value) > 0.0001)
+        {
+            BackgroundImageOpacity = clamped;
+            return;
+        }
+
+        OnPropertyChanged(nameof(BackgroundImageOpacityPercent));
+        OnPropertyChanged(nameof(BackgroundImageOpacityDisplay));
+    }
+
     partial void OnIsSignedInChanged(bool value) => OnPropertyChanged(nameof(IsNotSignedIn));
 
     partial void OnIsSigningInChanged(bool value) => OnPropertyChanged(nameof(CanSubmitAuth));
@@ -993,20 +1044,27 @@ public partial class SettingsViewModel : ObservableObject
             _ => ThemePalette.Slate
         };
         var resources = application.Resources;
-        resources["BackgroundPrimaryColor"] = Color.Parse(palette.Background);
-        resources["ChromeBarColor"] = Color.Parse(palette.ChromeBar);
-        resources["SidebarBackgroundColor"] = Color.Parse(palette.Sidebar);
-        resources["SurfacePrimaryColor"] = Color.Parse(palette.Surface);
-        resources["SurfaceElevatedColor"] = Color.Parse(palette.Elevated);
-        resources["BorderSubtleColor"] = Color.Parse(palette.Border);
+        var surfaceAlpha = ToAlpha(1 - InterfaceTransparency);
+        var borderAlpha = Math.Max((byte)96, surfaceAlpha);
+        resources["BackgroundPrimaryColor"] = WithAlpha(Color.Parse(palette.Background), surfaceAlpha);
+        resources["ChromeBarColor"] = WithAlpha(Color.Parse(palette.ChromeBar), surfaceAlpha);
+        resources["SidebarBackgroundColor"] = WithAlpha(Color.Parse(palette.Sidebar), surfaceAlpha);
+        resources["SurfacePrimaryColor"] = WithAlpha(Color.Parse(palette.Surface), surfaceAlpha);
+        resources["SurfaceElevatedColor"] = WithAlpha(Color.Parse(palette.Elevated), surfaceAlpha);
+        resources["BorderSubtleColor"] = WithAlpha(Color.Parse(palette.Border), borderAlpha);
         resources["TextPrimaryColor"] = Color.Parse(palette.TextPrimary);
         resources["TextSecondaryColor"] = Color.Parse(palette.TextSecondary);
         resources["TextMutedColor"] = Color.Parse(palette.TextMuted);
         resources["ArtworkPrimaryColor"] = Color.Parse(palette.ArtworkPrimary);
         resources["ArtworkSecondaryColor"] = Color.Parse(palette.ArtworkSecondary);
         resources["ArtworkTertiaryColor"] = Color.Parse(palette.ArtworkTertiary);
-        resources["DownloadChartColor"] = Color.Parse(palette.DownloadChart);
-        resources["DownloadPanelColor"] = Color.Parse(palette.DownloadPanel);
+        resources["DownloadChartColor"] = WithAlpha(Color.Parse(palette.DownloadChart), surfaceAlpha);
+        resources["DownloadPanelColor"] = WithAlpha(Color.Parse(palette.DownloadPanel), surfaceAlpha);
+        var overlayAlpha = (byte)Math.Clamp(
+            (int)Math.Round(199 * (0.55 + ((100 - InterfaceTransparency * 100) / 100 * 0.45))),
+            90,
+            199);
+        resources["BackgroundImageOverlayColor"] = Color.FromArgb(overlayAlpha, 11, 17, 27);
 
         var accent = ParseColorOrDefault(AccentColor, Color.Parse(palette.Accent));
         resources["AccentPrimaryColor"] = accent;
@@ -1047,6 +1105,12 @@ public partial class SettingsViewModel : ObservableObject
             ScaleChannel(color.G, factor),
             ScaleChannel(color.B, factor));
     }
+
+    private static Color WithAlpha(Color color, byte alpha) =>
+        Color.FromArgb(alpha, color.R, color.G, color.B);
+
+    private static byte ToAlpha(double opacity) =>
+        (byte)Math.Clamp((int)Math.Round(Math.Clamp(opacity, 0, 1) * byte.MaxValue), 0, byte.MaxValue);
 
     private static byte ScaleChannel(byte channel, double factor)
     {

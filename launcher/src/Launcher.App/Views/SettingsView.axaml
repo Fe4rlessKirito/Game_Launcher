@@ -290,17 +290,17 @@
           <TextBlock Text="Adjust how the launcher feels while you use it." Classes="Caption" />
         </StackPanel>
         <Border Background="{DynamicResource SurfacePrimary}" CornerRadius="10" Padding="24" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1">
-          <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="16">
+          <Grid ColumnDefinitions="210,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="16">
             <TextBlock Text="Theme" Classes="BodyStrong" VerticalAlignment="Center" />
             <ComboBox Grid.Column="1" ItemsSource="{Binding ThemeOptions}" SelectedItem="{Binding ThemePreset}" />
 
             <StackPanel Grid.Row="1" Spacing="3" VerticalAlignment="Center">
               <TextBlock Text="Accent color" Classes="BodyStrong" />
-              <TextBlock Text="Choose an accent from the color spectrum or palette." Classes="Caption" />
+              <TextBlock Text="Choose an accent from the color spectrum or palette." Classes="Caption" TextWrapping="Wrap" MaxWidth="198" />
             </StackPanel>
             <ColorPicker Grid.Row="1"
                          Grid.Column="1"
-                         Width="240"
+                         Width="190"
                          HorizontalAlignment="Left"
                          Color="{Binding AccentColorValue, Mode=TwoWay}"
                          IsAlphaEnabled="False"
@@ -328,6 +328,24 @@
                 <TextBlock Text="{Binding BackgroundImagePath}" Classes="Caption" MaxWidth="360" TextTrimming="CharacterEllipsis" IsVisible="{Binding HasBackgroundImage}" />
               </StackPanel>
             </StackPanel>
+
+            <StackPanel Grid.Row="4" Spacing="3" VerticalAlignment="Center">
+              <TextBlock Text="Interface transparency" Classes="BodyStrong" />
+              <TextBlock Text="Make launcher surfaces translucent while keeping text readable." Classes="Caption" TextWrapping="Wrap" MaxWidth="198" />
+            </StackPanel>
+            <Grid Grid.Row="4" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+              <Slider Minimum="0" Maximum="70" Value="{Binding InterfaceTransparencyPercent, Mode=TwoWay}" />
+              <TextBlock Grid.Column="1" Text="{Binding InterfaceTransparencyDisplay}" Classes="BodyStrong" MinWidth="42" VerticalAlignment="Center" />
+            </Grid>
+
+            <StackPanel Grid.Row="5" Spacing="3" VerticalAlignment="Center">
+              <TextBlock Text="Background image visibility" Classes="BodyStrong" />
+              <TextBlock Text="Control how strongly the selected image shows through the launcher." Classes="Caption" TextWrapping="Wrap" MaxWidth="198" />
+            </StackPanel>
+            <Grid Grid.Row="5" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+              <Slider Minimum="0" Maximum="100" Value="{Binding BackgroundImageOpacityPercent, Mode=TwoWay}" />
+              <TextBlock Grid.Column="1" Text="{Binding BackgroundImageOpacityDisplay}" Classes="BodyStrong" MinWidth="42" VerticalAlignment="Center" />
+            </Grid>
           </Grid>
         </Border>
       </StackPanel>
