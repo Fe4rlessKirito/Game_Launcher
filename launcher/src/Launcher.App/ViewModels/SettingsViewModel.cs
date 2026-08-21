@@ -18,11 +18,11 @@ public partial class SettingsViewModel : ObservableObject
     private const string LegacyMantleIpApiBaseUrl = "http://5.231.32.191";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
     private static readonly JsonSerializerOptions ReadOptions = new(JsonSerializerDefaults.Web);
-    private static readonly string DefaultSettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Vaultnode",
-        "settings.json");
+    private static readonly string DefaultSettingsPath = GetDefaultSettingsPath();
     private readonly string _settingsPath;
+    private string AppearanceAssetDirectory => Path.Combine(
+        Path.GetDirectoryName(Path.GetFullPath(_settingsPath)) ?? AppContext.BaseDirectory,
+        "appearance");
 
     [ObservableProperty]
     private bool _launchOnStartup;
@@ -46,6 +46,7 @@ public partial class SettingsViewModel : ObservableObject
     private string _accentColor = "#1A9FFF";
 
     private Color _accentColorValue = Color.Parse("#1A9FFF");
+    private Color? _backgroundAccentColor;
 
     [ObservableProperty]
     private string _accountEmail = string.Empty;
@@ -159,9 +160,9 @@ public partial class SettingsViewModel : ObservableObject
     }
     public string InterfaceTransparencyDisplay => $"{Math.Round(InterfaceTransparencyPercent):0}%";
     public string BackgroundImageOpacityDisplay => $"{Math.Round(BackgroundImageOpacityPercent):0}%";
-    public bool IsManualAccentEnabled => !MatchBackgroundColors || !HasBackgroundImage;
-    public string AccentColorDescription => MatchBackgroundColors && HasBackgroundImage
-        ? "Colors are sampled from the selected background. Turn matching off to choose manually."
+    public bool IsBackgroundAccentActive => MatchBackgroundColors && _backgroundAccentColor is not null;
+    public string AccentColorDescription => IsBackgroundAccentActive
+        ? "Using the sampled accent. Choose a color here to keep a manual accent."
         : "Choose an accent from the color spectrum or palette.";
     public bool IsProfileSelected => SelectedSection == "Profile";
     public bool IsGeneralSelected => SelectedSection == "General";
@@ -221,12 +222,18 @@ public partial class SettingsViewModel : ObservableObject
     public IReadOnlyList<OptionalStoreSnapshot> OptionalStoreSnapshots => _optionalStoreSnapshots;
     public Color AccentColorValue
     {
-        get => _accentColorValue;
+        get => IsBackgroundAccentActive ? _backgroundAccentColor!.Value : _accentColorValue;
         set
         {
-            if (_accentColorValue == value)
+            if (AccentColorValue == value)
             {
                 return;
+            }
+
+            if (IsBackgroundAccentActive)
+            {
+                MatchBackgroundColors = false;
+                SaveStatus = "Manual accent selected. Save to keep it.";
             }
 
             _accentColorValue = value;
@@ -239,6 +246,27 @@ public partial class SettingsViewModel : ObservableObject
     private LauncherRuntime? _runtime;
     private IReadOnlyDictionary<string, string>? _trustedManifestKeysPem;
     private bool _requireTrustedManifestKeys;
+
+    private static string GetDefaultSettingsPath()
+    {
+        var settingsOverride = Environment.GetEnvironmentVariable("LAUNCHER_SETTINGS_PATH");
+        if (!string.IsNullOrWhiteSpace(settingsOverride))
+        {
+            return settingsOverride;
+        }
+
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(localAppData))
+        {
+            localAppData = AppContext.BaseDirectory;
+        }
+
+        var stateRoot = Environment.GetEnvironmentVariable("LAUNCHER_STATE_ROOT");
+        stateRoot = string.IsNullOrWhiteSpace(stateRoot)
+            ? Path.Combine(localAppData, "Vaultnode")
+            : stateRoot;
+        return Path.Combine(stateRoot, "settings.json");
+    }
 
     public SettingsViewModel(string? settingsPath = null)
     {
@@ -736,10 +764,25 @@ public partial class SettingsViewModel : ObservableObject
 
     public void SetBackgroundImagePath(string? path)
     {
-        BackgroundImagePath = path?.Trim() ?? string.Empty;
-        SaveStatus = string.IsNullOrWhiteSpace(BackgroundImagePath)
-            ? "Default launcher background selected. Save to keep it."
-            : "Launcher background selected. Save to keep it.";
+        var sourcePath = path?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(sourcePath))
+        {
+            var previousPath = BackgroundImagePath;
+            BackgroundImagePath = string.Empty;
+            DeleteManagedAppearanceAsset(previousPath, "background");
+            SaveStatus = "Default launcher background selected. Save to keep it.";
+            return;
+        }
+
+        try
+        {
+            BackgroundImagePath = StoreAppearanceAsset(sourcePath, "background");
+            SaveStatus = "Launcher background copied into AppData. Save to keep it.";
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            SaveStatus = $"Could not store that launcher background: {error.Message}";
+        }
     }
 
     [RelayCommand]
@@ -747,6 +790,149 @@ public partial class SettingsViewModel : ObservableObject
     {
         SetBackgroundImagePath(string.Empty);
     }
+
+    private string StoreAppearanceAsset(string sourcePath, string assetName)
+    {
+        var fullSourcePath = Path.GetFullPath(sourcePath);
+        if (!File.Exists(fullSourcePath))
+        {
+            throw new FileNotFoundException("The selected image could not be found.", fullSourcePath);
+        }
+
+        var assetDirectory = Path.GetFullPath(AppearanceAssetDirectory);
+        Directory.CreateDirectory(assetDirectory);
+        var targetPath = Path.Combine(assetDirectory, assetName + GetImageExtension(fullSourcePath));
+        if (!PathsEqual(fullSourcePath, targetPath))
+        {
+            var temporaryPath = Path.Combine(
+                assetDirectory,
+                $".{assetName}.{Guid.NewGuid():N}.part");
+            try
+            {
+                File.Copy(fullSourcePath, temporaryPath, true);
+                File.Move(temporaryPath, targetPath, true);
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+                }
+                catch (IOException)
+                {
+                    // The completed asset is safe even if cleanup is interrupted.
+                }
+            }
+        }
+
+        DeleteOtherManagedAppearanceAssets(assetDirectory, assetName, targetPath);
+        return targetPath;
+    }
+
+    private string MigrateAppearanceAsset(string path, string assetName)
+    {
+        if (string.IsNullOrWhiteSpace(path)
+            || !File.Exists(path)
+            || IsManagedAppearanceAsset(path, assetName))
+        {
+            return path;
+        }
+
+        try
+        {
+            return StoreAppearanceAsset(path, assetName);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            SaveStatus = "The existing launcher background could not be copied into AppData.";
+            return path;
+        }
+    }
+
+    private void DeleteManagedAppearanceAsset(string path, string assetName)
+    {
+        if (!IsManagedAppearanceAsset(path, assetName))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // A locked asset can be replaced or cleaned up on the next selection.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Keep the setting usable even when cleanup is denied by the profile.
+        }
+    }
+
+    private void DeleteOtherManagedAppearanceAssets(string assetDirectory, string assetName, string retainedPath)
+    {
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(assetDirectory, assetName + ".*", SearchOption.TopDirectoryOnly))
+            {
+                if (!PathsEqual(path, retainedPath))
+                {
+                    DeleteManagedAppearanceAsset(path, assetName);
+                }
+            }
+        }
+        catch (DirectoryNotFoundException)
+        {
+            // The directory was removed between the copy and cleanup.
+        }
+        catch (IOException)
+        {
+            // Cleanup is best effort; the retained asset is already usable.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Cleanup is best effort; the retained asset is already usable.
+        }
+    }
+
+    private bool IsManagedAppearanceAsset(string path, string assetName)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var expectedDirectory = Path.GetFullPath(AppearanceAssetDirectory);
+            return fullPath.StartsWith(expectedDirectory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                && Path.GetFileName(fullPath).StartsWith(assetName + ".", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    private static string GetImageExtension(string path)
+    {
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        return extension is ".bmp" or ".gif" or ".ico" or ".jpeg" or ".jpg" or ".png" or ".tif" or ".tiff" or ".webp"
+            ? extension
+            : ".image";
+    }
+
+    private static bool PathsEqual(string first, string second) =>
+        string.Equals(
+            Path.GetFullPath(first).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            Path.GetFullPath(second).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
 
     private void Load()
     {
@@ -765,6 +951,13 @@ public partial class SettingsViewModel : ObservableObject
 
             var migratedApiEndpoint = !string.IsNullOrWhiteSpace(snapshot.ApiBaseUrl)
                 && IsLegacyApiBaseUrl(snapshot.ApiBaseUrl);
+            var savedBackgroundImagePath = snapshot.BackgroundImagePath ?? string.Empty;
+            var migratedBackgroundImagePath = MigrateAppearanceAsset(savedBackgroundImagePath, "background");
+            var migratedBackgroundImage = !string.Equals(
+                savedBackgroundImagePath,
+                migratedBackgroundImagePath,
+                StringComparison.OrdinalIgnoreCase);
+            savedBackgroundImagePath = migratedBackgroundImagePath;
             LaunchOnStartup = snapshot.LaunchOnStartup;
             MinimizeOnClose = snapshot.MinimizeOnClose;
             ReducedMotion = snapshot.ReducedMotion;
@@ -794,7 +987,7 @@ public partial class SettingsViewModel : ObservableObject
                     ? DefaultApiBaseUrl
                     : snapshot.ApiBaseUrl;
             ProfileImagePath = snapshot.ProfileImagePath ?? string.Empty;
-            BackgroundImagePath = snapshot.BackgroundImagePath ?? string.Empty;
+            BackgroundImagePath = savedBackgroundImagePath;
             SteamId64 = SteamLibraryDiscovery.IsValidSteamId64(snapshot.SteamId64) ? snapshot.SteamId64 : string.Empty;
             SteamPersonaName = string.IsNullOrWhiteSpace(snapshot.SteamPersonaName) ? string.Empty : snapshot.SteamPersonaName;
             _cachedSteamOwnedGames = snapshot.SteamOwnedGames ?? [];
@@ -812,7 +1005,7 @@ public partial class SettingsViewModel : ObservableObject
             _trustedManifestKeysPem = snapshot.TrustedManifestKeysPem;
             _requireTrustedManifestKeys = snapshot.RequireTrustedManifestKeys;
 
-            if (migratedApiEndpoint)
+            if (migratedApiEndpoint || migratedBackgroundImage)
             {
                 Save();
             }
@@ -852,6 +1045,14 @@ public partial class SettingsViewModel : ObservableObject
         {
             SaveStatus = "That profile picture could not be loaded.";
         }
+        catch (InvalidDataException)
+        {
+            SaveStatus = "That profile picture could not be loaded.";
+        }
+        catch (InvalidOperationException)
+        {
+            SaveStatus = "That profile picture could not be loaded.";
+        }
         catch (UnauthorizedAccessException)
         {
             SaveStatus = "That profile picture could not be loaded.";
@@ -876,6 +1077,14 @@ public partial class SettingsViewModel : ObservableObject
             SaveStatus = "That launcher background could not be loaded.";
         }
         catch (IOException)
+        {
+            SaveStatus = "That launcher background could not be loaded.";
+        }
+        catch (InvalidDataException)
+        {
+            SaveStatus = "That launcher background could not be loaded.";
+        }
+        catch (InvalidOperationException)
         {
             SaveStatus = "That launcher background could not be loaded.";
         }
@@ -944,7 +1153,8 @@ public partial class SettingsViewModel : ObservableObject
 
     partial void OnMatchBackgroundColorsChanged(bool value)
     {
-        OnPropertyChanged(nameof(IsManualAccentEnabled));
+        OnPropertyChanged(nameof(AccentColorValue));
+        OnPropertyChanged(nameof(IsBackgroundAccentActive));
         OnPropertyChanged(nameof(AccentColorDescription));
         ApplyAppearance();
     }
@@ -997,7 +1207,8 @@ public partial class SettingsViewModel : ObservableObject
     partial void OnBackgroundImageChanged(Bitmap? value)
     {
         OnPropertyChanged(nameof(HasBackgroundImage));
-        OnPropertyChanged(nameof(IsManualAccentEnabled));
+        OnPropertyChanged(nameof(AccentColorValue));
+        OnPropertyChanged(nameof(IsBackgroundAccentActive));
         OnPropertyChanged(nameof(AccentColorDescription));
         ApplyAppearance();
     }
@@ -1069,6 +1280,8 @@ public partial class SettingsViewModel : ObservableObject
         var imagePalette = MatchBackgroundColors && BackgroundImage is not null
             ? BackgroundPaletteExtractor.Extract(BackgroundImage)
             : null;
+        var previousBackgroundAccent = _backgroundAccentColor;
+        _backgroundAccentColor = imagePalette?.Accent;
         var background = TintColor(Color.Parse(palette.Background), imagePalette, 0.18);
         var chromeBar = TintColor(Color.Parse(palette.ChromeBar), imagePalette, 0.11);
         var sidebar = TintColor(Color.Parse(palette.Sidebar), imagePalette, 0.16);
@@ -1100,7 +1313,7 @@ public partial class SettingsViewModel : ObservableObject
             199);
         resources["BackgroundImageOverlayColor"] = Color.FromArgb(overlayAlpha, 11, 17, 27);
 
-        var accent = imagePalette?.Accent ?? ParseColorOrDefault(AccentColor, Color.Parse(palette.Accent));
+        var accent = _backgroundAccentColor ?? ParseColorOrDefault(AccentColor, Color.Parse(palette.Accent));
         resources["AccentPrimaryColor"] = accent;
         resources["AccentSoftColor"] = Color.FromArgb(64, accent.R, accent.G, accent.B);
         // Fluent controls (including ToggleSwitch) use the theme's system
@@ -1119,6 +1332,12 @@ public partial class SettingsViewModel : ObservableObject
         resources["HomeButtonPadding"] = CompactMode ? new Thickness(8, 6) : new Thickness(10, 7);
         resources["GamesHeaderPadding"] = CompactMode ? new Thickness(8, 5) : new Thickness(10, 7);
         resources["SidebarGamePadding"] = CompactMode ? new Thickness(4, 2) : new Thickness(5, 4);
+        if (previousBackgroundAccent != _backgroundAccentColor)
+        {
+            OnPropertyChanged(nameof(AccentColorValue));
+            OnPropertyChanged(nameof(IsBackgroundAccentActive));
+            OnPropertyChanged(nameof(AccentColorDescription));
+        }
     }
 
     private static Color ParseColorOrDefault(string value, Color fallback)

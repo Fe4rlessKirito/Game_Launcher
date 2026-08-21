@@ -35,6 +35,32 @@ public sealed class RuntimeTests
     }
 
     [Fact]
+    public void SelectedBackgroundIsCopiedIntoSettingsDirectory()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "vaultnode-background-test", Guid.NewGuid().ToString("N"));
+        var settingsPath = Path.Combine(directory, "settings.json");
+        var sourcePath = Path.Combine(directory, "Downloads", "images.webp");
+        Directory.CreateDirectory(Path.GetDirectoryName(sourcePath)!);
+        File.WriteAllText(sourcePath, "background fixture");
+
+        try
+        {
+            var settings = new SettingsViewModel(settingsPath);
+
+            settings.SetBackgroundImagePath(sourcePath);
+
+            var storedPath = Path.Combine(directory, "appearance", "background.webp");
+            Assert.Equal(storedPath, settings.BackgroundImagePath);
+            Assert.True(File.Exists(storedPath));
+            Assert.Equal("background fixture", File.ReadAllText(storedPath));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task RuntimeHydratesCatalogAndDerivesInstallState()
     {
         var root = Path.Combine(Path.GetTempPath(), "vaultnode-runtime-test", Guid.NewGuid().ToString("N"));

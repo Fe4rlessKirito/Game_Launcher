@@ -303,7 +303,6 @@
                          Width="190"
                          HorizontalAlignment="Left"
                          Color="{Binding AccentColorValue, Mode=TwoWay}"
-                         IsEnabled="{Binding IsManualAccentEnabled}"
                          IsAlphaEnabled="False"
                          IsHexInputVisible="False" />
 
@@ -315,7 +314,7 @@
 
             <StackPanel Grid.Row="3" Spacing="3" VerticalAlignment="Center">
               <TextBlock Text="Custom background" Classes="BodyStrong" />
-              <TextBlock Text="Show a local image behind the launcher chrome." Classes="Caption" TextWrapping="Wrap" />
+              <TextBlock Text="Show a local image behind the launcher chrome. Selected images are copied into Vaultnode AppData." Classes="Caption" TextWrapping="Wrap" />
             </StackPanel>
             <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
               <Border Width="160" Height="90" CornerRadius="7" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" ClipToBounds="True">
