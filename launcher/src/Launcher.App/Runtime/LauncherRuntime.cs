@@ -498,14 +498,30 @@ public sealed class LauncherRuntime : IAsyncDisposable
         return _snapshot;
     }
 
-    public void PauseActiveDownload()
+    public bool HasActiveDownload
     {
-        lock (_downloaderGate) _activeDownloader?.Pause();
+        get
+        {
+            lock (_downloaderGate) return _activeDownloader is not null;
+        }
     }
 
-    public void ResumeActiveDownload()
+    public bool IsActiveDownloadPaused
     {
-        lock (_downloaderGate) _activeDownloader?.Resume();
+        get
+        {
+            lock (_downloaderGate) return _activeDownloader?.IsPaused == true;
+        }
+    }
+
+    public bool PauseActiveDownload()
+    {
+        lock (_downloaderGate) return _activeDownloader?.Pause() == true;
+    }
+
+    public bool ResumeActiveDownload()
+    {
+        lock (_downloaderGate) return _activeDownloader?.Resume() == true;
     }
 
     public async Task InstallAsync(string gameId, IProgress<DownloadProgress>? progress = null, CancellationToken cancellationToken = default)
@@ -533,24 +549,95 @@ public sealed class LauncherRuntime : IAsyncDisposable
                 _stateStore,
                 packCache: _packCache);
             lock (_downloaderGate) _activeDownloader = downloader;
+            var jobId = $"install-{game.Id}-{signedManifest.Manifest.BuildId}";
+            long downloadedBytes = 0;
+            long totalBytes = 0;
+            DownloadProgress? lastDownloadProgress = null;
             var trackedProgress = new Progress<DownloadProgress>(value =>
             {
+                lastDownloadProgress = value;
+                downloadedBytes = value.DownloadedBytes;
+                totalBytes = value.TotalBytes;
+                // A download is only complete after the verified files have
+                // been reconstructed and committed. Keep the page in its
+                // active state while the installer is doing that work.
+                if (value.State == DownloadJobState.Ready) return;
                 ProgressChanged?.Invoke(value);
                 progress?.Report(value);
             });
-            await downloader.DownloadAsync(signedManifest.Manifest, $"install-{game.Id}-{signedManifest.Manifest.BuildId}", trackedProgress, cancellationToken).ConfigureAwait(false);
+            await downloader.DownloadAsync(signedManifest.Manifest, jobId, trackedProgress, cancellationToken).ConfigureAwait(false);
 
             var installer = new Installer(_chunkCache, _stateStore, availableSpaceProvider: GetAvailableFreeSpace);
             var installRoot = game.Installed?.InstallRoot ?? BuildInstallRoot(game);
-            if (game.Installed is not null)
+            var installationProgress = new Progress<InstallationProgress>(value =>
             {
-                var previous = ManifestJson.Deserialize(game.Installed.ManifestJson);
-                await installer.UpdateAsync(previous, signedManifest.Manifest, installRoot, cancellationToken: cancellationToken).ConfigureAwait(false);
-            }
-            else
+                var state = value.Stage.Contains("Verif", StringComparison.OrdinalIgnoreCase)
+                    ? DownloadJobState.VerifyingRaw
+                    : DownloadJobState.Decompressing;
+                var activity = new DownloadProgress(
+                    jobId,
+                    state,
+                    downloadedBytes,
+                    totalBytes,
+                    0,
+                    null,
+                    Activity: value.Stage,
+                    CompletedUnits: value.CompletedFiles,
+                    TotalUnits: value.TotalFiles);
+                lastDownloadProgress = activity;
+                ProgressChanged?.Invoke(activity);
+                progress?.Report(activity);
+            });
+
+            try
             {
-                await installer.InstallAsync(signedManifest.Manifest, installRoot, cancellationToken: cancellationToken).ConfigureAwait(false);
+                if (game.Installed is not null)
+                {
+                    var previous = ManifestJson.Deserialize(game.Installed.ManifestJson);
+                    await installer.UpdateAsync(previous, signedManifest.Manifest, installRoot, installationProgress, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await installer.InstallAsync(signedManifest.Manifest, installRoot, installationProgress, cancellationToken).ConfigureAwait(false);
+                }
             }
+            catch (Exception error)
+            {
+                var failedState = cancellationToken.IsCancellationRequested ? DownloadJobState.Cancelled : DownloadJobState.Failed;
+                var failed = new DownloadProgress(
+                    jobId,
+                    failedState,
+                    downloadedBytes,
+                    totalBytes,
+                    0,
+                    null,
+                    Activity: error.Message,
+                    CompletedUnits: lastDownloadProgress?.CompletedUnits ?? 0,
+                    TotalUnits: lastDownloadProgress?.TotalUnits ?? 0);
+                ProgressChanged?.Invoke(failed);
+                progress?.Report(failed);
+                await _stateStore.SaveDownloadJobAsync(
+                    new PersistedDownloadJob(jobId, signedManifest.Manifest.BuildId, failedState, downloadedBytes, totalBytes, DateTimeOffset.UtcNow, error.Message),
+                    CancellationToken.None).ConfigureAwait(false);
+                throw;
+            }
+
+            var completed = new DownloadProgress(
+                jobId,
+                DownloadJobState.Ready,
+                downloadedBytes,
+                totalBytes,
+                0,
+                TimeSpan.Zero,
+                Activity: "Installed",
+                CompletedUnits: lastDownloadProgress?.TotalUnits ?? 0,
+                TotalUnits: lastDownloadProgress?.TotalUnits ?? 0)
+            {
+                PreparedBytesPerSecond = lastDownloadProgress?.PreparedBytesPerSecond ?? 0,
+                DiskBytesPerSecond = lastDownloadProgress?.DiskBytesPerSecond ?? 0
+            };
+            ProgressChanged?.Invoke(completed);
+            progress?.Report(completed);
 
             await RefreshAsync(cancellationToken).ConfigureAwait(false);
         }

@@ -61,7 +61,12 @@ public sealed record DownloadProgress(
     long TotalBytes,
     double BytesPerSecond,
     TimeSpan? Eta,
-    string? CurrentChunkHash = null)
+    string? CurrentChunkHash = null,
+    double PreparedBytesPerSecond = 0,
+    double DiskBytesPerSecond = 0,
+    string? Activity = null,
+    long CompletedUnits = 0,
+    long TotalUnits = 0)
 {
     public double Fraction => TotalBytes <= 0 ? 0 : Math.Clamp((double)DownloadedBytes / TotalBytes, 0, 1);
 }

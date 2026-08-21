@@ -34,18 +34,46 @@ public sealed class DownloadManager(
     bool? packDownloadEnabled = null,
     double? sparseRelayThreshold = null) : IDisposable
 {
-    private readonly SemaphoreSlim _pauseGate = new(1, 1);
+    private readonly object _pauseLock = new();
+    private TaskCompletionSource<bool> _resumeSignal = CreateCompletedSignal();
+    private bool _isPaused;
     private readonly SemaphoreSlim _concurrency = new(Math.Clamp(maxConcurrency, 1, 32));
     private readonly SemaphoreSlim _resolverGate = new(1, 1);
     private readonly HotSourceScheduler _sourceScheduler = new();
 
-    public void Pause() { _pauseGate.Wait(0); }
-    public void Resume() { if (_pauseGate.CurrentCount == 0) _pauseGate.Release(); }
+    public bool IsPaused
+    {
+        get
+        {
+            lock (_pauseLock) return _isPaused;
+        }
+    }
+
+    public bool Pause()
+    {
+        lock (_pauseLock)
+        {
+            if (_isPaused) return false;
+            _isPaused = true;
+            _resumeSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            return true;
+        }
+    }
+
+    public bool Resume()
+    {
+        lock (_pauseLock)
+        {
+            if (!_isPaused) return false;
+            _isPaused = false;
+            _resumeSignal.TrySetResult(true);
+            return true;
+        }
+    }
 
     public void Dispose()
     {
         _concurrency.Dispose();
-        _pauseGate.Dispose();
         _resolverGate.Dispose();
     }
 
@@ -56,6 +84,7 @@ public sealed class DownloadManager(
         var totalBytes = SumEncodedSizes(uniqueChunks);
         var preparedBytes = 0L;
         var networkBytes = 0L;
+        var diskBytes = 0L;
         var reusedBytes = 0L;
         var downloadedChunks = 0;
         var reusedChunks = 0;
@@ -93,6 +122,7 @@ public sealed class DownloadManager(
                 Interlocked.Add(ref networkBytes, packResult.NetworkBytes);
                 Interlocked.Add(ref physicalPackNetworkBytes, packResult.NetworkBytes);
                 Interlocked.Add(ref physicalPackLogicalBytes, packResult.LogicalBytes);
+                Interlocked.Add(ref diskBytes, packResult.LogicalBytes);
             }
             catch (Exception error) when (error is HttpRequestException or InvalidDataException or IOException or LauncherOperationException)
             {
@@ -121,8 +151,7 @@ public sealed class DownloadManager(
 
         var tasks = uniqueChunks.Select(async chunk =>
         {
-            await _pauseGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            _pauseGate.Release();
+            await WaitWhilePausedAsync(cancellationToken).ConfigureAwait(false);
             var cached = await cache.ReadAsync(chunk.EncodedHash, cancellationToken).ConfigureAwait(false);
             if (cached is not null)
             {
@@ -155,6 +184,7 @@ public sealed class DownloadManager(
                 }, cancellationToken).ConfigureAwait(false);
                 Interlocked.Add(ref preparedBytes, chunk.EncodedSize);
                 Interlocked.Add(ref networkBytes, bytes);
+                Interlocked.Add(ref diskBytes, chunk.EncodedSize);
                 Interlocked.Increment(ref downloadedChunks);
                 await ReportAsync(DownloadJobState.Downloading, chunk.EncodedHash).ConfigureAwait(false);
             }
@@ -166,7 +196,11 @@ public sealed class DownloadManager(
             await Task.WhenAll(tasks).ConfigureAwait(false);
             var summary = new DownloadSummary(jobId, totalBytes, preparedBytes, networkBytes, reusedBytes, downloadedChunks, reusedChunks, physicalPackNetworkBytes, physicalPackLogicalBytes);
             await SaveJobAsync(new PersistedDownloadJob(jobId, manifest.BuildId, DownloadJobState.Ready, preparedBytes, totalBytes, DateTimeOffset.UtcNow), CancellationToken.None).ConfigureAwait(false);
-            progress?.Report(new DownloadProgress(jobId, DownloadJobState.Ready, preparedBytes, totalBytes, Rate(), TimeSpan.Zero));
+            progress?.Report(new DownloadProgress(jobId, DownloadJobState.Ready, preparedBytes, totalBytes, NetworkRate(), TimeSpan.Zero)
+            {
+                PreparedBytesPerSecond = PreparedRate(),
+                DiskBytesPerSecond = DiskRate()
+            });
             return summary;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -183,8 +217,13 @@ public sealed class DownloadManager(
         async Task ReportAsync(DownloadJobState state, string hash)
         {
             var current = Interlocked.Read(ref preparedBytes);
-            var rate = Rate();
-            progress?.Report(new DownloadProgress(jobId, state, current, totalBytes, rate, rate > 0 ? TimeSpan.FromSeconds(Math.Max(0, totalBytes - current) / rate) : null, hash));
+            var preparedRate = PreparedRate();
+            var networkRate = NetworkRate();
+            progress?.Report(new DownloadProgress(jobId, state, current, totalBytes, networkRate, preparedRate > 0 ? TimeSpan.FromSeconds(Math.Max(0, totalBytes - current) / preparedRate) : null, hash)
+            {
+                PreparedBytesPerSecond = preparedRate,
+                DiskBytesPerSecond = DiskRate()
+            });
 
             if (stateStore is null) return;
             var now = stopwatch.Elapsed;
@@ -212,7 +251,23 @@ public sealed class DownloadManager(
             }
         }
 
-        double Rate() => stopwatch.Elapsed.TotalSeconds <= 0 ? 0 : preparedBytes / stopwatch.Elapsed.TotalSeconds;
+        double PreparedRate() => stopwatch.Elapsed.TotalSeconds <= 0 ? 0 : Interlocked.Read(ref preparedBytes) / stopwatch.Elapsed.TotalSeconds;
+        double NetworkRate() => stopwatch.Elapsed.TotalSeconds <= 0 ? 0 : Interlocked.Read(ref networkBytes) / stopwatch.Elapsed.TotalSeconds;
+        double DiskRate() => stopwatch.Elapsed.TotalSeconds <= 0 ? 0 : Interlocked.Read(ref diskBytes) / stopwatch.Elapsed.TotalSeconds;
+    }
+
+    private async Task WaitWhilePausedAsync(CancellationToken cancellationToken)
+    {
+        Task wait;
+        lock (_pauseLock) wait = _isPaused ? _resumeSignal.Task : Task.CompletedTask;
+        await wait.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static TaskCompletionSource<bool> CreateCompletedSignal()
+    {
+        var signal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        signal.TrySetResult(true);
+        return signal;
     }
 
     private async Task<long> DownloadChunkWithRetryAsync(ChunkReference chunk, IReadOnlyList<string> urls, Func<Task<IReadOnlyList<string>>> refreshUrls, CancellationToken cancellationToken)
